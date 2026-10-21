@@ -451,20 +451,18 @@ static bool copy_file(const char *from, const char *to)
     return ok && total == st.st_size;
 }
 
-/* What a copy takes: files up to max_file bytes (0: any), only names ending in suffix (NULL: all),
- * and no more than budget bytes in all */
+/* What a copy takes: only names ending in suffix (NULL: all), and no more than budget bytes in all */
 typedef struct {
-    off_t max_file;
     const char *suffix;
     uint64_t budget, used;
     int files;
     bool failed, over;
 } copy_t;
 
-static bool wanted(const copy_t *c, const char *name, off_t size)
+static bool wanted(const copy_t *c, const char *name)
 {
     const size_t n = strlen(name), s = c->suffix ? strlen(c->suffix) : 0;
-    return (c->max_file == 0 || size <= c->max_file) && (s == 0 || (n > s && strcmp(name + n - s, c->suffix) == 0));
+    return s == 0 || (n > s && strcmp(name + n - s, c->suffix) == 0);
 }
 
 static void copy_tree(const char *from, const char *to, copy_t *c, int depth)
@@ -490,7 +488,7 @@ static void copy_tree(const char *from, const char *to, copy_t *c, int depth)
             continue;
         if (S_ISDIR(st.st_mode))
             copy_tree(src, dst, c, depth + 1);
-        else if (S_ISREG(st.st_mode) && wanted(c, entry->d_name, st.st_size)) {
+        else if (S_ISREG(st.st_mode) && wanted(c, entry->d_name)) {
             if (c->used + (uint64_t)st.st_size > c->budget) {
                 c->over = true;
                 break;
@@ -580,10 +578,11 @@ static void remove_tree(const char *path, int depth)
     rmdir(path);
 }
 
-/* The places a title's things are kept aside under its backup folder:
- * the folder's files, the system's saved data of every user, Art Swap's
- * originals (.old) in the home screen's copy (/user/appmeta/<id>; the
- * install's /user/app/<id>/sce_sys is a copy of the folder's, not Art Swap's) */
+/* The places a title's things are kept aside under its backup folder: the
+ * system's saved data of every user, Art Swap's originals (.old) in the home
+ * screen's copy (/user/appmeta/<id>; the install's /user/app/<id>/sce_sys is a
+ * copy of the folder's, not Art Swap's). The folder itself is not copied: the
+ * uninstall keeps it, and its fingerprint shows whether it did. */
 typedef struct {
     char from[512];
     char to[600];
@@ -592,19 +591,13 @@ typedef struct {
 } keep_t;
 
 #define KEEP_MAX 12
-#define KEEP_SMALL_FILE (16 << 20)
 #define KEEP_BUDGET (1024ull << 20)
 
-static int keep_list(const char *id, const char *folder, const char *backup, keep_t *keep)
+static int keep_list(const char *id, const char *backup, keep_t *keep)
 {
     int n = 0;
-    const copy_t small = {KEEP_SMALL_FILE, NULL, KEEP_BUDGET, 0, 0, false, false};
-    const copy_t olds = {0, ".old", KEEP_BUDGET, 0, 0, false, false};
-    const copy_t saves = {0, NULL, KEEP_BUDGET, 0, 0, false, false};
-    cpath(folder, keep[n].from, sizeof(keep[n].from));
-    snprintf(keep[n].to, sizeof(keep[n].to), "%s/folder", backup);
-    keep[n].goes = false;
-    keep[n++].rule = small;
+    const copy_t olds = {".old", KEEP_BUDGET, 0, 0, false, false};
+    const copy_t saves = {NULL, KEEP_BUDGET, 0, 0, false, false};
     char meta[512];
     snprintf(meta, sizeof(meta), "/user/appmeta/%s", id);
     cpath(meta, keep[n].from, sizeof(keep[n].from));
@@ -719,7 +712,8 @@ static void *refresh_job(void *argument)
     bool ok = true;
     const time_t started = time(NULL) - 1;
 
-    /* 0. what must survive, kept aside first: nothing is removed unless every copy is whole */
+    /* 0. what must survive: the folder's fingerprint, and the rest kept aside first; nothing is removed unless
+     * every copy is whole */
     char folder[512], saves[512], backup[512];
     cpath(job->path, folder, sizeof(folder));
     data_path("saves", saves, sizeof(saves));
@@ -727,7 +721,7 @@ static void *refresh_job(void *argument)
     static keep_t keep[KEEP_MAX];
     pthread_mutex_lock(&g_apply_lock);
     const tree_sum_t before = tree_sum(folder);
-    const int nkeep = keep_list(job->id, job->path, backup, keep);
+    const int nkeep = keep_list(job->id, backup, keep);
     uint64_t used = 0;
     int kept = 0;
     bool whole = make_dirs(backup), over = false;
@@ -748,12 +742,10 @@ static void *refresh_job(void *argument)
         ok = false;
     } else if (!whole) {
         if (over)
-            set_phase("failed",
-                      "%s's folder holds more than Art Swap can copy aside (1 GB of small files), so it changed "
-                      "nothing.",
+            set_phase("failed", "%s's saved data is more than Art Swap can copy aside (1 GB), so it changed nothing.",
                       job->name);
         else
-            set_phase("failed", "Art Swap could not copy %s's files aside, so it changed nothing.", job->name);
+            set_phase("failed", "Art Swap could not copy %s's saved data aside, so it changed nothing.", job->name);
         ok = false;
     }
     bool removed = false;
@@ -838,11 +830,16 @@ static void *refresh_job(void *argument)
                  job->id, (unsigned long long)after.files, (unsigned long long)after.bytes,
                  same ? "unchanged" : "CHANGED", restored + expected, expected, changed);
         if (restored < 0)
-            set_phase("failed", "Some of %s's files went missing and Art Swap could not put them all back. The copy "
-                      "is in %s.", job->name, backup);
-        else if (restored > 0 || changed > 0 || !same)
-            set_phase("failed", "%s's files changed during the refresh. Art Swap put back %d that went missing; the "
-                      "copy is in %s.", job->name, restored, backup);
+            set_phase("failed", "Some of %s's saved data went missing and Art Swap could not put it all back. The "
+                      "copy is in %s.", job->name, backup);
+        else if (!same)
+            set_phase("failed", "%s's folder changed during the refresh: it held %llu files (%llu bytes) and now "
+                      "holds %llu (%llu bytes). Art Swap keeps no copy of the folder, so check the game's saves.",
+                      job->name, (unsigned long long)before.files, (unsigned long long)before.bytes,
+                      (unsigned long long)after.files, (unsigned long long)after.bytes);
+        else if (restored > 0 || changed > 0)
+            set_phase("failed", "%s's saved data changed during the refresh. Art Swap put back %d that went missing; "
+                      "the copy is in %s.", job->name, restored, backup);
         else if (!removed)
             remove_tree(backup, 0); /* nothing was touched */
         else if (ok) {
@@ -885,7 +882,7 @@ bool smp_refresh_start(const app_t *app, int wait_s, char *err, size_t errlen)
         g_unseen = false;
         copy_str(g_id, sizeof(g_id), app->id);
         copy_str(g_phase, sizeof(g_phase), "copying");
-        snprintf(g_message, sizeof(g_message), "Copying %s's files aside", app->name);
+        snprintf(g_message, sizeof(g_message), "Checking %s's files", app->name);
     }
     pthread_mutex_unlock(&g_lock);
     if (busy) {

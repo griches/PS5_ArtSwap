@@ -163,7 +163,7 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.1.3", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.1.4", f"HELLO names the version ({hello})")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
 
@@ -291,6 +291,7 @@ def main() -> int:
 
         icon_old = sha(str(icon_meta) + ".old")
         save_sha, sysave_sha = sha(save), sha(sysave)
+        original_save = save.read_bytes()
         smp.console.busy = True
         h.rows("REFRESH", "PPSA99314", "0")
         state = refresh_until_end()
@@ -311,23 +312,34 @@ def main() -> int:
         check(sha(save) == save_sha, "the game's own save is untouched")
         check(sha(sysave) == sysave_sha, "the system's saved data is untouched")
         kept = list((base / "data/artswap/saves").glob("PPSA99314-*"))
-        check(len(kept) == 1 and (kept[0] / "folder/userdata/card.gci").exists() and
-              (kept[0] / "home/1000/savedata_prospero/sdimg_SAVE0").exists(), "the saves were copied aside first")
+        check(len(kept) == 1 and (kept[0] / "home/1000/savedata_prospero/sdimg_SAVE0").exists(),
+              "the system's saved data was copied aside first")
+        check(not (kept[0] / "folder").exists(), "the game's folder is not copied")
         check(smp.console.calls.count("/api/v1/scan") >= 1, "ShadowMountPlus was asked to scan")
         h.rows("REFRESHSTATE", "seen")
         check(refresh_state()[3] == "0", "REFRESHSTATE seen: shown")
         check("\t0\t" in (base / "data/artswap/refresh.txt").read_text(), "refresh.txt keeps it as seen")
 
-        # an uninstall that eats a save: it is put back, and the refresh says so
+        # an uninstall that eats a save of the folder: the refresh says so (there is no copy to put back)
         smp.console.eat = "userdata/card.gci"
         time.sleep(1.1)
         h.rows("REFRESH", "PPSA99314", "0")
         state = refresh_until_end()
         smp.console.eat = ""
-        check(state[1] == "failed" and "changed" in state[4], f"a lost save is reported ({state[4]})")
-        check(save.exists() and sha(save) == save_sha, "the lost save is copied back")
-        check(len(list((base / "data/artswap/saves").glob("PPSA99314-*"))) == 2,
-              "a copy that had to be used is kept")
+        check(state[1] == "failed" and "folder changed" in state[4], f"a lost save of the folder is reported ({state[4]})")
+        check(not save.exists(), "the folder's save is not made up")
+        save.write_bytes(original_save)
+
+        # one that eats the system's saved data: it is put back, and the refresh says so
+        smp.console.eat = "../../../user/home/1000/savedata_prospero/PPSA99314/sdimg_SAVE0"
+        time.sleep(1.1)
+        h.rows("REFRESH", "PPSA99314", "0")
+        state = refresh_until_end()
+        smp.console.eat = ""
+        check(state[1] == "failed" and "saved data changed" in state[4], f"lost saved data is reported ({state[4]})")
+        check(sysave.exists() and sha(sysave) == sysave_sha, "the lost saved data is copied back")
+        check(len(list((base / "data/artswap/saves").glob("PPSA99314-*"))) == 3,
+              "the copies of failed refreshes are kept")
 
         # restore; a copy without its .old takes the folder's original
         Path(str(base / "user/appmeta/PPSA99314/pic0.dds") + ".old").unlink()

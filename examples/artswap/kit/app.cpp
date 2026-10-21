@@ -911,12 +911,12 @@ void App::open_refresh()
     }, true);
 }
 
-// The helper copies the game's files aside, then waits for the console to be free:
-// Art Swap closes once the copy is whole, and the helper carries on from the home screen
+// The helper notes the game's files and copies its saved data aside, then waits for the console to be free:
+// Art Swap closes once that is done, and the helper carries on from the home screen
 void App::start_refresh()
 {
     refresh_ = Refresh::starting;
-    refresh_step_ = "Copying the game's files aside";
+    refresh_step_ = "Checking the game's files";
     const std::string id = refresh_id_;
     helper_.ask({"REFRESH", id, "120"}, [this, id](Reply &reply) {
         if (sheet_ != Sheet::refresh || refresh_id_ != id)
@@ -958,7 +958,7 @@ void App::poll_refresh(float dt)
                 }
                 else if (phase != "copying")
                 {
-                    // the files are kept aside: the helper waits for Art Swap to close
+                    // the files are noted: the helper waits for Art Swap to close
                     refresh_step_ = "Closing Art Swap";
                     refresh_polling_ = false;
                     close_ = true;
@@ -2066,8 +2066,8 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         }
         y += 14;
         // saved data: what the refresh does to keep it, in a box as tall as its lines
-        const std::string kept = "Nothing is deleted: the game's folder stays where it is. Art Swap copies its saves "
-                                 "and settings aside first, then checks every file and puts back anything missing.";
+        const std::string kept = "Nothing is deleted: the game's folder, with its saves and settings, stays where it "
+                                 "is. Art Swap notes every file first and checks them all afterwards.";
         const float kept_lines =
             static_cast<float>(std::min<std::size_t>(fonts_.regular.font->wrap(kept, 22, width - 40).size(), 3));
         const Rect safe{x - 4, y - 8, width + 8, 78 + 32 * (kept_lines - 1) + 38};
