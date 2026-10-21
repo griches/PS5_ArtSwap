@@ -81,6 +81,8 @@ class App
         starting,
         library,
         picker,
+        settings, // full page: a rail of categories, a panel (settings.cpp)
+        connect,  // full page: adding the SteamGridDB key, the QR code showing (settings.cpp)
     };
     enum class Sheet
     {
@@ -88,11 +90,8 @@ class App
         confirm,
         working,
         search,
-        settings,
         log,
         restore,
-        phone,
-        key_needed,
     };
 
     // ---- the titles ----
@@ -100,6 +99,7 @@ class App
     void request_icon(Title &title);
     void request_background(Title &title);
     Title *focused_title();
+    int kept_count() const; // games whose art Art Swap changed (originals kept)
     const Title *focused_title() const;
 
     // ---- the picker ----
@@ -119,10 +119,19 @@ class App
     void restore();
     void open_search(const std::string &term);
     void choose_game(int row);
+    // ---- settings and adding the key: full pages (settings.cpp) ----
     void open_settings();
-    void settings_action(hui::ui::Feedback &feedback);
-    void open_phone();
+    void update_settings(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
+    void settings_select(hui::ui::Feedback &feedback);
+    void draw_settings(hui::gfx::DrawList &list) const;
+    hui::gfx::Rect settings_rail_rect(int category) const;
+    hui::gfx::Rect settings_row_rect(int category, int row) const;
+    int settings_rows(int category) const;
+    void open_connect(const std::string &slot);
+    void update_connect(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
+    void draw_connect(hui::gfx::DrawList &list) const;
     void close_phone();
+    void leave_connect();
     void key_added(const std::string &how);
     // ✕ or △ on a title: the picker, or first the explanation when there is no key
     void want_picker(const std::string &slot, hui::ui::Feedback &feedback);
@@ -224,12 +233,23 @@ class App
     hui::tween::Spring sheet_focus_position_;
     std::string working_text_;
     std::string log_text_;
-    std::string pairing_code_; // the phone sheet's code, new each time it opens
+    std::string pairing_code_;  // the connect page's code, new each time it opens
     std::string phone_address_; // where the key page is, as the helper said
     std::string phone_error_;
     float phone_poll_ = 0.0f;
-    Sheet phone_back_ = Sheet::settings; // where ○ goes from the phone sheet
     bool phone_asking_ = false;
+    Screen connect_back_ = Screen::library; // where the connect page returns to
+    int connect_row_ = 0;
+    float page_age_ = 0.0f; // seconds since a full page (or its category) came in
+
+    // the settings page
+    Screen settings_back_ = Screen::library;
+    int settings_category_ = 0;
+    bool settings_in_rows_ = false;
+    int settings_row_[3] = {0, 0, 0};
+    hui::ui::SpringRect page_focus_; // the one focus of a full page
+    hui::tween::Spring rail_marker_; // the active category's plate on the rail
+    float remove_armed_ = 0.0f;      // Remove the key: a second ✕ within this many seconds removes it
     std::string key_state_; // user or none: the helper's answer, then each change
     std::string key_hint_;  // the key's last four characters
     bool key_explained_ = false; // the explanation has shown once this run

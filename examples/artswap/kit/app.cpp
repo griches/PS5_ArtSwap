@@ -178,58 +178,6 @@ void palette_of(const Picture &p, Color &dark, Color &mid, Color &accent)
     accent = best > 30.0f ? vivid : Color::rgb(0x9fd8ff);
 }
 
-// The small pictures beside settings and choices, drawn with the kit's shapes
-enum class Glyph
-{
-    phone,
-    keyboard,
-    trash,
-    refresh,
-    log,
-    later,
-};
-
-void draw_glyph(gfx::DrawList &list, Glyph glyph, const Rect &box, Color ink)
-{
-    const float cx = box.cx(), cy = box.cy();
-    const Color clear = ink.with_alpha(0.0f);
-    switch (glyph)
-    {
-    case Glyph::phone:
-        list.bordered_rect({cx - 10, cy - 16, 20, 32}, 5, clear, 2.6f, ink);
-        list.line(cx - 4, cy + 10, cx + 4, cy + 10, 2.4f, ink);
-        break;
-    case Glyph::keyboard:
-        list.bordered_rect({cx - 17, cy - 11, 34, 22}, 5, clear, 2.6f, ink);
-        for (int row = 0; row < 2; ++row)
-            for (int col = 0; col < 4; ++col)
-                list.circle(cx - 10.5f + col * 7.0f, cy - 4.5f + row * 6.0f, 1.6f, ink);
-        list.line(cx - 7, cy + 6.5f, cx + 7, cy + 6.5f, 2.2f, ink);
-        break;
-    case Glyph::trash:
-        list.line(cx - 13, cy - 10, cx + 13, cy - 10, 2.6f, ink);
-        list.line(cx - 4, cy - 14, cx + 4, cy - 14, 2.6f, ink);
-        list.bordered_rect({cx - 9, cy - 7, 18, 22}, 4, clear, 2.6f, ink);
-        list.line(cx - 3, cy - 2, cx - 3, cy + 10, 2.2f, ink);
-        list.line(cx + 3, cy - 2, cx + 3, cy + 10, 2.2f, ink);
-        break;
-    case Glyph::refresh:
-        list.arc(cx, cy, 14, 2.8f, 0.9f, 5.0f, ink);
-        list.triangle({cx + 4, cy - 19, 11, 11}, ink, 0.0f, 1.5708f);
-        break;
-    case Glyph::log:
-        list.bordered_rect({cx - 12, cy - 15, 24, 30}, 4, clear, 2.6f, ink);
-        for (int i = 0; i < 3; ++i)
-            list.line(cx - 6, cy - 6 + i * 6.5f, cx + (i == 2 ? 2.0f : 6.0f), cy - 6 + i * 6.5f, 2.2f, ink);
-        break;
-    case Glyph::later:
-        list.ring(cx, cy, 14, 2.6f, ink);
-        list.line(cx, cy - 7, cx, cy + 1, 2.4f, ink);
-        list.line(cx, cy + 1, cx + 6, cy + 5, 2.4f, ink);
-        break;
-    }
-}
-
 } // namespace
 
 struct App::Title
@@ -326,6 +274,14 @@ App::Title *App::focused_title()
     return titles_[static_cast<std::size_t>(focus_)].get();
 }
 
+int App::kept_count() const
+{
+    int kept = 0;
+    for (const auto &title : titles_)
+        kept += title->kept;
+    return kept;
+}
+
 const App::Title *App::focused_title() const
 {
     if (focus_ < 0 || focus_ >= static_cast<int>(titles_.size()))
@@ -412,12 +368,10 @@ void App::load_titles(bool rescan)
                     request_icon(*titles_[static_cast<std::size_t>(i)]);
             }
         ring_.snap(card_rect(focus_, true));
-        if (key_state_ == "none" && !key_explained_ && sheet_ == Sheet::none)
+        if (key_state_ == "none" && !key_explained_ && sheet_ == Sheet::none && screen_ == Screen::library)
         {
             key_explained_ = true;
-            sheet_ = Sheet::key_needed;
-            sheet_focus_ = 0;
-            sheet_focus_position_.snap(0.0f);
+            open_connect("");
         }
     }, true);
 }
@@ -972,126 +926,6 @@ void App::type_key()
         toast("The keyboard did not open", "", true);
 }
 
-void App::open_settings()
-{
-    sheet_ = Sheet::settings;
-    sheet_focus_ = 0;
-    sheet_focus_position_.snap(0.0f);
-}
-
-void App::settings_action(ui::Feedback &feedback)
-{
-    switch (sheet_focus_)
-    {
-    case 0:
-        feedback.play(Cue::modal_open);
-        open_phone();
-        return;
-    case 1:
-        type_key();
-        break;
-    case 2:
-        if (key_state_ != "user")
-        {
-            feedback.play(Cue::error);
-            return;
-        }
-        helper_.ask({"KEY", ""}, [this](Reply &reply) {
-            if (reply.ok)
-            {
-                key_state_ = "none";
-                key_hint_.clear();
-                toast("Your SteamGridDB key is removed", "Add one again to find new art.");
-            }
-            else
-                toast("The key was not removed", reply.error, true);
-        }, true);
-        break;
-    case 3:
-        load_titles(true);
-        toast("Refreshing the game list", "");
-        sheet_ = Sheet::none;
-        break;
-    case 4:
-        sheet_ = Sheet::log;
-        log_text_ = "Reading the helper's log\xE2\x80\xA6";
-        helper_.ask({"LOG"}, [this](Reply &reply) { log_text_ = reply.ok ? reply.text : reply.error; }, true);
-        break;
-    default:
-        break;
-    }
-    feedback.play(Cue::select);
-}
-
-void App::open_phone()
-{
-    // a code the phone's page must send back, so only someone who can see the TV sets the key
-    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    char code[8];
-    std::snprintf(code, sizeof(code), "%04d", static_cast<int>((now / 7919) % 9000 + 1000));
-    pairing_code_ = code;
-    phone_address_.clear();
-    phone_error_.clear();
-    phone_poll_ = 1.0f;
-    phone_back_ = sheet_ == Sheet::key_needed ? Sheet::key_needed : Sheet::settings;
-    sheet_ = Sheet::phone;
-    helper_.ask({"PHONE", pairing_code_}, [this](Reply &reply) {
-        if (!reply.ok)
-        {
-            phone_error_ = reply.error;
-            return;
-        }
-        std::string lan, port = "9118";
-        for (const auto &row : reply.rows())
-        {
-            if (row.size() >= 2 && row[0] == "lan")
-                lan = row[1];
-            if (row.size() >= 2 && row[0] == "port")
-                port = row[1];
-        }
-        if (lan.empty())
-            phone_error_ = "The console has no network address, so a phone cannot reach it. Type the key instead.";
-        else
-            phone_address_ = lan + ":" + port;
-    }, true);
-}
-
-void App::close_phone()
-{
-    helper_.ask({"PHONE"}, nullptr, true);
-}
-
-void App::key_added(const std::string &how)
-{
-    key_state_ = "user";
-    // its last four characters, for the settings
-    helper_.ask({"KEYSTATE"}, [this](Reply &reply) {
-        for (const auto &row : reply.rows())
-            if (row.size() >= 3 && row[0] == "key")
-                key_hint_ = row[2];
-    }, true);
-    sheet_ = Sheet::none;
-    toast("Your SteamGridDB key is in", how + " Art Swap uses it from now on.");
-    if (!pending_slot_.empty() && screen_ == Screen::library && focused_title())
-        open_picker(focus_, pending_slot_);
-    pending_slot_.clear();
-}
-
-void App::want_picker(const std::string &slot, ui::Feedback &feedback)
-{
-    if (key_state_ != "user")
-    {
-        pending_slot_ = slot;
-        sheet_ = Sheet::key_needed;
-        sheet_focus_ = 0;
-        sheet_focus_position_.snap(0.0f);
-        feedback.play(Cue::modal_open);
-        return;
-    }
-    feedback.play(Cue::open);
-    open_picker(focus_, slot);
-}
-
 // ---------------------------------------------------------------- update
 
 void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
@@ -1118,33 +952,23 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
     if (!input.is_held(Action::menu) && !input.is_pressed(Action::menu))
         menu_held_ = -1.0f;
 
+    page_age_ += dt;
     if (sheet_ != Sheet::none)
         update_sheet(input, feedback);
     else if (screen_ == Screen::starting)
         update_starting(input, feedback);
     else if (screen_ == Screen::library)
         update_library(input, dt, feedback);
-    else
+    else if (screen_ == Screen::picker)
         update_picker(input, dt, feedback);
-    if (menu_tap && sheet_ == Sheet::none && screen_ != Screen::starting)
+    else if (screen_ == Screen::settings)
+        update_settings(input, dt, feedback);
+    else
+        update_connect(input, dt, feedback);
+    if (menu_tap && sheet_ == Sheet::none && (screen_ == Screen::library || screen_ == Screen::picker))
     {
         open_settings();
-        feedback.play(Cue::modal_open);
-    }
-
-    // the phone sheet: has the key page taken a key?
-    if (sheet_ == Sheet::phone && !phone_address_.empty() && !phone_asking_ && (phone_poll_ -= dt) <= 0.0f)
-    {
-        phone_poll_ = 1.0f;
-        phone_asking_ = true;
-        helper_.ask({"KEYSTATE"}, [this](Reply &reply) {
-            phone_asking_ = false;
-            if (!reply.ok || sheet_ != Sheet::phone)
-                return;
-            for (const auto &row : reply.rows())
-                if (row.size() >= 2 && row[0] == "key" && row[1] == "user")
-                    key_added("Your phone sent it and SteamGridDB accepted it.");
-        }, true);
+        feedback.play(Cue::open);
     }
 
     // ---- animation ----
@@ -1427,30 +1251,14 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
         if (input.is_pressed(Action::back) || input.is_pressed(Action::confirm))
         {
             feedback.play(Cue::back);
-            sheet_ = Sheet::settings;
-        }
-        return;
-    case Sheet::phone:
-        if (input.is_pressed(Action::back))
-        {
-            feedback.play(Cue::back);
-            close_phone();
-            sheet_ = phone_back_;
-        }
-        else if (input.is_pressed(Action::west))
-        {
-            feedback.play(Cue::select);
-            close_phone();
-            type_key();
+            sheet_ = Sheet::none;
         }
         return;
     default:
         break;
     }
-    // the lists: search results, settings
-    const int rows = sheet_ == Sheet::search       ? 1 + static_cast<int>(results_.size())
-                     : sheet_ == Sheet::key_needed ? 3
-                                                   : 5;
+    // the search results
+    const int rows = 1 + static_cast<int>(results_.size());
     if (input.nav == Direction::up || input.nav == Direction::down)
     {
         const int next = std::clamp(sheet_focus_ + (input.nav == Direction::down ? 1 : -1), 0, rows - 1);
@@ -1469,32 +1277,13 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
         pending_slot_.clear();
         return;
     }
-    if (input.is_pressed(Action::confirm) && sheet_ == Sheet::key_needed)
+    if (input.is_pressed(Action::confirm))
     {
         feedback.play(Cue::select);
         if (sheet_focus_ == 0)
-            open_phone();
-        else if (sheet_focus_ == 1)
-            type_key();
+            type_search();
         else
-        {
-            sheet_ = Sheet::none;
-            pending_slot_.clear();
-        }
-        return;
-    }
-    if (input.is_pressed(Action::confirm))
-    {
-        if (sheet_ == Sheet::search)
-        {
-            feedback.play(Cue::select);
-            if (sheet_focus_ == 0)
-                type_search();
-            else
-                choose_game(sheet_focus_);
-        }
-        else
-            settings_action(feedback);
+            choose_game(sheet_focus_);
     }
 }
 
@@ -1542,6 +1331,10 @@ void App::draw(hui::app::Frame &frame) const
     list.push_transform(1.0f - 0.03f * back, 960, 540, 0, 0);
     if (screen_ == Screen::starting)
         draw_starting(list);
+    else if (screen_ == Screen::settings)
+        draw_settings(list);
+    else if (screen_ == Screen::connect)
+        draw_connect(list);
     else
     {
         draw_top_bar(list);
@@ -1563,6 +1356,16 @@ void App::draw(hui::app::Frame &frame) const
 
 void App::draw_backdrop(hui::app::Frame &frame) const
 {
+    if (screen_ == Screen::settings || screen_ == Screen::connect)
+    {
+        // a quiet dot field in the app's own indigo, whatever game is in focus
+        frame.backdrop.mode = gfx::BackdropMode::dots;
+        frame.backdrop.colors[0] = Color::rgb(0x090a18);
+        frame.backdrop.colors[1] = Color::rgb(0x151536);
+        frame.backdrop.colors[2] = Color::rgb(0x5a4fc8);
+        frame.backdrop.time = clock_;
+        return;
+    }
     frame.backdrop.mode = gfx::BackdropMode::aurora;
     for (int i = 0; i < 4; ++i)
         frame.backdrop.colors[i] = palette_[i].value();
@@ -1950,17 +1753,14 @@ void App::draw_picker(gfx::DrawList &list) const
 void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
 {
     const float t = sheet_open_.value;
-    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::log || sheet_ == Sheet::phone;
-    const float h = sheet_ == Sheet::settings     ? 850.0f
-                    : sheet_ == Sheet::key_needed ? 836.0f
-                    : tall                        ? 760.0f
-                                                  : 470.0f;
+    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::log;
+    const float h = tall ? 760.0f : 470.0f;
     const Rect panel{360, (1080 - h) * 0.5f + 40.0f * (1.0f - t), 1200, h};
     list.push_opacity(tween::clamp01(t * 1.4f));
     list.shadow({panel.x, panel.y + 20, panel.w, panel.h}, 44, 60, Color::rgb(0x000000, 0.5f));
-    list.glass(glass, panel, 44, kWhite);
-    list.rounded_rect(panel, 44, gfx::mix(palette_[1].value(), kInk, 0.55f).with_alpha(0.74f));
-    list.bordered_rect(panel, 44, Color::rgb(0x000000, 0.0f), 1.5f, kWhite.with_alpha(0.22f));
+    list.glass(glass, panel, 28, kWhite);
+    list.gradient_rect(panel, 28, Color::rgb(0x191a36, 0.9f), Color::rgb(0x0f1024, 0.94f));
+    list.bordered_rect(panel, 28, Color::rgb(0x000000, 0.0f), 1.5f, kWhite.with_alpha(0.1f));
     const float x = panel.x + 64;
     float y = panel.y + 92;
     const Title *title = screen_ == Screen::picker && picker_title_ >= 0
@@ -1987,84 +1787,6 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                      ry + 39, 22, f ? kInk.with_alpha(0.7f) : kWhite.with_alpha(0.6f), gfx::Align::right);
         }
         y += row_h * items.size();
-    };
-
-    struct Option
-    {
-        Glyph glyph;
-        std::string title, detail, value;
-        bool enabled = true;
-        bool opens = true; // leads to another screen: a chevron
-    };
-    struct Section
-    {
-        std::string label;
-        std::vector<Option> options;
-    };
-    // Rows in sections; focus counts across them, position is its spring
-    auto options = [&](const std::vector<Section> &sections, int focus, float position) {
-        const float row_h = 84, gap = 6, width = panel.w - 128;
-        std::vector<float> tops;
-        float cy = y;
-        for (const Section &section : sections)
-        {
-            if (!section.label.empty())
-                cy += 40;
-            for (std::size_t i = 0; i < section.options.size(); ++i)
-            {
-                tops.push_back(cy);
-                cy += row_h + gap;
-            }
-        }
-        if (tops.empty())
-            return;
-        // the highlight glides between rows, across the section labels
-        const int lo = std::clamp(static_cast<int>(std::floor(position)), 0, static_cast<int>(tops.size()) - 1);
-        const int hi = std::min(lo + 1, static_cast<int>(tops.size()) - 1);
-        const float f = std::clamp(position - static_cast<float>(lo), 0.0f, 1.0f);
-        const float hy = tops[static_cast<std::size_t>(lo)] +
-                         (tops[static_cast<std::size_t>(hi)] - tops[static_cast<std::size_t>(lo)]) * f;
-        list.glow({x - 22, hy, width + 44, row_h}, 26, 18, accent.with_alpha(0.25f));
-        list.rounded_rect({x - 22, hy, width + 44, row_h}, 26, kWhite);
-        int index = 0;
-        float sy = y;
-        for (const Section &section : sections)
-        {
-            if (!section.label.empty())
-            {
-                ui::text(list, fonts_.semibold, section.label, x, sy + 26, 16, kWhite.with_alpha(0.5f),
-                         gfx::Align::left, 3.0f);
-                sy += 40;
-            }
-            for (const Option &o : section.options)
-            {
-                const bool on = index == focus;
-                list.push_opacity(o.enabled ? 1.0f : 0.4f);
-                const Rect tile{x - 4, sy + 14, 56, 56};
-                list.rounded_rect(tile, 16, on ? accent.with_alpha(0.22f) : kWhite.with_alpha(0.08f));
-                draw_glyph(list, o.glyph, tile, on ? kInk : kWhite.with_alpha(0.9f));
-                const float tx = x + 76;
-                const float value_w = o.value.empty() ? 0.0f : fonts_.regular.measure(o.value, 21) + 30;
-                ui::text(list, fonts_.semibold, fonts_.semibold.font->fit(o.title, 25, width - 130 - value_w), tx,
-                         sy + 38, 25, on ? kInk : kWhite);
-                ui::text(list, fonts_.regular, fonts_.regular.font->fit(o.detail, 19, width - 130 - value_w), tx,
-                         sy + 66, 19, on ? kInk.with_alpha(0.62f) : kWhite.with_alpha(0.55f));
-                if (!o.value.empty())
-                    ui::text(list, fonts_.regular, o.value, x + width - (o.opens ? 34.0f : 0.0f), sy + 50, 21,
-                             on ? kInk.with_alpha(0.7f) : kWhite.with_alpha(0.6f), gfx::Align::right);
-                if (o.opens)
-                {
-                    // a chevron: this row leads to another screen
-                    const Color chev = on ? kInk.with_alpha(0.7f) : kWhite.with_alpha(0.35f);
-                    list.line(x + width - 8, sy + 35, x + width + 1, sy + 42, 2.6f, chev);
-                    list.line(x + width + 1, sy + 42, x + width - 8, sy + 49, 2.6f, chev);
-                }
-                list.pop_opacity();
-                sy += row_h + gap;
-                ++index;
-            }
-        }
-        y = sy;
     };
 
     switch (sheet_)
@@ -2122,118 +1844,6 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         }
         else if (!search_error_.empty())
             ui::text(list, fonts_.regular, search_error_, x, y + 50, 24, kAmber);
-        break;
-    }
-    case Sheet::settings:
-    {
-        heading("SETTINGS", "Art Swap");
-        // the key's state, as a chip beside the title
-        const bool have = key_state_ == "user";
-        const std::string state = have ? (key_hint_.empty() ? "Key added" : "Key added  \xC2\xB7  ends in " + key_hint_)
-                                       : "No key yet";
-        const float cw = fonts_.semibold.measure(state, 20) + 62;
-        const Rect chip{panel.x + panel.w - 64 - cw, panel.y + 112, cw, 44};
-        const Color tone = have ? Color::rgb(0x30d080) : kAmber;
-        list.rounded_rect(chip, 22, tone.with_alpha(0.14f));
-        list.bordered_rect(chip, 22, Color::rgb(0x000000, 0.0f), 1.5f, tone.with_alpha(0.6f));
-        list.circle(chip.x + 24, chip.cy(), 6, tone);
-        ui::text(list, fonts_.semibold, state, chip.x + 42, chip.cy() + 7, 20, kWhite);
-        y -= 20;
-        options({{"STEAMGRIDDB KEY",
-                  {{Glyph::phone, "Add your key from your phone", "Scan a code on the TV, then paste the key on your phone",
-                    "QR code"},
-                   {Glyph::keyboard, have ? "Type a new key" : "Type your key", "With the console's keyboard: 32 letters and numbers"},
-                   {Glyph::trash, "Remove your key", "Art Swap stops asking SteamGridDB until you add one", "", have, false}}},
-                 {"GAMES",
-                  {{Glyph::refresh, "Refresh game list",
-                    "Find games, apps and homebrew installed since Art Swap opened",
-                    std::to_string(titles_.size()) + (titles_.size() == 1 ? " game" : " games"), true, false}}},
-                 {"HELP", {{Glyph::log, "Helper log", "What Art Swap's helper did, for a problem report"}}}},
-                sheet_focus_, sheet_focus_position_.value);
-        ui::text(list, fonts_.regular,
-                 "Art Swap " + std::string(kVersion) + "  \xC2\xB7  helper " + kHelperVersion + "  \xC2\xB7  network " +
-                     (helper_.backend().empty() ? "?" : helper_.backend()),
-                 x, panel.y + panel.h - 40, 19, kWhite.with_alpha(0.4f));
-        break;
-    }
-    case Sheet::key_needed:
-    {
-        heading("BEFORE YOU START", "Add your SteamGridDB key");
-        ui::paragraph(list, fonts_.regular,
-                      "Art Swap finds new icons and backgrounds on SteamGridDB, a free site where people share game "
-                      "art. SteamGridDB asks everyone who uses it through an app for an API key of their own. "
-                      "It is free and takes a minute:",
-                      x, y - 8, 25, panel.w - 128, 37, kWhite.with_alpha(0.85f), 4);
-        y += 128;
-        const char *steps[] = {"Sign in, or make a free account, at steamgriddb.com",
-                               "Open Preferences, then API, and copy your key",
-                               "Add it here: from your phone is quickest"};
-        for (int i = 0; i < 3; ++i)
-        {
-            list.circle(x + 18, y - 8, 18, accent.with_alpha(0.9f));
-            ui::text(list, fonts_.semibold, std::to_string(i + 1), x + 18, y, 20, kInk, gfx::Align::center);
-            ui::text(list, fonts_.semibold, steps[i], x + 54, y, 24, kWhite);
-            y += 48;
-        }
-        options({{"", {{Glyph::phone, "Add it from your phone", "Scan a code on the TV, then paste the key on your phone",
-                        "quickest"},
-                       {Glyph::keyboard, "Type it with the keyboard", "32 letters and numbers"},
-                       {Glyph::later, "Not now", "Look around first: changing art asks again", "", true, false}}}},
-                sheet_focus_, sheet_focus_position_.value);
-        ui::text(list, fonts_.regular,
-                 "Without a key you can still look through your games and put back their original art.", x,
-                 panel.y + panel.h - 44, 21, kWhite.with_alpha(0.55f));
-        break;
-    }
-    case Sheet::phone:
-    {
-        heading("YOUR OWN API KEY", "From your phone");
-        if (!phone_error_.empty())
-        {
-            ui::paragraph(list, fonts_.regular, phone_error_, x, y + 10, 26, panel.w - 128, 40, kAmber, 4);
-            break;
-        }
-        if (phone_address_.empty())
-        {
-            draw_spinner(list, x + 20, y + 20, 16);
-            ui::text(list, fonts_.regular, "Opening the key page\xE2\x80\xA6", x + 58, y + 30, 24, kWhite.with_alpha(0.8f));
-            break;
-        }
-        const std::string address = phone_address_;
-        const std::string url = "http://" + address + "/" + pairing_code_;
-        // the QR code, on a white plate with its quiet zone
-        const qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(url.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
-        const float plate = 340.0f;
-        const Rect code{panel.x + panel.w - 64 - plate, y - 6, plate, plate};
-        list.rounded_rect(code, 24, kWhite);
-        const float cell = (plate - 48.0f) / static_cast<float>(qr.getSize());
-        for (int my = 0; my < qr.getSize(); ++my)
-            for (int mx = 0; mx < qr.getSize(); ++mx)
-                if (qr.getModule(mx, my))
-                    list.rounded_rect({code.x + 24 + mx * cell, code.y + 24 + my * cell, cell + 0.6f, cell + 0.6f}, 0,
-                                      kInk);
-        // the steps
-        const float width = panel.w - 128 - plate - 48;
-        auto step = [&](int n, const std::string &title, const std::string &detail) {
-            list.circle(x + 20, y - 9, 20, accent.with_alpha(0.9f));
-            ui::text(list, fonts_.semibold, std::to_string(n), x + 20, y, 22, kInk, gfx::Align::center);
-            ui::text(list, fonts_.semibold, title, x + 58, y, 26, kWhite);
-            const float after = ui::paragraph(list, fonts_.regular, detail, x + 58, y + 38, 22, width - 58, 32,
-                                              kWhite.with_alpha(0.72f), 3);
-            y = after + 30;
-        };
-        step(1, "Scan the code with your phone", "Your phone opens Art Swap's key page on this console.");
-        step(2, "Or type the address", "http://" + address + " and the code " + pairing_code_ +
-                                         ", on a phone or computer on the same network.");
-        step(3, "Paste your key, then Save", "Get it at steamgriddb.com: sign in, Preferences, API.");
-        // the code, large, for typing
-        ui::text(list, fonts_.semibold, "CODE", code.x, code.y + code.h + 46, 17, kWhite.with_alpha(0.6f),
-                 gfx::Align::left, 3.0f);
-        ui::text(list, fonts_.display, pairing_code_, code.x + 70, code.y + code.h + 54, 44, kWhite, gfx::Align::left,
-                 10.0f);
-        draw_spinner(list, x + 20, panel.y + panel.h - 66, 16);
-        ui::text(list, fonts_.regular, "Waiting for your phone\xE2\x80\xA6", x + 58, panel.y + panel.h - 58, 24,
-                 kWhite.with_alpha(0.85f));
         break;
     }
     case Sheet::log:
@@ -2300,14 +1910,10 @@ void App::draw_hints(gfx::DrawList &list) const
                  {ui::Button::circle, "Cancel"}};
     else if (sheet_ == Sheet::restore)
         hints = {{ui::Button::cross, "Restore"}, {ui::Button::circle, "Cancel"}};
-    else if (sheet_ == Sheet::search || sheet_ == Sheet::settings)
+    else if (sheet_ == Sheet::search)
         hints = {{ui::Button::cross, "Choose"}, {ui::Button::circle, "Back"}};
     else if (sheet_ == Sheet::log)
         hints = {{ui::Button::circle, "Back"}};
-    else if (sheet_ == Sheet::phone)
-        hints = {{ui::Button::square, "Type it instead"}, {ui::Button::circle, "Back"}};
-    else if (sheet_ == Sheet::key_needed)
-        hints = {{ui::Button::cross, "Choose"}, {ui::Button::circle, "Not now"}};
     else if (sheet_ == Sheet::working)
         hints = {};
     else if (screen_ == Screen::starting)
@@ -2315,6 +1921,16 @@ void App::draw_hints(gfx::DrawList &list) const
         if (helper_.state() == Helper::State::failed)
             hints = {{ui::Button::cross, "Try again"}};
     }
+    else if (screen_ == Screen::settings)
+    {
+        if (settings_in_rows_)
+            hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Select"}, {ui::Button::circle, "Back"}};
+        else
+            hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Open"}, {ui::Button::circle, "Close"}};
+    }
+    else if (screen_ == Screen::connect)
+        hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Select"},
+                 {ui::Button::circle, connect_back_ == Screen::settings ? "Back" : "Not now"}};
     else if (screen_ == Screen::library)
     {
         const Title *title = focused_title();

@@ -29,7 +29,8 @@ make -s -C "$root/helper" host HOST_OUT="$work/helper" >/dev/null
 # the preview: the kit without its console layer, entry point and OpenGL backend
 sources=("$root/tools/preview/preview_main.cpp" "$root/tools/preview/platform_host.cpp"
     "$root/examples/artswap/kit/app.cpp" "$root/examples/artswap/kit/helper_client.cpp"
-    "$root/examples/artswap/kit/keyboard.cpp" "$root/examples/artswap/kit/qrcodegen.cpp")
+    "$root/examples/artswap/kit/keyboard.cpp" "$root/examples/artswap/kit/qrcodegen.cpp"
+    "$root/examples/artswap/kit/settings.cpp")
 while IFS= read -r -d '' source; do
     sources+=("$source")
 done < <(find "$kit/src" -type f \( -name '*.cpp' -o -name '*.c' \) ! -path "$kit/src/platform/*" \
