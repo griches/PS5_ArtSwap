@@ -316,7 +316,7 @@ static void list_folder(const char *folder)
     while ((e = readdir(dir)) != NULL) {
         if (e->d_name[0] == '.')
             continue;
-        char path[640];
+        char path[800];
         snprintf(path, sizeof(path), "%s/%s", real, e->d_name);
         struct stat st;
         if (stat(path, &st) == 0)
