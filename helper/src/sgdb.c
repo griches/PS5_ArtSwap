@@ -128,51 +128,67 @@ bool sgdb_list(long game, const char *kind, int page, buf_t *out, char *err, siz
         {"square", "grids", "dimensions=512x512,1024x1024&mimes=image/png,image/jpeg", 0},
         {"covers", "grids", "dimensions=600x900,660x930,342x482&mimes=image/png,image/jpeg", 0},
         {"wide", "grids", "dimensions=920x430,460x215&mimes=image/png,image/jpeg", 0},
-        {"heroes", "heroes", "mimes=image/png,image/jpeg", 0},
+        /* the sharpest first: 3840x1240, then 1920x620 and 1600x650 (a background is 3840x2160) */
+        {"heroes", "heroes", "dimensions=3840x1240&mimes=image/png,image/jpeg", 0},
+        {"heroes", "heroes", "dimensions=1920x620,1600x650&mimes=image/png,image/jpeg", 0},
         {"icons", "icons", "mimes=image/png", 192},
         {"logos", "logos", "mimes=image/png", 0},
     };
-    int k = -1;
-    for (int i = 0; i < (int)(sizeof(kinds) / sizeof(kinds[0])); i++)
-        if (strcmp(kind, kinds[i].kind) == 0)
-            k = i;
-    if (k < 0) {
+    /* a kind may be several queries, listed one after the other on each page */
+    cJSON *answers[2] = {NULL, NULL};
+    int queries = 0, from = -1;
+    double total = 0, limit = 0;
+    for (int i = 0; i < (int)(sizeof(kinds) / sizeof(kinds[0])) && queries < 2; i++) {
+        if (strcmp(kind, kinds[i].kind) != 0)
+            continue;
+        if (from < 0)
+            from = i;
+        char path[400];
+        snprintf(path, sizeof(path), "/%s/game/%ld?%s&types=static&nsfw=false&page=%d", kinds[i].endpoint, game,
+                 kinds[i].query, page);
+        cJSON *json = api_get(path, NULL, err, errlen);
+        if (json == NULL) {
+            cJSON_Delete(answers[0]);
+            return false;
+        }
+        total += json_number(json, "total");
+        limit += json_number(json, "limit");
+        answers[queries++] = json;
+    }
+    if (from < 0) {
         snprintf(err, errlen, "no kind of art called %s", kind);
         return false;
     }
-    char path[400];
-    snprintf(path, sizeof(path), "/%s/game/%ld?%s&types=static&nsfw=false&page=%d", kinds[k].endpoint, game,
-             kinds[k].query, page);
-    cJSON *json = api_get(path, NULL, err, errlen);
-    if (json == NULL)
-        return false;
-    buf_printf(out, "P\t%d\t%.0f\t%.0f\n", page, json_number(json, "total"), json_number(json, "limit"));
-    const cJSON *image;
+    const int k = from;
+    buf_printf(out, "P\t%d\t%.0f\t%.0f\n", page, total, limit);
     int hidden = 0;
-    cJSON_ArrayForEach(image, cJSON_GetObjectItemCaseSensitive(json, "data"))
-    {
-        const int w = (int)json_number(image, "width"), h = (int)json_number(image, "height");
-        if (w < kinds[k].min_side || h < kinds[k].min_side) {
-            hidden++;
-            continue;
+    for (int q = 0; q < queries; q++) {
+        const cJSON *image;
+        cJSON_ArrayForEach(image, cJSON_GetObjectItemCaseSensitive(answers[q], "data"))
+        {
+            const int w = (int)json_number(image, "width"), h = (int)json_number(image, "height");
+            if (w < kinds[k].min_side || h < kinds[k].min_side) {
+                hidden++;
+                continue;
+            }
+            const cJSON *style = cJSON_GetObjectItemCaseSensitive(image, "style");
+            const cJSON *author = cJSON_GetObjectItemCaseSensitive(image, "author");
+            buf_printf(out, "I\t%.0f\t", json_number(image, "id"));
+            buf_field(out, json_string(image, "url"));
+            buf_printf(out, "\t");
+            buf_field(out, json_string(image, "thumb"));
+            buf_printf(out, "\t%d\t%d\t", w, h);
+            buf_field(out, cJSON_IsString(style) ? style->valuestring : "");
+            buf_printf(out, "\t");
+            buf_field(out, author ? json_string(author, "name") : "");
+            buf_printf(out, "\t");
+            buf_field(out, json_string(image, "mime"));
+            buf_printf(out, "\n");
         }
-        const cJSON *style = cJSON_GetObjectItemCaseSensitive(image, "style");
-        const cJSON *author = cJSON_GetObjectItemCaseSensitive(image, "author");
-        buf_printf(out, "I\t%.0f\t", json_number(image, "id"));
-        buf_field(out, json_string(image, "url"));
-        buf_printf(out, "\t");
-        buf_field(out, json_string(image, "thumb"));
-        buf_printf(out, "\t%d\t%d\t", w, h);
-        buf_field(out, cJSON_IsString(style) ? style->valuestring : "");
-        buf_printf(out, "\t");
-        buf_field(out, author ? json_string(author, "name") : "");
-        buf_printf(out, "\t");
-        buf_field(out, json_string(image, "mime"));
-        buf_printf(out, "\n");
+        cJSON_Delete(answers[q]);
     }
     if (hidden)
         buf_printf(out, "H\t%d\n", hidden);
-    cJSON_Delete(json);
     return true;
 }
 

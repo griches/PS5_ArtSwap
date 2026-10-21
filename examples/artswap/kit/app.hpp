@@ -105,6 +105,7 @@ class App
         asking,   // what ShadowMountPlus can do for the title
         ready,    // it can: the steps, Refresh or Cancel
         unable,   // it cannot: why
+        naming,   // Rename: the keyboard is up for the new name
         starting, // the helper notes the game's files; then Art Swap closes
     };
 

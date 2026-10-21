@@ -74,6 +74,24 @@ const Kind kKinds[] = {
     {"Backgrounds", "pic", "heroes", 520, 168, false},
 };
 
+// The size in a slot's description ("dds-bc7 3840x2160 x4"), 0 when there is none
+void desc_size(const std::string &desc, int &w, int &h)
+{
+    w = h = 0;
+    std::size_t start = 0;
+    while (start < desc.size())
+    {
+        const std::size_t end = desc.find(' ', start);
+        const std::string word = desc.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (std::sscanf(word.c_str(), "%dx%d", &w, &h) == 2 && w > 0 && h > 0)
+            return;
+        w = h = 0;
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+}
+
 // A number for a request: three decimals, as the helper reads it
 std::string number(float value)
 {
@@ -1084,16 +1102,33 @@ void App::draw_frame(gfx::DrawList &list) const
     float y = fresh.y + fresh.h + 44;
     ui::text(list, fonts_.semibold, framing_label(), left, y, 23, kWhite);
     y += 34;
+    // how much of the picture is kept, and how far it is enlarged to the file's size
+    int file_w = 0, file_h = 0;
+    desc_size(icon ? title.icon_desc : title.pic_desc, file_w, file_h);
     char line[160];
+    float enlarged = 0.0f;
     if (framing_.fit)
+    {
         std::snprintf(line, sizeof(line), "%d\xC3\x97%d, all of it", pw, ph);
+        if (file_w > 0 && pw > 0 && ph > 0)
+            enlarged = std::min(static_cast<float>(file_w) / pw, static_cast<float>(file_h) / ph);
+    }
     else
     {
         const Rect uv = cover_uv(pw, ph, d, 1.0f, framing_.pan_x, framing_.pan_y, framing_.zoom);
-        std::snprintf(line, sizeof(line), "%d\xC3\x97%d of its %d\xC3\x97%d", static_cast<int>(std::lround(uv.w * pw)),
-                      static_cast<int>(std::lround(uv.h * ph)), pw, ph);
+        const int kw = static_cast<int>(std::lround(uv.w * pw)), kh = static_cast<int>(std::lround(uv.h * ph));
+        std::snprintf(line, sizeof(line), "%d\xC3\x97%d of its %d\xC3\x97%d", kw, kh, pw, ph);
+        if (file_w > 0 && kw > 0)
+            enlarged = static_cast<float>(file_w) / kw;
     }
     ui::text(list, fonts_.regular, line, left, y, 21, kWhite.with_alpha(0.65f));
+    if (enlarged > 1.05f)
+    {
+        char more[96];
+        std::snprintf(more, sizeof(more), "Enlarged %.1f\xC3\x97 to %d\xC3\x97%d%s", static_cast<double>(enlarged),
+                      file_w, file_h, enlarged > 2.5f ? ": it will look soft" : "");
+        ui::text(list, fonts_.regular, more, left, y + 30, 21, enlarged > 2.5f ? kAmber : kWhite.with_alpha(0.65f));
+    }
     list.pop_opacity();
 }
 
@@ -1223,11 +1258,10 @@ void App::open_refresh(bool rename)
             }
         }
         refresh_ = can ? Refresh::ready : Refresh::unable;
-        // Rename: the name to give it, then the refresh that shows it
+        // Rename: the keyboard over this sheet for the name, then the refresh that shows it
         if (can && renaming_)
         {
-            sheet_ = Sheet::none;
-            renaming_ = false;
+            refresh_ = Refresh::naming;
             type_name();
         }
     }, true);
@@ -1238,8 +1272,11 @@ void App::type_name()
     const Title *title = focused_title();
     if (title == nullptr)
         return;
+    const std::string id = title->id;
     if (keyboard_ == nullptr ||
-        !keyboard_->open("Name on the home screen", title->name, 127, [this](bool ok, std::string text) {
+        !keyboard_->open("Name on the home screen", title->name, 127, [this, id](bool ok, std::string text) {
+            if (sheet_ != Sheet::refresh || refresh_ != Refresh::naming || refresh_id_ != id)
+                return;
             const Title *now = focused_title();
             while (!text.empty() && text.back() == ' ')
                 text.pop_back();
@@ -1247,8 +1284,13 @@ void App::type_name()
                 text.erase(text.begin());
             if (ok && now && !text.empty() && text != now->name)
                 rename(text);
+            else
+                sheet_ = Sheet::none; // cancelled, or the same name
         }))
+    {
+        sheet_ = Sheet::none;
         toast("The keyboard did not open", "", true);
+    }
 }
 
 // The helper writes the name into the game's param.json; the home screen shows it once the game is
@@ -1260,8 +1302,11 @@ void App::rename(const std::string &name)
         return;
     const std::string id = title->id;
     helper_.ask({"RENAME", id, name}, [this, id, name](Reply &reply) {
+        const bool here = sheet_ == Sheet::refresh && refresh_id_ == id;
         if (!reply.ok)
         {
+            if (here)
+                sheet_ = Sheet::none;
             toast("The name was not changed", reply.error, true);
             return;
         }
@@ -1271,11 +1316,12 @@ void App::rename(const std::string &name)
                 t->name = name;
                 t->name_kept = true;
             }
-        const Title *now = focused_title();
-        if (now && now->id == id)
+        // the same sheet goes on to the refresh, which ShadowMountPlus has already said it can do
+        if (here)
         {
-            open_refresh();
+            renaming_ = false;
             renamed_to_ = name;
+            refresh_ = Refresh::ready;
         }
     }, true);
 }
@@ -1778,7 +1824,7 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
         }
         return;
     case Sheet::refresh:
-        if (refresh_ == Refresh::starting)
+        if (refresh_ == Refresh::starting || refresh_ == Refresh::naming)
             return;
         if (refresh_ == Refresh::ready && input.is_pressed(Action::confirm))
         {
@@ -2211,6 +2257,13 @@ void App::draw_picker(gfx::DrawList &list) const
                 ui::text(list, fonts_.regular, "no picture", r.cx(), r.cy() + 8, 18, kWhite.with_alpha(0.4f),
                          gfx::Align::center);
         }
+        // a background big enough for the console's 3840-wide one
+        if (!icon && art.w >= 3840)
+        {
+            const Rect tag{r.x + r.w - 54, r.y + 10, 44, 26};
+            list.rounded_rect(tag, 13, kNight.with_alpha(0.78f));
+            ui::text(list, fonts_.semibold, "4K", tag.cx(), tag.y + 19, 15, kWhite, gfx::Align::center);
+        }
     }
     if (!arts_.empty())
         list.bordered_rect(cell_ring_.value().inset(-5), 18, Color::rgb(0x000000, 0.0f), 4, kWhite);
@@ -2397,6 +2450,14 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                      kWhite.with_alpha(0.8f));
             break;
         }
+        if (refresh_ == Refresh::naming)
+        {
+            ui::paragraph(list, fonts_.regular,
+                          "Type the new name on the keyboard. It goes into the game's param.json, and the original is "
+                          "kept, so Restore can put it back.",
+                          x, y, 26, width, 40, kWhite.with_alpha(0.85f), 4);
+            break;
+        }
         if (refresh_ == Refresh::unable)
         {
             const std::string why = renaming_ ? "Art Swap renames games that ShadowMountPlus installed from a folder, "
@@ -2548,7 +2609,7 @@ void App::draw_hints(gfx::DrawList &list) const
     {
         if (refresh_ == Refresh::ready)
             hints = {{ui::Button::cross, "Refresh"}, {ui::Button::circle, "Cancel"}};
-        else if (refresh_ != Refresh::starting)
+        else if (refresh_ != Refresh::starting && refresh_ != Refresh::naming)
             hints = {{ui::Button::circle, "Back"}};
     }
     else if (sheet_ == Sheet::working)
