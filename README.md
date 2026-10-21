@@ -8,7 +8,7 @@ one on SteamGridDB, shows you that game's art, and writes the one you pick over
 the title's own `icon0` or `pic0`/`pic1`. The original is kept beside it as an
 `.old` file, so Restore can put it back.
 
-Title `PPSA99317`, version 0.1.0.
+Title `PPSA99318`, version 0.1.0.
 
 > **Status (2026-10-21): built but not yet run on a console.** The helper is
 > tested on a Mac against a made-up console and the real SteamGridDB
@@ -51,7 +51,7 @@ You need the console's homebrew environment running: etaHEN (or kstuff),
 ShadowMountPlus, and an **ELF loader on port 9021**. Art Swap starts its helper
 through that loader.
 
-1. Copy the `PPSA99317` folder to `/data/homebrew/` (FTP is fine).
+1. Copy the `PPSA99318` folder to `/data/homebrew/` (FTP is fine).
 2. ShadowMountPlus registers it and Art Swap appears on the home screen.
 3. Start it. The first screen says "Starting the helper" for a moment.
 
@@ -90,7 +90,7 @@ A title runs in a sandbox and sees only its own folder, so it cannot read or
 write `/user/appmeta`. Art Swap is therefore two programs:
 
 ```text
-  Art Swap (the title, PPSA99317)           artswapd (the helper payload)
+  Art Swap (the title, PPSA99318)           artswapd (the helper payload)
   the screens, drawn with the UI kit  <-->  reads and writes the art, talks to
   helper_client: 4 connections,      TCP    SteamGridDB, makes the pictures
   answers on the drawing thread   127.0.0.1:9117
@@ -138,7 +138,7 @@ Everything builds in the Lima VM `ps5` (`~/ps5`: PS5_Vulkan, PS5_PayloadSDK,
 the UI kit's fork), with this folder mounted at the same path.
 
 ```bash
-ps5/tools/vm.sh build                  # dist/PPSA99317/ with eboot.bin and artswapd.elf
+ps5/tools/vm.sh build                  # dist/PPSA99318/ with eboot.bin and artswapd.elf
 helper/tools/build.sh                  # the helper alone: build/helper/artswapd.elf
 helper/tools/build.sh host             # the helper for this Mac (libcurl)
 python3 helper/tests/test_helper.py    # the helper against a made-up console and SteamGridDB

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Art Swap - run a build tool inside the Linux VM, from macOS.
 #
-#   ps5/tools/vm.sh build             ps5/tools/build.sh (the title, into dist/PPSA99317/)
+#   ps5/tools/vm.sh build             ps5/tools/build.sh (the title, into dist/PPSA99318/)
 #   ps5/tools/vm.sh TOOL [arguments]  any other ps5/tools/TOOL.sh
 #
 # The stack (PS5_Vulkan with its RADV archive, PS5_PayloadSDK, the UI kit's

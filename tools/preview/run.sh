@@ -74,5 +74,5 @@ helper=$!
 trap 'kill $helper 2>/dev/null || true' EXIT
 sleep 1
 rm -f "$out"/*.png
-"$work/preview" "$root/dist/PPSA99317/assets/hui" "$out" "$port" ${script:+"$script"}
+"$work/preview" "$root/dist/PPSA99318/assets/hui" "$out" "$port" ${script:+"$script"}
 echo "==> $out"

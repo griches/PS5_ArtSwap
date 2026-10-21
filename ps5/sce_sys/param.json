@@ -7,9 +7,9 @@
   "attribute": 0,
   "attribute2": 0,
   "attribute3": 0,
-  "conceptId": "99317",
+  "conceptId": "99318",
   "contentBadgeType": 1,
-  "contentId": "UP9000-PPSA99317_00-ARTSWAP000000000",
+  "contentId": "UP9000-PPSA99318_00-ARTSWAP000000000",
   "contentVersion": "01.000.000",
   "downloadDataSize": 256,
   "gameIntent": {
@@ -36,6 +36,6 @@
   },
   "requiredSystemSoftwareVersion": "0x0000000000000000",
   "sdkVersion": "0x0000000000000000",
-  "titleId": "PPSA99317",
+  "titleId": "PPSA99318",
   "versionFileUri": ""
 }
