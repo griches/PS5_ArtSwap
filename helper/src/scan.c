@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static const char *kArtNames[] = {"icon0.png", "icon0.dds", "icon0.jpg", "pic0.png", "pic0.dds",
@@ -166,7 +167,12 @@ static bool name_from_param_sfo(const char *path, char *name, size_t size)
 /* Names from a copy of the system's app.db: any table with a title id and a title name column */
 static void names_from_app_db(app_t *apps, int count)
 {
-    char from[512], to[512];
+    char from[512], to[512], off[512];
+    if (file_exists(data_path("no-appdb", off, sizeof(off)))) {
+        log_line("app.db: skipped (/data/artswap/no-appdb)");
+        return;
+    }
+    log_line("app.db: reading a copy for the names param files did not give");
     cpath("/system_data/priv/mms/app.db", from, sizeof(from));
     data_path("app.db.copy", to, sizeof(to));
     if (!file_copy(from, to)) {
@@ -296,12 +302,36 @@ static void add_art(app_t *app, const char *folder)
     closedir(dir);
 }
 
+/* What a title's appmeta folder holds, every file, to /data/artswap/appmeta-files.txt */
+static buf_t g_listing;
+
+static void list_folder(const char *folder)
+{
+    char real[512];
+    DIR *dir = opendir(cpath(folder, real, sizeof(real)));
+    if (dir == NULL)
+        return;
+    buf_printf(&g_listing, "%s\n", folder);
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL) {
+        if (e->d_name[0] == '.')
+            continue;
+        char path[640];
+        snprintf(path, sizeof(path), "%s/%s", real, e->d_name);
+        struct stat st;
+        if (stat(path, &st) == 0)
+            buf_printf(&g_listing, "\t%s\t%lld%s\n", e->d_name, (long long)st.st_size, S_ISDIR(st.st_mode) ? "\t(folder)" : "");
+    }
+    closedir(dir);
+}
+
 /* A folder of /user/appmeta that is a title's */
 static void add_appmeta_title(app_t **apps, int *count, int *cap, const char *folder, const char *id)
 {
     app_t *app = find_or_add(apps, count, cap, id);
     if (app == NULL)
         return;
+    list_folder(folder);
     add_art(app, folder);
     char param[480];
     if (!app->name[0]) {
@@ -396,7 +426,11 @@ bool scan_apps(app_t **apps_out, int *count_out)
     const uint64_t start = now_ms();
     app_t *apps = NULL;
     int count = 0, cap = 0;
+    g_listing.len = 0;
     scan_appmeta(&apps, &count, &cap, "/user/appmeta", 0);
+    char listing[512];
+    file_write_replace(data_path("appmeta-files.txt", listing, sizeof(listing)),
+                       g_listing.data ? g_listing.data : (uint8_t *)"", g_listing.len, NULL);
     for (size_t i = 0; i < sizeof(kHomebrewRoots) / sizeof(kHomebrewRoots[0]); i++)
         scan_homebrew(&apps, &count, &cap, kHomebrewRoots[i]);
 

@@ -39,4 +39,6 @@ bash "$root/helper/tools/build.sh"
 title_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["titleId"])' "$ps5/sce_sys/param.json")
 python3 "$ps5/tools/build-assets.py" --install "$root/dist/$title_id"
 cp "$root/build/helper/artswapd.elf" "$root/dist/$title_id/artswapd.elf"
+mkdir -p "$root/dist/$title_id/licenses/helper"
+cp "$root/helper/third_party/NOTICES.txt" "$root/helper/third_party/SOURCES.txt" "$root/dist/$title_id/licenses/helper/"
 echo "==> helper: dist/$title_id/artswapd.elf ($(stat -c %s "$root/dist/$title_id/artswapd.elf") bytes)"
