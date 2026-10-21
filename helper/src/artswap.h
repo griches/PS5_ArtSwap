@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ARTSWAP_VERSION "0.1.0"
+#define ARTSWAP_VERSION "0.1.1"
 #define ARTSWAP_PORT 9117
 
 /* ---- growable byte buffer ---- */
@@ -38,6 +38,8 @@ bool buf_field(buf_t *b, const char *value);
 
 /* ---- log: stdout (the kernel log, for a payload) and /data/artswap/helper.log ---- */
 void log_open(void);
+void log_open_named(const char *name); /* /data/artswap/<name> */
+void log_quiet(bool quiet);            /* the log file only, nothing on standard output */
 void log_line(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 /* ---- paths ---- */

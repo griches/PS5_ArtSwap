@@ -26,6 +26,8 @@ namespace
 {
 
 constexpr int kWorkers = 4;
+// where a helper may be listening, from the base port: the first that was free when it started
+constexpr int kPortSteps[] = {0, 10, 20};
 
 void log_line(const char *format, const std::string &a = "", const std::string &b = "")
 {
@@ -133,7 +135,7 @@ std::vector<std::vector<std::string>> Reply::rows() const
 }
 
 Helper::Helper(std::string elf_path, int port, int loader_port)
-    : elf_path_(std::move(elf_path)), port_(port), loader_port_(loader_port)
+    : elf_path_(std::move(elf_path)), port_(port), base_port_(port), loader_port_(loader_port)
 {
     status_ = "Starting the helper";
 }
@@ -199,7 +201,7 @@ void Helper::start()
 
 bool Helper::connect_helper(int &fd) const
 {
-    fd = open_local(port_);
+    fd = open_local(port_.load());
     if (fd < 0)
         return false;
     timeval timeout{120, 0}; // an APPLY of four 4K backgrounds stays well inside
@@ -253,99 +255,144 @@ bool Helper::exchange(int &fd, const std::vector<std::string> &fields, Reply &re
     return true;
 }
 
-// Connects, or starts the helper first; then checks it is this title's version
-void Helper::launch()
+bool Helper::push_elf(std::string &why) const
 {
-    for (int attempt = 0; attempt < 2; ++attempt)
+    std::ifstream file(elf_path_, std::ios::binary);
+    std::string elf((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    if (elf.empty())
     {
-        int fd = -1;
-        if (!connect_helper(fd))
+        why = "The helper (" + elf_path_ + ") is missing from the title folder";
+        return false;
+    }
+    const int loader = open_local(loader_port_);
+    if (loader < 0)
+    {
+        why = "No ELF loader is listening on port " + std::to_string(loader_port_) +
+              ": start your loader (etaHEN or elfldr), then try again";
+        return false;
+    }
+    const bool sent = send_all(loader, elf.data(), elf.size());
+    close(loader);
+    if (!sent)
+        why = "The ELF loader did not take the helper";
+    return sent;
+}
+
+void Helper::revive()
+{
+    std::lock_guard<std::mutex> hold(revive_lock_);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_revive_ < std::chrono::seconds(8))
+        return;
+    last_revive_ = now;
+    std::string version;
+    if (const int port = find_helper(version))
+    {
+        port_ = port; // another worker has brought it back
+        return;
+    }
+    std::string why;
+    log_line("%s", "the helper has gone: starting it again");
+    if (!push_elf(why))
+        log_line("%s", why);
+    for (int i = 0; i < 25; ++i)
+    {
+        sleep_ms(200);
+        if (const int port = find_helper(version))
         {
-            set_status("Starting the helper");
-            std::ifstream file(elf_path_, std::ios::binary);
-            std::string elf((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-            if (elf.empty())
-            {
-                set_status("The helper (" + elf_path_ + ") is missing from the title folder");
-                state_ = State::failed;
-                return;
-            }
-            const int loader = open_local(loader_port_);
-            if (loader < 0)
-            {
-                set_status("No ELF loader is listening on port " + std::to_string(loader_port_) +
-                           ": start your loader (etaHEN or elfldr), then try again");
-                state_ = State::failed;
-                return;
-            }
-            const bool sent = send_all(loader, elf.data(), elf.size());
-            close(loader);
-            if (!sent)
-            {
-                set_status("The ELF loader did not take the helper");
-                state_ = State::failed;
-                return;
-            }
-            for (int i = 0; i < 40 && !connect_helper(fd); ++i)
-                sleep_ms(200);
-            if (fd < 0)
-            {
-                set_status("The helper did not start (the ELF loader took it, but nothing answers on port " +
-                           std::to_string(port_) + ")");
-                state_ = State::failed;
-                return;
-            }
-        }
-        Reply hello;
-        if (!exchange(fd, {"HELLO"}, hello) || !hello.ok)
-        {
-            close(fd);
-            set_status("The helper did not answer");
-            state_ = State::failed;
+            port_ = port;
             return;
         }
-        std::string version;
+    }
+}
+
+int Helper::find_helper(std::string &version)
+{
+    for (const int step : kPortSteps)
+    {
+        const int port = base_port_ + step;
+        const int fd = open_local(port);
+        if (fd < 0)
+            continue;
+        // a helper that crashed holds its port and accepts, but never answers
+        timeval timeout{3, 0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        int probe = fd;
+        Reply hello;
+        const bool answered = exchange(probe, {"HELLO"}, hello) && hello.ok;
+        close(fd);
+        if (!answered)
+            continue;
+        version.clear();
         for (const auto &row : hello.rows())
         {
             if (row.size() >= 2 && row[0] == "artswapd")
                 version = row[1];
+            std::lock_guard<std::mutex> lock(lock_);
             if (row.size() >= 2 && row[0] == "key")
             {
-                std::lock_guard<std::mutex> hold(lock_);
                 key_source_ = row[1];
                 key_hint_ = row.size() >= 3 ? row[2] : "";
             }
             if (row.size() >= 2 && row[0] == "lan")
-            {
-                std::lock_guard<std::mutex> hold(lock_);
                 lan_address_ = row[1];
-            }
             if (row.size() >= 2 && row[0] == "http")
             {
-                std::lock_guard<std::mutex> hold(lock_);
                 backend_ = row[1];
                 if (row[1] == "unavailable" && row.size() > 2)
                     backend_ += ": " + row[2];
             }
         }
-        if (version != kHelperVersion && attempt == 0)
+        return port;
+    }
+    return 0;
+}
+
+// Finds the helper, or starts it first; then checks it is this title's version
+void Helper::launch()
+{
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        std::string version;
+        int port = find_helper(version);
+        if (port == 0)
         {
-            // an older helper from another version: replace it
-            set_status("Replacing helper " + version);
-            Reply ignored;
-            exchange(fd, {"BYE"}, ignored);
-            close(fd);
-            for (int i = 0; i < 20; ++i)
+            set_status("Starting the helper");
+            std::string why;
+            if (!push_elf(why))
+            {
+                set_status(why);
+                state_ = State::failed;
+                return;
+            }
+            for (int i = 0; i < 40 && port == 0; ++i)
             {
                 sleep_ms(250);
-                int probe = -1;
-                if (!connect_helper(probe))
-                    break;
-                close(probe);
+                port = find_helper(version);
             }
+            if (port == 0)
+            {
+                set_status("The helper did not start: the ELF loader took it, but nothing answers");
+                state_ = State::failed;
+                return;
+            }
+        }
+        if (version != kHelperVersion && attempt == 0)
+        {
+            // a helper of another version: ask it to leave, then start ours
+            set_status("Replacing helper " + version);
+            port_ = port;
+            int fd = -1;
+            if (connect_helper(fd))
+            {
+                Reply ignored;
+                exchange(fd, {"BYE"}, ignored);
+                close(fd);
+            }
+            sleep_ms(1500);
             continue;
         }
-        close(fd);
+        port_ = port;
         set_status("Ready");
         {
             std::lock_guard<std::mutex> hold(lock_);
@@ -386,8 +433,9 @@ void Helper::work()
         {
             if (fd < 0 && !connect_helper(fd))
             {
+                // the helper has gone (it closes 90 s after it was last needed, or it failed)
                 fd = -1;
-                sleep_ms(300);
+                revive();
                 continue;
             }
             sent = exchange(fd, job.fields, job.reply);

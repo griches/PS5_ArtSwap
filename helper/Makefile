@@ -46,6 +46,20 @@ PS5_OBJECTS := $(patsubst src/%.c,$(OUT)/%.o,$(SOURCES) src/http_ps5.c src/stb_i
 $(OUT)/artswapd.elf: $(PS5_OBJECTS)
 	$(CC) -o $@ $^ -lpthread
 
+# ---- the network test payload (helper/tests/nettest.c) ----
+NET_OBJECTS := $(OUT)/util.o $(OUT)/http_ps5.o $(OUT)/config.o
+$(OUT)/nettest.o: tests/nettest.c $(HEADERS) | $(OUT)
+	$(CC) -std=gnu11 -O2 -g $(WARN) -c -o $@ $<
+$(OUT)/nettest.elf: $(OUT)/nettest.o $(NET_OBJECTS)
+	$(CC) -o $@ $^ -lpthread
+nettest: $(OUT)/nettest.elf
+$(OUT)/tlstest.o: tests/tlstest.c $(HEADERS) | $(OUT)
+	$(CC) -std=gnu11 -O2 -g $(WARN) -c -o $@ $<
+$(OUT)/tlstest.elf: $(OUT)/tlstest.o $(OUT)/util.o
+	$(CC) -o $@ $^ -lpthread
+tlstest: $(OUT)/tlstest.elf
+.PHONY: nettest tlstest
+
 # ---- the host build, for tests ----
 HOST_CC ?= cc
 HOST_FLAGS := -std=gnu11 -O2 -g -DARTSWAP_HOST -I$(OUT)

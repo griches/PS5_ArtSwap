@@ -450,12 +450,21 @@ int main(void)
     char lan[512];
     const bool open_lan = file_exists(data_path("listen-lan", lan, sizeof(lan)));
     address.sin_addr.s_addr = htonl(open_lan ? INADDR_ANY : INADDR_LOOPBACK);
-    if (bind(server, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(server, 8) != 0) {
-        /* a helper is running already: it serves */
-        log_line("port %d: %s (another helper is running?)", port, strerror(errno));
+    /* a helper that crashed is stopped, not ended, and keeps its port: the next of three */
+    int bound = -1;
+    for (int i = 0; i < 3 && bound < 0; i++) {
+        address.sin_port = htons((uint16_t)(port + 10 * i));
+        if (bind(server, (struct sockaddr *)&address, sizeof(address)) == 0 && listen(server, 8) == 0)
+            bound = port + 10 * i;
+        else
+            log_line("port %d: %s", port + 10 * i, strerror(errno));
+    }
+    if (bound < 0) {
+        log_line("no port free: leaving");
         close(server);
         return 1;
     }
+    port = bound;
     log_line("listening on %s:%d", open_lan ? "0.0.0.0" : "127.0.0.1", port);
     const uint64_t started = now_ms();
     while (!g_leaving) {

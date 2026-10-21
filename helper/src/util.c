@@ -84,11 +84,22 @@ bool buf_field(buf_t *b, const char *value)
 
 static FILE *g_log;
 static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool g_log_quiet; /* the file only: no standard output */
+
+void log_quiet(bool quiet)
+{
+    g_log_quiet = quiet;
+}
 
 void log_open(void)
 {
+    log_open_named("helper.log");
+}
+
+void log_open_named(const char *name)
+{
     char path[512];
-    data_path("helper.log", path, sizeof(path));
+    data_path(name, path, sizeof(path));
     g_log = fopen(path, "w");
 }
 
@@ -100,8 +111,10 @@ void log_line(const char *format, ...)
     vsnprintf(line, sizeof(line), format, args);
     va_end(args);
     pthread_mutex_lock(&g_log_lock);
-    printf("[artswapd] %s\n", line);
-    fflush(stdout);
+    if (!g_log_quiet) {
+        printf("[artswapd] %s\n", line);
+        fflush(stdout);
+    }
     if (g_log != NULL) {
         const time_t now = time(NULL);
         struct tm tm;

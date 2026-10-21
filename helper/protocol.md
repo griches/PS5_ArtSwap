@@ -1,6 +1,7 @@
 # The helper's protocol
 
-`artswapd` listens on TCP 127.0.0.1:9117 (all addresses if
+`artswapd` listens on TCP 127.0.0.1:9117, or the first free of 9127 and 9137 (a
+helper that crashed on the console keeps its port), on all addresses if
 `/data/artswap/listen-lan` exists, for tests from another machine). A
 connection carries any number of requests, one at a time.
 
@@ -23,7 +24,7 @@ connection carries any number of requests, one at a time.
 | `ART id slot [w h]` | the slot's art now (`icon`, or `pic`: pic0 before pic1, the `/user/appmeta` copy first), scaled down to fit w × h |
 | `KEY [key]` | checks the key with SteamGridDB, then keeps it in `/data/artswap/apikey.txt`; no key removes it. Text: the `key` line, as HELLO's |
 | `KEYSTATE` | text: the `key` line, as HELLO's |
-| `PHONE [code]` | with a four-digit code, opens the key page on port 9118 for ten minutes (phone.c); text: `lan <address>`, `port <port>`. Without one, closes it. |
+| `PHONE [code]` | with a four-digit code, opens the key page on port 9118 (or 9128, 9138) for ten minutes (phone.c); text: `lan <address>`, `port <port>`. Without one, closes it. |
 | `SEARCH term` | text: `G id name year verified`, SteamGridDB's matches, closest first |
 | `MATCH id game name` | keeps the title's SteamGridDB game (`/data/artswap/matches.tsv`); game 0 forgets it |
 | `LIST game kind [page]` | text: `P page total limit`, then `I id url thumb width height style author mime` a picture, and `H count` for icons hidden as too small. Kinds: `square`, `covers`, `wide`, `heroes`, `icons`, `logos`. Static pictures only, nothing marked NSFW. |

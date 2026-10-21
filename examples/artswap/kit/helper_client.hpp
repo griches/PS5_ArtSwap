@@ -2,9 +2,10 @@
  * Art Swap - the title's side of the helper (helper/protocol.md).
  *
  * A title cannot see /user/appmeta, so the helper payload does the reading,
- * the downloading and the writing. start() connects to it on
- * 127.0.0.1:9117, or first hands helper/artswapd.elf (in the title folder) to
- * the console's ELF loader on 127.0.0.1:9021. Requests then go out on four
+ * the downloading and the writing. start() finds it on 127.0.0.1 (9117, or
+ * 9127 or 9137 when an earlier helper that crashed still holds a port: on the
+ * console a crashed payload is stopped, not ended), or first hands
+ * helper/artswapd.elf (in the title folder) to the ELF loader on 9021. Requests then go out on four
  * worker threads, each with its own connection, urgent ones first; their
  * answers come back through pump(), on the thread that draws.
  *
@@ -14,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -26,7 +28,7 @@
 namespace artswap
 {
 
-constexpr const char *kHelperVersion = "0.1.0";
+constexpr const char *kHelperVersion = "0.1.1";
 
 struct Picture
 {
@@ -90,12 +92,19 @@ class Helper
 
     void launch();
     void work();
+    // Hands artswapd.elf to the ELF loader; why says what went wrong
+    bool push_elf(std::string &why) const;
+    // A worker found no helper: start it again, at most every few seconds
+    void revive();
     bool connect_helper(int &fd) const;
+    // The port of a helper that answers HELLO (3 s each), filling what it says; 0 for none
+    int find_helper(std::string &version);
     bool exchange(int &fd, const std::vector<std::string> &fields, Reply &reply) const;
     void set_status(const std::string &text);
 
     std::string elf_path_;
-    int port_;
+    std::atomic<int> port_;
+    int base_port_;
     int loader_port_;
     std::atomic<State> state_{State::starting};
     mutable std::mutex lock_;
@@ -112,6 +121,8 @@ class Helper
     std::vector<std::thread> threads_;
     std::thread launcher_;
     bool stopping_ = false;
+    std::mutex revive_lock_;
+    std::chrono::steady_clock::time_point last_revive_{};
 };
 
 } // namespace artswap

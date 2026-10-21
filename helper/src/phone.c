@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #define PHONE_PORT 9118
@@ -291,27 +292,34 @@ static void serve(int fd)
     buf_free(&page);
 }
 
-static void *listen_thread(void *argument)
+/* The listening socket on the first free of three ports from g_port; -1 for none */
+static int open_listener(void)
 {
-    (void)argument;
     const int server = socket(AF_INET, SOCK_STREAM, 0);
+    if (server < 0)
+        return -1;
     int reuse = 1;
     setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     struct sockaddr_in address;
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_port = htons((uint16_t)g_port);
     address.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (server < 0 || bind(server, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(server, 4) != 0) {
-        log_line("phone: port %d: %s", g_port, strerror(errno));
-        if (server >= 0)
-            close(server);
-        pthread_mutex_lock(&g_lock);
-        g_running = false;
-        g_code[0] = 0;
-        pthread_mutex_unlock(&g_lock);
-        return NULL;
+    /* a helper that crashed is stopped, not ended, and keeps its port: the next of three */
+    for (int i = 0; i < 3; i++) {
+        address.sin_port = htons((uint16_t)(g_port + 10 * i));
+        if (bind(server, (struct sockaddr *)&address, sizeof(address)) == 0 && listen(server, 4) == 0) {
+            g_port += 10 * i;
+            return server;
+        }
+        log_line("phone: port %d: %s", g_port + 10 * i, strerror(errno));
     }
+    close(server);
+    return -1;
+}
+
+static void *listen_thread(void *argument)
+{
+    const int server = (int)(intptr_t)argument;
     log_line("phone: the key page is open on port %d", g_port);
     char code[8];
     while (session_open(code, sizeof(code))) {
@@ -338,21 +346,32 @@ bool phone_start(const char *code, char *err, size_t errlen)
         snprintf(err, errlen, "the code is four digits");
         return false;
     }
-    g_port = PHONE_PORT;
+    pthread_mutex_lock(&g_lock);
+    const bool start = !g_running;
+    if (start) {
+        g_port = PHONE_PORT;
 #ifdef ARTSWAP_HOST
-    if (getenv("ARTSWAP_PHONE_PORT"))
-        g_port = atoi(getenv("ARTSWAP_PHONE_PORT"));
+        if (getenv("ARTSWAP_PHONE_PORT"))
+            g_port = atoi(getenv("ARTSWAP_PHONE_PORT"));
 #endif
+    }
+    pthread_mutex_unlock(&g_lock);
+    int server = -1;
+    if (start && (server = open_listener()) < 0) {
+        snprintf(err, errlen, "the key page could not open: no port free");
+        return false;
+    }
     pthread_mutex_lock(&g_lock);
     copy_str(g_code, sizeof(g_code), code);
     g_until = now_ms() + SESSION_MS;
     g_wrong = 0;
-    const bool start = !g_running;
-    g_running = true;
+    if (start)
+        g_running = true;
     pthread_mutex_unlock(&g_lock);
     if (start) {
         pthread_t thread;
-        if (pthread_create(&thread, NULL, listen_thread, NULL) != 0) {
+        if (pthread_create(&thread, NULL, listen_thread, (void *)(intptr_t)server) != 0) {
+            close(server);
             pthread_mutex_lock(&g_lock);
             g_running = false;
             pthread_mutex_unlock(&g_lock);

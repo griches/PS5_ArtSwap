@@ -113,8 +113,8 @@ write `/user/appmeta`. Art Swap is therefore two programs:
 The title carries the helper (`artswapd.elf` in its folder) and hands it to the
 ELF loader when no helper answers. A helper of another version is asked to
 leave and replaced. The helper leaves by itself 90 seconds after Art Swap
-closes. It answers only on 127.0.0.1, apart from the key page above while it
-is open. Its requests are in
+closes. It answers only on 127.0.0.1 (port 9117, or 9127 or 9137 when a helper
+that crashed still holds one), apart from the key page above while it is open. Its requests are in
 [`helper/protocol.md`](helper/protocol.md).
 
 On the console the helper keeps its files in `/data/artswap/`:
@@ -132,20 +132,30 @@ On the console the helper keeps its files in `/data/artswap/`:
 Names come from the title's `param.json` or `param.sfo`, then from a read-only
 copy of the system's `app.db`, and otherwise the title id is shown.
 
-## Not yet proven
+## Proven on the console, and not yet
 
-These need the console and have not been run there yet:
+Proven on Gary's PS5 (13.60), 2026-10-21: the title reaches the helper on
+127.0.0.1 and starts it through the ELF loader; the scan (20 titles in
+40-240 ms; `/user/appmeta/<id>/` holds `icon0.png`, `pic0.dds`, `pic1.dds`,
+`param.json` for a homebrew title); HTTPS to SteamGridDB's API and CDN
+(helper/tests/nettest.c); the key page from another machine on the network.
 
-- a title connecting to 127.0.0.1 (the helper, and the ELF loader on 9021);
-- HTTPS from the payload: libSceHttp2 first, then libSceHttp (HTTP/1.1), loaded
-  with `dlopen`; a TLS failure is retried once without certificate checks, and
-  the log says so;
-- the layout of `/user/appmeta` for retail PS5 and PS4 games on this firmware
-  (`appmeta-files.txt` records it);
-- whether the home screen shows new art without a restart;
-- the keyboard dialog (the code is Wind Waker HD's, which works there);
-- the key page reached from a phone: the helper finds the console's address by
-  asking the network stack which address it would send from, and listens on 9118.
+What the console taught (helper/tests/tlstest.c, procs.c):
+
+- A payload does not get the console's trusted roots: every HTTPS request
+  fails with `0x8095F00C` (TLS `0x8095F00A`, verify error `0x20`, unknown CA).
+  The helper's certificate callback accepts that one result and refuses any
+  other (`http_ps5.c`). `sceHttpsDisableOption` crashes the process; HTTP/2
+  fails the same way and is not used.
+- A payload that crashes is stopped, not ended: it stays under the ELF loader,
+  traced by it (`PT_ATTACH` gives `EALREADY`, SIGKILL leaves it), and keeps its
+  sockets until the console restarts. So the helper takes the first free of
+  9117, 9127, 9137 (and the key page of 9118, 9128, 9138), the title asks each
+  for HELLO with a three-second limit, and starts the helper again when it has
+  gone.
+
+Not yet proven: changing art on the console, and whether the home screen shows
+it without a restart.
 
 ## Building
 
