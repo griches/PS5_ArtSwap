@@ -20,7 +20,7 @@ connection carries any number of requests, one at a time.
 | Request | Answer |
 | --- | --- |
 | `HELLO` | text: `lan <address>` (when the console has one), `artswapd <version>`, `key user <last four characters>` or `key none`, `http <http2\|http1\|curl\|unavailable> <why>` |
-| `APPS [rescan]` | text, one line a title: `A id name kind icon pic kept sgdb_id sgdb_name`. kind is `ps5`, `ps4` or `homebrew`; icon and pic describe the slot (`png 512x512 x2`: format, size, number of files) or are `-`; kept is 1 when an `.old` original exists. The first APPS scans; `rescan` scans again. |
+| `APPS [rescan]` | text, one line a title: `A id name kind icon pic kept sgdb_id sgdb_name name_kept`. kind is `ps5`, `ps4` or `homebrew`; icon and pic describe the slot (`png 512x512 x2`: format, size, number of files) or are `-`; kept is 1 when an `.old` original of its art exists, name_kept when a `param.json.old` does. The first APPS scans; `rescan` scans again. |
 | `ART id slot [w h]` | the slot's art now (`icon`, or `pic`: pic0 before pic1, the `/user/appmeta` copy first), scaled down to fit w × h |
 | `KEY [key]` | checks the key with SteamGridDB, then keeps it in `/data/artswap/apikey.txt`; no key removes it. Text: the `key` line, as HELLO's |
 | `KEYSTATE` | text: the `key` line, as HELLO's |
@@ -29,9 +29,10 @@ connection carries any number of requests, one at a time.
 | `MATCH id game name` | keeps the title's SteamGridDB game (`/data/artswap/matches.tsv`); game 0 forgets it |
 | `LIST game kind [page]` | text: `P page total limit`, then `I id url thumb width height style author mime` a picture, and `H count` for icons hidden as too small. Kinds: `square`, `covers`, `wide`, `heroes`, `icons`, `logos`. Static pictures only, nothing marked NSFW. |
 | `THUMB url [w h]` | the picture at url (SteamGridDB's hosts only, through the cache), scaled down to fit |
-| `PREVIEW url slot mode panx pany w h` | what `APPLY` would make, at w × h |
-| `APPLY id slot url [mode panx pany]` | writes the picture into every file of the slot. mode `cover` fills the frame and cuts the overflow (pan -1..1 picks the part kept); `fit` shows all of it on a blurred fill. Text: `O path.old` for each original kept, `W path format size` for each file written |
-| `RESTORE id [slot]` | moves each `.old` back over its file (slot `icon`, `pic` or `all`). Text: `R path` a file |
+| `PREVIEW url slot mode panx pany w h [zoom]` | what `APPLY` would make, at w × h |
+| `APPLY id slot url [mode panx pany [zoom]]` | writes the picture into every file of the slot. mode `cover` fills the frame and cuts the overflow: the part kept is the largest of the file's shape, made zoom (1-8, default 1) times smaller, and pan -1..1 across and down places it in the rest; `fit` shows all of it on a blurred fill. Text: `O path.old` for each original kept, `W path format size` for each file written |
+| `RESTORE id [slot]` | moves each `.old` back over its file (slot `icon`, `pic` or `all`; `all` puts the name back too). Text: `R path` a file |
+| `RENAME id name` | for a title ShadowMountPlus installed from a folder (as REFRESH): name (1-127 bytes of UTF-8) as `titleName` in every language of each `param.json` beside its art, the original kept once as `param.json.old` (name.c). The home screen shows it after a refresh. Text: `O`, `W` lines as APPLY's |
 | `SMP id` | text: `smp <version>` (`-` when ShadowMountPlus's API does not answer), `game <source_type> <installed> <path>` when it lists the title, `can <1\|0> <why not>`, and the `refresh` line, as REFRESHSTATE's |
 | `REFRESH id [wait]` | starts the home-screen refresh of a title ShadowMountPlus installed from a folder (smp.c), asking for up to wait seconds while a game keeps the console busy. Text: the `refresh` line |
 | `REFRESHSTATE [seen]` | text: `refresh phase id unseen message`; phase `none`, `copying`, `waiting`, `removing`, `adding`, `checking`, `done` or `failed`. A finished refresh is unseen (1) until `REFRESHSTATE seen` |
@@ -41,7 +42,8 @@ connection carries any number of requests, one at a time.
 ## Rules the helper keeps
 
 - It changes only the art files the scan found (`icon0`, `pic0`, `pic1`, as PNG,
-  JPEG or DDS) of the title named, never a path from a request.
+  JPEG or DDS) of the title named, and the `param.json` beside them for a name,
+  never a path from a request.
 - It keeps each original once, as `<file>.old`, before the first change, and
   never writes an `.old` that exists. Files are written whole beside the target
   and renamed over it, with the original's mode and owner.

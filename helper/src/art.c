@@ -86,20 +86,19 @@ static bool other_old(const app_t *app, const art_file_t *file, buf_t *out)
     return false;
 }
 
-/* The picture made for one target size */
-static bool compose(const image_t *src, const char *slot, const char *mode, float pan_x, float pan_y, int w,
-                    int h, image_t *out)
+bool art_compose(const image_t *src, const char *slot, const char *mode, float pan_x, float pan_y, float zoom, int w,
+                 int h, image_t *out)
 {
     if (strcmp(mode, "fit") == 0)
         return image_fit_blur(src, w, h, out);
     const float aspect_src = (float)src->w / src->h, aspect_dst = (float)w / h;
-    if (strcmp(slot, "icon") == 0 && fabsf(aspect_src / aspect_dst - 1.0f) < 0.02f)
+    if (strcmp(slot, "icon") == 0 && fabsf(aspect_src / aspect_dst - 1.0f) < 0.02f && zoom <= 1.001f)
         return image_resample(src, 0, 0, (float)src->w, (float)src->h, w, h, out);
-    return image_cover(src, w, h, pan_x, pan_y, out);
+    return image_cover(src, w, h, pan_x, pan_y, zoom, out);
 }
 
 bool art_apply(const app_t *app, const char *slot, const char *url, const char *mode, float pan_x, float pan_y,
-               buf_t *report, char *err, size_t errlen)
+               float zoom, buf_t *report, char *err, size_t errlen)
 {
     const uint64_t start = now_ms();
     int targets = 0;
@@ -120,8 +119,8 @@ bool art_apply(const app_t *app, const char *slot, const char *url, const char *
     buf_free(&download);
     if (!decoded)
         return false;
-    log_line("apply %s %s: %dx%d from %s, %s, pan %.2f %.2f", app->id, slot, src.w, src.h, url, mode, pan_x,
-             pan_y);
+    log_line("apply %s %s: %dx%d from %s, %s, pan %.2f %.2f, zoom %.2f", app->id, slot, src.w, src.h, url, mode,
+             pan_x, pan_y, zoom);
 
     /* one picture per target size; files of the same size share it */
     image_t made = {0};
@@ -144,7 +143,7 @@ bool art_apply(const app_t *app, const char *slot, const char *url, const char *
         }
         if (ok && (made.rgba == NULL || made_w != fmt.w || made_h != fmt.h)) {
             image_free(&made);
-            ok = compose(&src, slot, mode, pan_x, pan_y, fmt.w, fmt.h, &made);
+            ok = art_compose(&src, slot, mode, pan_x, pan_y, zoom, fmt.w, fmt.h, &made);
             made_w = fmt.w;
             made_h = fmt.h;
             if (!ok)

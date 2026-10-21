@@ -14,7 +14,7 @@ the title's own `icon0` or `pic0`/`pic1`. The original is kept beside it as an
 installed from a folder, Art Swap can also refresh the home screen so the new
 art shows straight away.
 
-Title `PPSA99318`, version 1.0.0. Tested on a PS5 with firmware 13.60.
+Title `PPSA99318`, version 1.1.0. Tested on a PS5 with firmware 13.60.
 
 ## What it does
 
@@ -26,8 +26,12 @@ Title `PPSA99318`, version 1.0.0. Tested on a PS5 with firmware 13.60.
 - **Finds the game on SteamGridDB** by its name, and remembers the match. If the
   match is wrong, □ lists other matches or searches for any name you type.
 - **Icons** come from SteamGridDB's square grids, and **Backgrounds** from its
-  heroes (art made for backgrounds). Each is cut to the file's shape (the right
-  stick slides the part kept) or shown whole on a blurred fill of itself.
+  heroes (art made for backgrounds).
+- **You choose the part kept** (△ in the picker opens the frame page): Fit (all
+  of it, on a blurred fill of itself), the left, centre or right of a wide
+  picture (top, middle or bottom of a tall one), or a part of your own: the
+  left stick or D-pad moves it, R2 and L2 zoom in and out (up to 3×). The page
+  shows the whole picture with the part kept lit, and the result beside it.
 - **The preview is exact**: what you see under NEW is what the helper will
   write, beside the art there NOW.
 - **Writes what the console expects**: each file keeps its format, size,
@@ -39,7 +43,10 @@ Title `PPSA99318`, version 1.0.0. Tested on a PS5 with firmware 13.60.
   copies it beside itself as `<name>.old` (`icon0.png.old`, `pic0.dds.old`). Later
   changes never touch an `.old` file, so it is always the art the title came
   with. Restore moves every `.old` file back over its original.
-
+- **Renames homebrew** (L2) that ShadowMountPlus installed from a folder: the
+  new name goes into the title's `param.json` (every language), and the
+  refresh shows it on the home screen. The original is kept as
+  `param.json.old`, and Restore puts it back too.
 - **Refreshes the home screen** (R2) for homebrew that ShadowMountPlus installed
   from a folder: see [Refreshing the home screen](#refreshing-the-home-screen).
   For other titles the new art is written, but the home screen keeps its own
@@ -51,7 +58,7 @@ You need the console's homebrew environment running: etaHEN (or kstuff),
 ShadowMountPlus, and an **ELF loader on port 9021**. Art Swap starts its helper
 through that loader.
 
-1. Download `PS5_ArtSwap-v1.0.0.zip` from [Releases](https://github.com/griches/PS5_ArtSwap/releases/latest).
+1. Download `PS5_ArtSwap-v1.1.0.zip` from [Releases](https://github.com/griches/PS5_ArtSwap/releases/latest).
 2. Copy the `PPSA99318` folder inside it to `/data/homebrew/` (FTP is fine).
 3. ShadowMountPlus registers it and Art Swap appears on the home screen.
 4. Start it. The first screen says "Starting the helper" for a moment.
@@ -64,17 +71,23 @@ through that loader.
 | Titles | ← → (L1 R1 by six) | choose a title |
 | | ✕ | change its icon |
 | | △ | change its background |
-| | □ | restore its original art (when Art Swap changed it) |
+| | □ | restore its original art and name (when Art Swap changed them) |
 | | R2 | refresh the home screen (asks first) |
+| | L2 | rename it, then refresh (homebrew from a folder) |
 | | OPTIONS | settings: API key, look at the console again, helper log |
 | | hold OPTIONS | close Art Swap |
 | Art | L1 R1 | the Icons and Backgrounds tabs |
 | | D-pad, left stick | choose a picture |
-| | △ | Fill (cut to the frame) or Fit (all of it, on a blurred fill) |
+| | △ | the frame page: which part of the picture is kept |
 | | right stick | slide the part kept, when Fill cuts the picture |
 | | ✕ | use it (asks first) |
 | | □ | another game, or search by name with the keyboard |
 | | ○ | back to the titles |
+| Frame | L1 R1 | Fit, Left, Centre, Right (or Top, Middle, Bottom), Custom |
+| | left stick, D-pad | move the part kept |
+| | R2 L2 | zoom in, zoom out |
+| | ✕ | use it (asks first) |
+| | ○ | back to the pictures |
 
 ## Refreshing the home screen
 
@@ -82,6 +95,7 @@ The home screen keeps its own copy of each title's art, so new art shows only
 once the title is installed again. For homebrew, that is what deleting the
 title and letting ShadowMountPlus add it back does, and Art Swap does it for
 you: R2 on a title opens a pop-up that says what will happen, and ✕ starts it.
+After a rename (L2) the same pop-up follows, since a name shows the same way.
 
 1. Art Swap notes every file in the game's folder (each one's path and size)
    and copies aside the console's saved data of the title (every user's

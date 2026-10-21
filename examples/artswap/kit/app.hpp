@@ -86,6 +86,7 @@ class App
         starting,
         library,
         picker,
+        frame,    // full page: the part of the chosen picture kept (the picker's triangle)
         settings, // full page: a rail of categories, a panel (settings.cpp)
         connect,  // full page: adding the SteamGridDB key, the QR code showing (settings.cpp)
     };
@@ -104,7 +105,19 @@ class App
         asking,   // what ShadowMountPlus can do for the title
         ready,    // it can: the steps, Refresh or Cancel
         unable,   // it cannot: why
-        starting, // the helper copies the game's files aside; then Art Swap closes
+        starting, // the helper notes the game's files; then Art Swap closes
+    };
+
+    // How the chosen picture fills the file: whole on a blurred fill (fit), or the part of it kept,
+    // the largest of the file's shape made zoom times smaller and placed by pan -1..1 across and down
+    struct Framing
+    {
+        bool fit = false;
+        float pan_x = 0.0f, pan_y = 0.0f, zoom = 1.0f;
+        bool operator==(const Framing &other) const
+        {
+            return fit == other.fit && pan_x == other.pan_x && pan_y == other.pan_y && zoom == other.zoom;
+        }
     };
 
     // ---- the titles ----
@@ -128,13 +141,29 @@ class App
     void draw_new_art(hui::gfx::DrawList &list, const hui::gfx::Rect &r, float radius) const;
     Art *focused_art();
     const Art *focused_art() const;
+    std::string framing_label() const;
+
+    // ---- framing: the frame page, and the picker's right stick ----
+    void open_frame();
+    void update_frame(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
+    void draw_frame(hui::gfx::DrawList &list) const;
+    float file_aspect() const;                 // the file's shape: 1 for an icon, 16:9 for a background
+    std::vector<std::string> presets() const;  // Fit, the three places along the cut (or Whole), Custom
+    Framing preset(int index) const;
+    int preset_index() const;                  // framing_ among presets()
+    // Moves the part kept by (du, dv) of its own size and makes it zoom times closer, about its middle
+    void move_frame(float du, float dv, float zoom);
+    void reframed(float delay);                // framing_ changed: a new preview after delay
+    void reset_framing();
 
     // ---- actions ----
     void apply();
     void restore();
     void open_search(const std::string &term);
     void choose_game(int row);
-    void open_refresh();
+    void open_refresh(bool rename = false);
+    void type_name();
+    void rename(const std::string &name);
     void start_refresh();
     void poll_refresh(float dt);
     void check_last_refresh();
@@ -174,6 +203,8 @@ class App
     void draw_toasts(hui::gfx::DrawList &list) const;
     void draw_hints(hui::gfx::DrawList &list) const;
     void draw_spinner(hui::gfx::DrawList &list, float cx, float cy, float radius) const;
+    // L1, a row of pills with the active one lit (the highlight springs to position), R1
+    void draw_pills(hui::gfx::DrawList &list, const std::vector<std::string> &names, float position) const;
     // A card on the shelf where it is now: every card keeps its place, the selected one grows in it
     hui::gfx::Rect card_rect(int index) const;
     hui::gfx::Rect cell_rect(int index) const;
@@ -232,18 +263,24 @@ class App
     std::string list_error_;
     hui::ui::Scroller grid_scroll_;
     hui::ui::SpringRect cell_ring_;
-    bool fit_ = false;  // Fill (cover) or Fit
-    float pan_ = 0.0f;  // -1..1 across, cover mode
+    Framing framing_;          // the focused picture's
+    Framing custom_;           // the last framing made by hand, for its pill
+    bool has_custom_ = false;
     float preview_due_ = -1.0f;
     int preview_serial_ = 0;
     std::uint32_t preview_ = 0;
-    std::string preview_url_; // the picture preview_ was made from, and in which framing:
-    bool preview_fit_ = false; // shown only for that picture, never for the next one
+    std::string preview_url_;  // the picture preview_ was made from, and in which framing:
+    Framing preview_framing_;  // shown only for that picture and framing, never for the next one
     int preview_w_ = 0, preview_h_ = 0;
     bool preview_loading_ = false;
     std::uint32_t current_art_ = 0; // the slot's art now, for "Now"
     int current_w_ = 0, current_h_ = 0;
     hui::tween::Spring tab_position_;
+    // the frame page: the whole picture, sharper than its thumbnail
+    std::uint32_t frame_picture_ = 0;
+    std::string frame_url_;
+    int frame_w_ = 0, frame_h_ = 0;
+    hui::tween::Spring preset_position_;
 
     // the sheets
     hui::tween::Spring sheet_open_;
@@ -289,6 +326,8 @@ class App
     bool refresh_polling_ = false;
     bool refresh_checked_ = false; // the last refresh's end, asked for once at the start
     bool close_ = false;
+    bool renaming_ = false;     // the sheet was opened by Rename: whether the title can be renamed
+    std::string renamed_to_;    // the refresh follows a rename to this name
 };
 
 } // namespace artswap

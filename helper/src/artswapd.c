@@ -10,6 +10,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "art.h"
+#include "name.h"
 #include "phone.h"
 #include "smp.h"
 
@@ -123,8 +124,8 @@ static bool find_app(const char *id, app_t *out)
     return found;
 }
 
-/* After APPLY or RESTORE: which files now have an original kept, the match */
-static void refresh_app(const char *id, long game, const char *game_name)
+/* After APPLY, RESTORE or RENAME: which files now have an original kept, the match, the name */
+static void refresh_app(const char *id, long game, const char *game_name, const char *name)
 {
     pthread_mutex_lock(&g_apps_lock);
     for (int i = 0; i < g_count; i++) {
@@ -140,6 +141,8 @@ static void refresh_app(const char *id, long game, const char *game_name)
             app->sgdb_id = game;
             copy_str(app->sgdb_name, sizeof(app->sgdb_name), game_name);
         }
+        if (name != NULL)
+            copy_str(app->name, sizeof(app->name), name);
     }
     pthread_mutex_unlock(&g_apps_lock);
 }
@@ -176,7 +179,7 @@ static void list_apps(buf_t *out)
         describe_slot(out, app, "pic");
         buf_printf(out, "\t%d\t%ld\t", kept, app->sgdb_id);
         buf_field(out, app->sgdb_name);
-        buf_printf(out, "\n");
+        buf_printf(out, "\t%d\n", name_kept(app));
     }
     pthread_mutex_unlock(&g_apps_lock);
 }
@@ -270,7 +273,7 @@ static bool handle(int fd, char **field, int n)
         if (!matches_set(field[1], game, name))
             ok = reply_error(fd, "the choice could not be saved");
         else {
-            refresh_app(field[1], game, name);
+            refresh_app(field[1], game, name, NULL);
             ok = reply_text(fd, &text);
         }
     } else if (strcmp(cmd, "LIST") == 0) {
@@ -281,7 +284,7 @@ static bool handle(int fd, char **field, int n)
                  : reply_error(fd, err);
     } else if (strcmp(cmd, "THUMB") == 0 || strcmp(cmd, "PREVIEW") == 0) {
         /* THUMB url w h: the picture scaled down to fit
-         * PREVIEW url slot mode panx pany w h: what APPLY would make, at w x h */
+         * PREVIEW url slot mode panx pany w h [zoom]: what APPLY would make, at w x h */
         const bool preview = cmd[0] == 'P';
         if (!want(fd, n, preview ? 8 : 2))
             return true;
@@ -295,12 +298,8 @@ static bool handle(int fd, char **field, int n)
                                 &img);
         else if (made) {
             const int w = clamp_size(field[6], 960), h = clamp_size(field[7], 540);
-            if (strcmp(field[3], "fit") == 0)
-                made = image_fit_blur(&src, w, h, &img);
-            else if (strcmp(field[2], "icon") == 0 && src.w * 50 > src.h * 49 && src.w * 49 < src.h * 50)
-                made = image_resample(&src, 0, 0, (float)src.w, (float)src.h, w, h, &img);
-            else
-                made = image_cover(&src, w, h, (float)atof(field[4]), (float)atof(field[5]), &img);
+            made = art_compose(&src, field[2], field[3], (float)atof(field[4]), (float)atof(field[5]),
+                               n > 8 ? (float)atof(field[8]) : 1.0f, w, h, &img);
         }
         if (made && img.rgba == NULL)
             snprintf(err, sizeof(err), "out of memory");
@@ -317,9 +316,9 @@ static bool handle(int fd, char **field, int n)
             pthread_mutex_lock(&g_apply_lock);
             const bool done = art_apply(&app, field[2], field[3], n > 4 ? field[4] : "cover",
                                         n > 5 ? (float)atof(field[5]) : 0.0f, n > 6 ? (float)atof(field[6]) : 0.0f,
-                                        &text, err, sizeof(err));
+                                        n > 7 ? (float)atof(field[7]) : 1.0f, &text, err, sizeof(err));
             pthread_mutex_unlock(&g_apply_lock);
-            refresh_app(app.id, -1, "");
+            refresh_app(app.id, -1, "", NULL);
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
     } else if (strcmp(cmd, "RESTORE") == 0) {
@@ -330,9 +329,42 @@ static bool handle(int fd, char **field, int n)
             ok = reply_error(fd, "no such title");
         } else {
             pthread_mutex_lock(&g_apply_lock);
-            const bool done = art_restore(&app, n > 2 ? field[2] : "all", &text, err, sizeof(err));
+            /* all: the name too */
+            const char *slot = n > 2 ? field[2] : "all";
+            const bool all = strcmp(slot, "all") == 0;
+            const bool name = all && name_kept(&app);
+            bool art = !name;
+            for (int i = 0; i < app.nfiles && !art; i++)
+                art = app.files[i].has_old;
+            bool done = !art || art_restore(&app, slot, &text, err, sizeof(err));
+            if (done && name && name_restore(&app, &text) < 0) {
+                snprintf(err, sizeof(err), "The original name could not be put back");
+                done = false;
+            }
             pthread_mutex_unlock(&g_apply_lock);
-            refresh_app(app.id, -1, "");
+            refresh_app(app.id, -1, "", NULL);
+            if (name)
+                rescan(); /* the name, read again */
+            ok = done ? reply_text(fd, &text) : reply_error(fd, err);
+        }
+    } else if (strcmp(cmd, "RENAME") == 0) {
+        /* RENAME id name: the title's name, for a title ShadowMountPlus installed from a folder; the home
+         * screen shows it after a refresh */
+        if (!want(fd, n, 3))
+            return true;
+        app_t app;
+        smp_info_t info;
+        if (!find_app(field[1], &app)) {
+            ok = reply_error(fd, "no such title");
+        } else if (smp_info(&app, &info), !info.can_refresh) {
+            snprintf(err, sizeof(err), "%s", info.why);
+            ok = reply_error(fd, err);
+        } else {
+            pthread_mutex_lock(&g_apply_lock);
+            const bool done = name_change(&app, field[2], &text, err, sizeof(err));
+            pthread_mutex_unlock(&g_apply_lock);
+            if (done)
+                refresh_app(app.id, -1, "", field[2]);
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
     } else if (strcmp(cmd, "SMP") == 0) {

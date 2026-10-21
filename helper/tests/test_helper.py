@@ -163,7 +163,7 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.1.4", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.2.0", f"HELLO names the version ({hello})")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
 
@@ -209,6 +209,14 @@ def main() -> int:
         Image.frombytes("RGBA", (w, hh), rgba).save(shots / "preview-cover.png")
         w, hh, rgba = h.ask("PREVIEW", hero[2], "pic", "fit", "0", "0", 960, 540)
         Image.frombytes("RGBA", (w, hh), rgba).save(shots / "preview-fit.png")
+        # zoom: twice as close at the top left is the top-left quarter of the whole frame at twice the size
+        w, hh, rgba = h.ask("PREVIEW", hero[2], "pic", "cover", "-1", "-1", 960, 540, "2")
+        close = Image.frombytes("RGBA", (w, hh), rgba).convert("RGB")
+        close.save(shots / "preview-zoom.png")
+        w2, hh2, rgba = h.ask("PREVIEW", hero[2], "pic", "cover", "-1", "-1", 1920, 1080)
+        quarter = Image.frombytes("RGBA", (w2, hh2), rgba).convert("RGB").crop((0, 0, 960, 540))
+        diff = sum(abs(a - b) for pa, pb in zip(close.get_flattened_data(), quarter.get_flattened_data()) for a, b in zip(pa, pb))
+        check(diff / (960 * 540 * 3) < 3, f"PREVIEW zoom 2 is the quarter it should be (mean difference {diff / (960 * 540 * 3):.2f})")
         cover = lists["covers"][0]
         w, hh, rgba = h.ask("PREVIEW", cover[2], "icon", "fit", "0", "0", 512, 512)
         Image.frombytes("RGBA", (w, hh), rgba).save(shots / "preview-icon-fit.png")
@@ -341,10 +349,45 @@ def main() -> int:
         check(len(list((base / "data/artswap/saves").glob("PPSA99314-*"))) == 3,
               "the copies of failed refreshes are kept")
 
+        # a new name, in every param.json, each original kept once
+        folder_param = base / "data/homebrew/PPSA99314/sce_sys/param.json"
+        meta_param = base / "user/appmeta/PPSA99314/param.json"
+        original_param = folder_param.read_text()
+
+        def names(path):
+            return {v["titleName"] for v in json.loads(path.read_text())["localizedParameters"].values()
+                    if isinstance(v, dict)}
+
+        report = h.rows("RENAME", "PPSA99314", "Eternal Darkness: Sanity's Requiem")
+        check(sum(r[0] == "W" for r in report) == 2 and sum(r[0] == "O" for r in report) == 2,
+              f"RENAME writes both param.json files and keeps both originals ({report})")
+        check(names(folder_param) == names(meta_param) == {"Eternal Darkness: Sanity's Requiem"}, "the new name is in both")
+        h.rows("RENAME", "PPSA99314", "Eternal Darkness é")
+        check(Path(str(folder_param) + ".old").read_text() == original_param, "a second rename keeps the first original")
+        apps = {r[1]: r for r in h.rows("APPS")}
+        check(apps["PPSA99314"][2] == "Eternal Darkness é" and apps["PPSA99314"][9] == "1",
+              f"APPS: the new name, its original kept ({apps['PPSA99314']})")
+        for title, name, why in (("CUSA00001", "Bloodborne 2", "package"), ("PPSA99314", "a\x01b", "character")):
+            try:
+                h.rows("RENAME", title, name)
+                check(False, f"RENAME refuses {why}")
+            except HelperError as e:
+                check(why in str(e), f"RENAME refuses: {e}")
+        # the refresh installs it again under the new name; the home screen's original comes back
+        h.rows("REFRESH", "PPSA99314", "0")
+        state = refresh_until_end()
+        check(state[1] == "done", f"the refresh after a rename is done ({state[4]})")
+        check(names(meta_param) == {"Eternal Darkness é"}, "the install took the new name")
+        check(Path(str(meta_param) + ".old").exists(), "the home screen's original name is kept across the refresh")
+
         # restore; a copy without its .old takes the folder's original
         Path(str(base / "user/appmeta/PPSA99314/pic0.dds") + ".old").unlink()
         report = h.rows("RESTORE", "PPSA99314", "all")
-        check(sum(r[0] == "R" for r in report) == 6, f"RESTORE puts six files back ({len(report)})")
+        check(sum(r[0] == "R" for r in report) == 8, f"RESTORE puts six art files and two names back ({len(report)})")
+        check(folder_param.read_text() == original_param and names(meta_param) == {"Eternal Darkness™"},
+              "the original name is back")
+        check({r[1]: r for r in h.rows("APPS")}["PPSA99314"][2] == "Eternal Darkness",
+              "APPS: the original name (its trademark sign dropped)")
         for p in list(base.rglob("PPSA99314/**/*.png")) + list(base.rglob("PPSA99314/**/*.dds")):
             if p in originals:
                 check(sha(p) == originals[p], f"{p.relative_to(base)} is the original again")

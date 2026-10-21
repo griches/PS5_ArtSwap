@@ -58,10 +58,17 @@ const char *kDefaultScript = R"(4 none library
 1.5 right library-focus
 6 cross picker-icon
 3 r1 picker-background-tab
-3 triangle picker-background-fill
-1 circle
-6 triangle picker-background
-2 rstick+ picker-background-panned
+3 none picker-background
+5 triangle frame-centre
+1.5 r1 frame-right
+1 l1
+1 l1
+1.5 l1 frame-fit
+1 r1
+1 r1
+1 r2-held
+2 lstick-right frame-custom
+1.5 circle picker-framed
 1.5 cross confirm
 5 cross after-apply
 1 square restore
@@ -110,6 +117,18 @@ hui::InputFrame input_for(const std::string &action, int frame)
     if (action == "rstick+" || action == "rstick-")
     {
         in.stick2_x = action == "rstick+" ? 1.0f : -1.0f;
+        return in;
+    }
+    // held for the whole step: the left stick one way, or a trigger
+    if (action == "lstick-left" || action == "lstick-right" || action == "lstick-up" || action == "lstick-down")
+    {
+        in.stick_x = action == "lstick-left" ? -1.0f : action == "lstick-right" ? 1.0f : 0.0f;
+        in.stick_y = action == "lstick-up" ? -1.0f : action == "lstick-down" ? 1.0f : 0.0f;
+        return in;
+    }
+    if (action == "r2-held" || action == "l2-held")
+    {
+        (action == "r2-held" ? in.trigger_r : in.trigger_l) = 1.0f;
         return in;
     }
     if (action == "options")

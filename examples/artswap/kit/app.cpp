@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -73,6 +74,14 @@ const Kind kKinds[] = {
     {"Backgrounds", "pic", "heroes", 520, 168, false},
 };
 
+// A number for a request: three decimals, as the helper reads it
+std::string number(float value)
+{
+    char text[24];
+    std::snprintf(text, sizeof(text), "%.3f", static_cast<double>(value));
+    return text;
+}
+
 std::string upper(const std::string &text)
 {
     return ui::upper(text);
@@ -109,20 +118,18 @@ std::string kind_label(const std::string &kind)
     return "PS5 GAME";
 }
 
-// The texture rectangle that fills a w x h frame from a tw x th picture,
-// the overflow cut, pan -1..1 along the cut axis
-Rect cover_uv(int tw, int th, float w, float h, float pan)
+// The texture rectangle that fills a w x h frame from a tw x th picture: the largest part of the
+// frame's shape, made zoom times smaller, placed by pan -1..1 across and down (as the helper's
+// image_cover cuts it)
+Rect cover_uv(int tw, int th, float w, float h, float pan_x = 0.0f, float pan_y = 0.0f, float zoom = 1.0f)
 {
     if (tw <= 0 || th <= 0)
         return gfx::kFullUv;
     const float a = static_cast<float>(tw) / th, d = w / h;
-    if (a > d)
-    {
-        const float uw = d / a;
-        return {(1.0f - uw) * (pan + 1.0f) * 0.5f, 0.0f, uw, 1.0f};
-    }
-    const float vh = a / d;
-    return {0.0f, (1.0f - vh) * (pan + 1.0f) * 0.5f, 1.0f, vh};
+    zoom = std::clamp(zoom, 1.0f, 8.0f);
+    const float uw = (a > d ? d / a : 1.0f) / zoom, vh = (a > d ? 1.0f : a / d) / zoom;
+    return {(1.0f - uw) * (std::clamp(pan_x, -1.0f, 1.0f) + 1.0f) * 0.5f,
+            (1.0f - vh) * (std::clamp(pan_y, -1.0f, 1.0f) + 1.0f) * 0.5f, uw, vh};
 }
 
 // The rectangle inside frame that shows a tw x th picture whole
@@ -180,7 +187,8 @@ void palette_of(const Picture &p, Color &dark, Color &mid, Color &accent)
 struct App::Title
 {
     std::string id, name, kind, icon_desc, pic_desc, sgdb_name;
-    bool kept = false;
+    bool kept = false;      // an original of its art is kept
+    bool name_kept = false; // its original name is kept (renamed)
     long sgdb_id = 0;
     std::uint32_t icon = 0;
     bool icon_asked = false, icon_failed = false;
@@ -221,6 +229,7 @@ App::~App()
         forget(art->texture);
     forget(preview_);
     forget(current_art_);
+    forget(frame_picture_);
 }
 
 Color App::accent() const
@@ -318,6 +327,7 @@ void App::load_titles(bool rescan)
             title->icon_desc = row[4];
             title->pic_desc = row[5];
             title->kept = row[6] == "1";
+            title->name_kept = row.size() > 9 && row[9] == "1";
             title->sgdb_id = std::strtol(row[7].c_str(), nullptr, 10);
             title->sgdb_name = row[8];
             // keep the pictures already loaded, unless this is a fresh look
@@ -543,6 +553,8 @@ void App::close_picker()
     arts_.clear();
     forget(preview_);
     forget(current_art_);
+    forget(frame_picture_);
+    frame_url_.clear();
     screen_ = Screen::library;
     age_ = 0.3f;
     picker_title_ = -1;
@@ -571,8 +583,7 @@ void App::set_tab(int tab)
     hidden_ = 0;
     list_error_.clear();
     grid_scroll_.position.snap(0.0f);
-    fit_ = kind_of(tab).fit;
-    pan_ = 0.0f;
+    reset_framing();
     preview_due_ = -1.0f;
     preview_serial_++;
     preview_loading_ = false;
@@ -751,14 +762,11 @@ void App::request_preview()
     const int serial = ++preview_serial_;
     preview_loading_ = true;
     const bool icon = slot_ == "icon";
-    char pan[16];
-    std::snprintf(pan, sizeof(pan), "%.3f", static_cast<double>(pan_));
-    const bool wide = art->h > 0 && static_cast<float>(art->w) / art->h > (icon ? 1.0f : 16.0f / 9.0f);
     const std::string url = art->url;
-    const bool fit = fit_;
-    helper_.ask({"PREVIEW", art->url, slot_, fit_ ? "fit" : "cover", wide ? pan : "0", wide ? "0" : pan,
-                 icon ? "512" : "960", icon ? "512" : "540"},
-                [this, serial, url, fit](Reply &reply) {
+    const Framing framing = framing_;
+    helper_.ask({"PREVIEW", art->url, slot_, framing.fit ? "fit" : "cover", number(framing.pan_x),
+                 number(framing.pan_y), icon ? "512" : "960", icon ? "512" : "540", number(framing.zoom)},
+                [this, serial, url, framing](Reply &reply) {
                     if (serial != preview_serial_)
                         return;
                     if (!reply.ok)
@@ -767,7 +775,7 @@ void App::request_preview()
                         toast("The preview did not load", reply.error, true);
                         return;
                     }
-                    upload(std::move(reply.picture), [this, serial, url, fit](std::uint32_t texture, const Picture &p) {
+                    upload(std::move(reply.picture), [this, serial, url, framing](std::uint32_t texture, const Picture &p) {
                         if (serial != preview_serial_)
                         {
                             if (texture)
@@ -778,12 +786,315 @@ void App::request_preview()
                         forget(preview_);
                         preview_ = texture;
                         preview_url_ = url;
-                        preview_fit_ = fit;
+                        preview_framing_ = framing;
                         preview_w_ = p.w;
                         preview_h_ = p.h;
                     });
                 },
                 true, generation_);
+}
+
+// ---------------------------------------------------------------- framing
+
+float App::file_aspect() const
+{
+    return slot_ == "icon" ? 1.0f : 16.0f / 9.0f;
+}
+
+void App::reset_framing()
+{
+    framing_ = Framing{};
+    framing_.fit = kind_of(tab_).fit;
+    has_custom_ = false;
+}
+
+void App::reframed(float delay)
+{
+    preview_due_ = delay;
+    preview_serial_++;
+}
+
+std::vector<std::string> App::presets() const
+{
+    std::vector<std::string> out{"Fit"};
+    const Art *art = focused_art();
+    const float a = art && art->h > 0 ? static_cast<float>(art->w) / art->h : 1.0f, d = file_aspect();
+    if (a > d * 1.02f)
+        out.insert(out.end(), {"Left", "Centre", "Right"});
+    else if (a < d / 1.02f)
+        out.insert(out.end(), {"Top", "Middle", "Bottom"});
+    else
+        out.emplace_back("Whole");
+    if (has_custom_)
+        out.emplace_back("Custom");
+    return out;
+}
+
+App::Framing App::preset(int index) const
+{
+    const auto names = presets();
+    const std::string &name = names[static_cast<std::size_t>(std::clamp(index, 0, static_cast<int>(names.size()) - 1))];
+    Framing f;
+    if (name == "Fit")
+        f.fit = true;
+    else if (name == "Custom")
+        f = custom_;
+    else if (name == "Left" || name == "Right")
+        f.pan_x = name == "Left" ? -1.0f : 1.0f;
+    else if (name == "Top" || name == "Bottom")
+        f.pan_y = name == "Top" ? -1.0f : 1.0f;
+    return f;
+}
+
+int App::preset_index() const
+{
+    const int count = static_cast<int>(presets().size());
+    for (int i = 0; i < count; ++i)
+        if (preset(i) == framing_)
+            return i;
+    return count - 1;
+}
+
+// The framing in words, under the picker's preview
+std::string App::framing_label() const
+{
+    std::string name = presets()[static_cast<std::size_t>(preset_index())];
+    if (name == "Fit")
+        return "Fit: all of it, on a blurred fill";
+    if (name == "Whole")
+        return "Fill: all of it";
+    if (name == "Custom")
+    {
+        if (framing_.zoom < 1.01f)
+            return "Custom: the part you chose";
+        char text[64];
+        std::snprintf(text, sizeof(text), "Custom: the part you chose, %.1f\xC3\x97", static_cast<double>(framing_.zoom));
+        return text;
+    }
+    for (char &c : name)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return "Fill: the " + name + " of it";
+}
+
+void App::move_frame(float du, float dv, float zoom)
+{
+    constexpr float kMaxZoom = 3.0f;
+    const Art *art = focused_art();
+    if (art == nullptr || art->w <= 0 || art->h <= 0)
+        return;
+    Framing f = framing_;
+    if (f.fit)
+        f = Framing{}; // from Fit: the middle, filled
+    const float d = file_aspect();
+    const Rect before = cover_uv(art->w, art->h, d, 1.0f, f.pan_x, f.pan_y, f.zoom);
+    const float cu = before.x + before.w * (0.5f + du), cv = before.y + before.h * (0.5f + dv);
+    f.zoom = std::clamp(f.zoom * zoom, 1.0f, kMaxZoom);
+    const Rect after = cover_uv(art->w, art->h, d, 1.0f, 0.0f, 0.0f, f.zoom);
+    const float slack_u = 1.0f - after.w, slack_v = 1.0f - after.h;
+    f.pan_x = slack_u > 1e-4f ? std::clamp(2.0f * (cu - after.w * 0.5f) / slack_u - 1.0f, -1.0f, 1.0f) : 0.0f;
+    f.pan_y = slack_v > 1e-4f ? std::clamp(2.0f * (cv - after.h * 0.5f) / slack_v - 1.0f, -1.0f, 1.0f) : 0.0f;
+    if (f == framing_)
+        return;
+    framing_ = f;
+    custom_ = f;
+    has_custom_ = true;
+    reframed(0.3f);
+}
+
+// The frame page: the whole picture, the part kept lit, and what it makes
+void App::open_frame()
+{
+    const Art *art = focused_art();
+    if (art == nullptr)
+        return;
+    screen_ = Screen::frame;
+    page_age_ = 0.0f;
+    preset_position_.snap(static_cast<float>(preset_index()));
+    if (frame_url_ == art->url)
+        return;
+    forget(frame_picture_);
+    frame_url_ = art->url;
+    frame_w_ = frame_h_ = 0;
+    const std::string url = art->url;
+    helper_.ask({"THUMB", url, "1600", "1600"}, [this, url](Reply &reply) {
+        if (!reply.ok || frame_url_ != url)
+            return;
+        upload(std::move(reply.picture), [this, url](std::uint32_t texture, const Picture &p) {
+            if (frame_url_ != url)
+            {
+                if (texture)
+                    textures_.destroy(texture);
+                return;
+            }
+            forget(frame_picture_);
+            frame_picture_ = texture;
+            frame_w_ = p.w;
+            frame_h_ = p.h;
+        });
+    }, true, generation_);
+}
+
+void App::update_frame(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
+{
+    if (focused_art() == nullptr || input.is_pressed(Action::back))
+    {
+        feedback.play(Cue::back);
+        screen_ = Screen::picker;
+        return;
+    }
+    if (input.is_pressed(Action::confirm))
+    {
+        feedback.play(Cue::modal_open);
+        screen_ = Screen::picker;
+        sheet_ = Sheet::confirm;
+        if (preview_due_ >= 0.0f)
+        {
+            preview_due_ = -1.0f;
+            request_preview();
+        }
+        return;
+    }
+    // L1 R1: the framings offered
+    if (input.is_pressed(Action::page_next) || input.is_pressed(Action::page_prev))
+    {
+        const int count = static_cast<int>(presets().size()), now = preset_index();
+        const int next = std::clamp(now + (input.is_pressed(Action::page_next) ? 1 : -1), 0, count - 1);
+        if (next != now)
+        {
+            framing_ = preset(next);
+            reframed(0.0f);
+            feedback.play(Cue::tab);
+        }
+        else
+            feedback.play(Cue::error, 1.0f, 0.0f, 0.5f);
+        return;
+    }
+    // the left stick moves the part kept (its own size in a second at full tilt), the D-pad a step at a time;
+    // R2 and L2 bring it closer and back
+    float du = input.stick_x * dt, dv = input.stick_y * dt;
+    if (!input.nav_from_stick)
+    {
+        constexpr float kStep = 0.06f;
+        du += input.nav == Direction::right ? kStep : input.nav == Direction::left ? -kStep : 0.0f;
+        dv += input.nav == Direction::down ? kStep : input.nav == Direction::up ? -kStep : 0.0f;
+    }
+    const float closer = std::max(input.trigger_r, input.is_held(Action::jump_next) ? 1.0f : 0.0f);
+    const float back = std::max(input.trigger_l, input.is_held(Action::jump_prev) ? 1.0f : 0.0f);
+    const float zoom = std::exp((closer - back) * dt * 0.9f);
+    if (std::fabs(du) > 1e-5f || std::fabs(dv) > 1e-5f || std::fabs(zoom - 1.0f) > 1e-5f)
+        move_frame(du, dv, zoom);
+}
+
+void App::draw_pills(gfx::DrawList &list, const std::vector<std::string> &names, float position) const
+{
+    if (names.empty())
+        return;
+    const ui::GlyphStyle dark = ui::GlyphStyle::dark();
+    float tx = kMargin + 54;
+    ui::draw_button(list, fonts_, dark, ui::Button::l1, kMargin, 316, 30);
+    std::vector<Rect> pills;
+    for (const std::string &name : names)
+    {
+        const float w = fonts_.semibold.measure(name, 22) + 44;
+        pills.push_back({tx, 294, w, 44});
+        tx += w + 10;
+    }
+    // the highlight springs between the pills
+    const int last = static_cast<int>(pills.size()) - 1;
+    const int lo = std::clamp(static_cast<int>(std::floor(position)), 0, last);
+    const int hi = std::clamp(lo + 1, 0, last);
+    const float f = std::clamp(position - lo, 0.0f, 1.0f);
+    const Rect highlight{pills[lo].x + (pills[hi].x - pills[lo].x) * f, 294,
+                         pills[lo].w + (pills[hi].w - pills[lo].w) * f, 44};
+    list.rounded_rect(highlight, 22, kWhite);
+    const int active = std::clamp(static_cast<int>(std::lround(position)), 0, last);
+    for (int i = 0; i <= last; ++i)
+        ui::text(list, fonts_.semibold, names[static_cast<std::size_t>(i)], pills[static_cast<std::size_t>(i)].cx(),
+                 pills[static_cast<std::size_t>(i)].y + 30, 22, i == active ? kInk : kWhite.with_alpha(0.75f),
+                 gfx::Align::center);
+    ui::draw_button(list, fonts_, dark, ui::Button::r1, tx + 6, 316, 30);
+}
+
+void App::draw_frame(gfx::DrawList &list) const
+{
+    const Art *art = focused_art();
+    if (picker_title_ < 0 || art == nullptr)
+        return;
+    const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
+    const bool icon = slot_ == "icon";
+    list.push_opacity(tween::stagger(page_age_, 1, 0.06f, 0.4f));
+
+    ui::text(list, fonts_.semibold, icon ? "FRAME THE ICON" : "FRAME THE BACKGROUND", kMargin, 168, 20, title.accent,
+             gfx::Align::left, 4.0f);
+    ui::text(list, fonts_.display, fonts_.display.font->fit(title.name, 60, 1100), kMargin - 3, 234, 60, kWhite);
+    ui::text(list, fonts_.regular, "Choose the part of the picture to keep", kMargin, 276, 23, kWhite.with_alpha(0.7f));
+    draw_pills(list, presets(), preset_position_.value);
+
+    // the whole picture; the part kept lit, the rest dimmed
+    const Rect area{kGridX, kGridTop, kGridWidth, kGridBottom - kGridTop};
+    const bool sharp = frame_picture_ && frame_url_ == art->url;
+    const std::uint32_t texture = sharp ? frame_picture_ : art->texture;
+    const int tw = sharp ? frame_w_ : art->tw, th = sharp ? frame_h_ : art->th;
+    const int pw = art->w > 0 ? art->w : tw, ph = art->h > 0 ? art->h : th;
+    const float d = file_aspect();
+    if (texture == 0)
+    {
+        const Rect whole = contain(area, pw, ph);
+        list.rounded_rect(whole, 10, kWhite.with_alpha(0.06f));
+        draw_spinner(list, whole.cx(), whole.cy(), 22);
+    }
+    else if (framing_.fit)
+    {
+        // the file's frame, with the picture whole inside it over a fill of itself
+        const Rect file = contain(area, static_cast<int>(d * 1000), 1000);
+        const Rect whole = contain(file, pw, ph);
+        list.shadow({file.x, file.y + 18, file.w, file.h}, 12, 36, Color::rgb(0x000000, 0.55f));
+        list.rounded_rect(file, 12, kNight);
+        list.image(texture, file, cover_uv(tw, th, file.w, file.h), kWhite.with_alpha(0.3f), 12);
+        list.image(texture, whole, gfx::kFullUv, kWhite, 0);
+        list.bordered_rect(file.inset(-2), 14, Color::rgb(0x000000, 0.0f), 3, kWhite);
+    }
+    else
+    {
+        Rect whole = contain(area, pw, ph);
+        whole.y = area.y; // under the pills, level with the result
+        const Rect uv = cover_uv(tw, th, d, 1.0f, framing_.pan_x, framing_.pan_y, framing_.zoom);
+        const Rect kept{whole.x + uv.x * whole.w, whole.y + uv.y * whole.h, uv.w * whole.w, uv.h * whole.h};
+        list.shadow({whole.x, whole.y + 18, whole.w, whole.h}, 10, 36, Color::rgb(0x000000, 0.55f));
+        list.image(texture, whole, gfx::kFullUv, kWhite, 10);
+        list.rounded_rect(whole, 10, kNight.with_alpha(0.66f));
+        list.image(texture, kept, uv, kWhite, 0);
+        // thirds, faint, to place what matters
+        for (int i = 1; i < 3; ++i)
+        {
+            list.rounded_rect({kept.x + kept.w * i / 3.0f - 0.75f, kept.y, 1.5f, kept.h}, 0, kWhite.with_alpha(0.22f));
+            list.rounded_rect({kept.x, kept.y + kept.h * i / 3.0f - 0.75f, kept.w, 1.5f}, 0, kWhite.with_alpha(0.22f));
+        }
+        list.bordered_rect(kept.inset(-2), 4, Color::rgb(0x000000, 0.0f), 3, kWhite);
+    }
+
+    // ---- what it makes ----
+    const Rect fresh = icon ? Rect{kPanelX + 88, kGridTop - 10, 380, 380} : Rect{kPanelX, kGridTop, kPanelW, kPanelW * 9 / 16};
+    ui::text(list, fonts_.semibold, "RESULT", fresh.x, fresh.y - 16, 17, kWhite.with_alpha(0.6f), gfx::Align::left, 3.0f);
+    list.shadow({fresh.x, fresh.y + 18, fresh.w, fresh.h}, icon ? 32 : 18, 36, Color::rgb(0x000000, 0.55f));
+    const float radius = icon ? 32.0f : 14.0f;
+    draw_new_art(list, fresh, radius);
+    list.bordered_rect(fresh, radius, Color::rgb(0x000000, 0.0f), 2, kWhite.with_alpha(0.2f));
+    const float left = icon ? kPanelX : fresh.x;
+    float y = fresh.y + fresh.h + 44;
+    ui::text(list, fonts_.semibold, framing_label(), left, y, 23, kWhite);
+    y += 34;
+    char line[160];
+    if (framing_.fit)
+        std::snprintf(line, sizeof(line), "%d\xC3\x97%d, all of it", pw, ph);
+    else
+    {
+        const Rect uv = cover_uv(pw, ph, d, 1.0f, framing_.pan_x, framing_.pan_y, framing_.zoom);
+        std::snprintf(line, sizeof(line), "%d\xC3\x97%d of its %d\xC3\x97%d", static_cast<int>(std::lround(uv.w * pw)),
+                      static_cast<int>(std::lround(uv.h * ph)), pw, ph);
+    }
+    ui::text(list, fonts_.regular, line, left, y, 21, kWhite.with_alpha(0.65f));
+    list.pop_opacity();
 }
 
 // ---------------------------------------------------------------- actions
@@ -804,10 +1115,8 @@ void App::apply()
     sheet_ = Sheet::working;
     working_text_ = slot_ == "icon" ? "Writing the new icon" : "Writing the new background";
     const std::string id = title.id, name = title.name, slot = slot_;
-    char pan[16];
-    std::snprintf(pan, sizeof(pan), "%.3f", static_cast<double>(pan_));
-    const bool wide = art->h > 0 && static_cast<float>(art->w) / art->h > (slot == "icon" ? 1.0f : 16.0f / 9.0f);
-    helper_.ask({"APPLY", id, slot, art->url, fit_ ? "fit" : "cover", wide ? pan : "0", wide ? "0" : pan},
+    helper_.ask({"APPLY", id, slot, art->url, framing_.fit ? "fit" : "cover", number(framing_.pan_x),
+                 number(framing_.pan_y), number(framing_.zoom)},
                 [this, id, name, slot](Reply &reply) {
                     sheet_ = Sheet::none;
                     if (!reply.ok)
@@ -831,8 +1140,8 @@ void App::apply()
                             }
                         }
                     toast(std::string(slot == "icon" ? "New icon" : "New background") + " for " + name,
-                          "Your original is kept, so Restore can put it back. If the home screen still shows "
-                          "the old art, restart the console.");
+                          "Your original is kept, so Restore can put it back. Refresh the home screen (R2) to "
+                          "show it there.");
                     close_picker();
                 },
                 true);
@@ -844,9 +1153,10 @@ void App::restore()
     if (title == nullptr)
         return;
     sheet_ = Sheet::working;
-    working_text_ = "Putting the original art back";
+    working_text_ = title->name_kept ? "Putting the originals back" : "Putting the original art back";
     const std::string id = title->id, name = title->name;
-    helper_.ask({"RESTORE", id, "all"}, [this, id, name](Reply &reply) {
+    const bool named = title->name_kept;
+    helper_.ask({"RESTORE", id, "all"}, [this, id, name, named](Reply &reply) {
         sheet_ = Sheet::none;
         if (!reply.ok)
         {
@@ -857,13 +1167,16 @@ void App::restore()
             if (t->id == id)
             {
                 t->kept = false;
+                t->name_kept = false;
                 t->icon_asked = false;
                 t->background_asked = false;
                 request_icon(*t);
                 request_background(*t);
             }
-        toast("The original art of " + name + " is back",
-              "If the home screen still shows the replaced art, restart the console.");
+        toast(named ? name + "'s originals are back" : "The original art of " + name + " is back",
+              "The home screen shows them once the game is refreshed (R2), or after a restart.");
+        if (named)
+            load_titles(false); // its name, as the helper reads it again
     }, true);
 }
 
@@ -871,12 +1184,14 @@ void App::restore()
 
 // The home screen keeps its own copy of a game's art; the helper has ShadowMountPlus
 // install the game again (helper/src/smp.c). First: can it, for this title?
-void App::open_refresh()
+void App::open_refresh(bool rename)
 {
     const Title *title = focused_title();
     if (title == nullptr)
         return;
     sheet_ = Sheet::refresh;
+    renaming_ = rename;
+    renamed_to_.clear();
     refresh_ = Refresh::asking;
     refresh_id_ = title->id;
     refresh_why_.clear();
@@ -908,6 +1223,60 @@ void App::open_refresh()
             }
         }
         refresh_ = can ? Refresh::ready : Refresh::unable;
+        // Rename: the name to give it, then the refresh that shows it
+        if (can && renaming_)
+        {
+            sheet_ = Sheet::none;
+            renaming_ = false;
+            type_name();
+        }
+    }, true);
+}
+
+void App::type_name()
+{
+    const Title *title = focused_title();
+    if (title == nullptr)
+        return;
+    if (keyboard_ == nullptr ||
+        !keyboard_->open("Name on the home screen", title->name, 127, [this](bool ok, std::string text) {
+            const Title *now = focused_title();
+            while (!text.empty() && text.back() == ' ')
+                text.pop_back();
+            while (!text.empty() && text.front() == ' ')
+                text.erase(text.begin());
+            if (ok && now && !text.empty() && text != now->name)
+                rename(text);
+        }))
+        toast("The keyboard did not open", "", true);
+}
+
+// The helper writes the name into the game's param.json; the home screen shows it once the game is
+// installed again, so the refresh follows
+void App::rename(const std::string &name)
+{
+    const Title *title = focused_title();
+    if (title == nullptr)
+        return;
+    const std::string id = title->id;
+    helper_.ask({"RENAME", id, name}, [this, id, name](Reply &reply) {
+        if (!reply.ok)
+        {
+            toast("The name was not changed", reply.error, true);
+            return;
+        }
+        for (auto &t : titles_)
+            if (t->id == id)
+            {
+                t->name = name;
+                t->name_kept = true;
+            }
+        const Title *now = focused_title();
+        if (now && now->id == id)
+        {
+            open_refresh();
+            renamed_to_ = name;
+        }
     }, true);
 }
 
@@ -1101,6 +1470,8 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
         update_library(input, dt, feedback);
     else if (screen_ == Screen::picker)
         update_picker(input, dt, feedback);
+    else if (screen_ == Screen::frame)
+        update_frame(input, dt, feedback);
     else if (screen_ == Screen::settings)
         update_settings(input, dt, feedback);
     else
@@ -1121,8 +1492,14 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
     backdrop_fade_.update(dt);
     tab_position_.target = static_cast<float>(tab_);
     tab_position_.update(dt, 18.0f);
+    if (screen_ == Screen::frame)
+    {
+        preset_position_.target = static_cast<float>(preset_index());
+        preset_position_.update(dt, 18.0f);
+    }
 
-    const Title *title = screen_ == Screen::picker && picker_title_ >= 0
+    const bool picking = (screen_ == Screen::picker || screen_ == Screen::frame) && picker_title_ >= 0;
+    const Title *title = picking
                              ? titles_[static_cast<std::size_t>(picker_title_)].get()
                              : focused_title();
     if (title)
@@ -1136,9 +1513,7 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
         colour.update(dt, 4.0f);
 
     // the background behind the screen follows the focus, cross-faded
-    if (Title *focused = screen_ == Screen::picker && picker_title_ >= 0
-                             ? titles_[static_cast<std::size_t>(picker_title_)].get()
-                             : focused_title())
+    if (Title *focused = picking ? titles_[static_cast<std::size_t>(picker_title_)].get() : focused_title())
     {
         focus_rest_ += dt;
         if (focus_rest_ > 0.12f)
@@ -1174,12 +1549,12 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
         grid_scroll_.update(dt, 14.0f);
         cell_ring_.target(cell_rect(art_focus_));
         cell_ring_.update(dt, 22.0f);
-        if (preview_due_ >= 0.0f)
-        {
-            preview_due_ -= dt;
-            if (preview_due_ < 0.0f)
-                request_preview();
-        }
+    }
+    if ((screen_ == Screen::picker || screen_ == Screen::frame) && preview_due_ >= 0.0f)
+    {
+        preview_due_ -= dt;
+        if (preview_due_ < 0.0f)
+            request_preview();
     }
 }
 
@@ -1245,7 +1620,7 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
     }
     else if (input.is_pressed(Action::west))
     {
-        if (title->kept)
+        if (title->kept || title->name_kept)
         {
             sheet_ = Sheet::restore;
             feedback.play(Cue::modal_open);
@@ -1257,6 +1632,11 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
     {
         feedback.play(Cue::modal_open);
         open_refresh();
+    }
+    else if (input.is_pressed(Action::jump_prev))
+    {
+        feedback.play(Cue::modal_open);
+        open_refresh(true);
     }
     (void)dt;
 }
@@ -1318,7 +1698,7 @@ void App::update_picker(const hui::InputFrame &input, float dt, ui::Feedback &fe
             if (next >= 0 && next < count)
             {
                 art_focus_ = next;
-                pan_ = 0.0f;
+                reset_framing();
                 preview_due_ = 0.18f;
                 preview_serial_++;
                 feedback.play(Cue::focus, 1.0f, ui::pan_for_x(cell_rect(next).cx()));
@@ -1330,28 +1710,16 @@ void App::update_picker(const hui::InputFrame &input, float dt, ui::Feedback &fe
         // more from SteamGridDB when the last row is reached
         if (art_focus_ / cols >= (count - 1) / cols && count < total_ && !listing_)
             load_page();
-        if (input.is_pressed(Action::north))
+        const Art *art = focused_art();
+        if (input.is_pressed(Action::north) && art)
         {
-            fit_ = !fit_;
-            preview_due_ = 0.0f;
-            preview_serial_++;
-            feedback.play(Cue::toggle);
+            feedback.play(Cue::open);
+            open_frame();
+            return;
         }
         // the right stick slides the part kept, when the frame cuts the picture
-        const Art *art = focused_art();
-        if (art && !fit_)
-        {
-            const bool icon = slot_ == "icon";
-            const float a = art->h > 0 ? static_cast<float>(art->w) / art->h : 1.0f;
-            const float d = icon ? 1.0f : 16.0f / 9.0f;
-            const float stick = a > d ? input.stick2_x : input.stick2_y;
-            if (std::fabs(a / d - 1.0f) > 0.02f && std::fabs(stick) > 0.05f)
-            {
-                pan_ = std::clamp(pan_ + stick * dt * 1.2f, -1.0f, 1.0f);
-                preview_due_ = 0.3f;
-                preview_serial_++;
-            }
-        }
+        if (art && !framing_.fit && (std::fabs(input.stick2_x) > 0.05f || std::fabs(input.stick2_y) > 0.05f))
+            move_frame(input.stick2_x * dt, input.stick2_y * dt, 1.0f);
         if (input.is_pressed(Action::confirm) && art)
         {
             feedback.play(Cue::modal_open);
@@ -1513,6 +1881,8 @@ void App::draw(hui::app::Frame &frame) const
         draw_top_bar(list);
         if (screen_ == Screen::library)
             draw_library(list);
+        else if (screen_ == Screen::frame)
+            draw_frame(list);
         else
             draw_picker(list);
     }
@@ -1547,7 +1917,7 @@ void App::draw_backdrop(hui::app::Frame &frame) const
     gfx::DrawList &list = frame.scene;
     const Rect screen{0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight};
     const float t = backdrop_fade_.running ? tween::smoothstep(backdrop_fade_.progress()) : 1.0f;
-    const float strength = screen_ == Screen::picker ? 0.45f : 1.0f;
+    const float strength = screen_ == Screen::picker || screen_ == Screen::frame ? 0.45f : 1.0f;
     if (backdrop_old_ && t < 1.0f)
         list.image(backdrop_old_, screen, gfx::kFullUv, kWhite.with_alpha(strength * (1.0f - t)));
     if (backdrop_)
@@ -1652,9 +2022,11 @@ void App::draw_library(gfx::DrawList &list) const
              "Icon  " + describe(title->icon_desc) + "     Background  " + describe(title->pic_desc), x, 362, 25,
              kWhite.with_alpha(0.78f));
     float y = 412;
-    if (title->kept)
+    if (title->kept || title->name_kept)
     {
-        const std::string chip = "Custom art  \xC2\xB7  original kept";
+        const std::string chip = title->kept && title->name_kept ? "Custom art and name  \xC2\xB7  originals kept"
+                                 : title->kept                   ? "Custom art  \xC2\xB7  original kept"
+                                                                 : "New name  \xC2\xB7  original kept";
         const float cw = fonts_.semibold.measure(chip, 21) + 44;
         list.bordered_rect({x, y - 30, cw, 44}, 22, title->accent.with_alpha(0.14f), 1.5f,
                            title->accent.with_alpha(0.7f));
@@ -1693,24 +2065,28 @@ void App::draw_library(gfx::DrawList &list) const
         list.pop_opacity();
         bx += w + 20;
     }
-    if (title->kept)
+    // the rest, smaller, on a row of their own; a shoulder button's glyph is wider than a face button's
+    struct Secondary
     {
-        const char *label = "Restore";
-        const float w = fonts_.semibold.measure(label, 27) + 100;
-        const Rect pill{bx, by, w, 64};
-        list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(0.35f));
-        ui::draw_button(list, fonts_, dark, ui::Button::square, pill.x + 20, pill.cy(), 34);
-        ui::text(list, fonts_.semibold, label, pill.x + 70, pill.cy() + 10, 27, kWhite);
-        bx += w + 20;
-    }
+        ui::Button button;
+        const char *label;
+    };
+    std::vector<Secondary> more;
+    if (title->kept || title->name_kept)
+        more.push_back({ui::Button::square, "Restore"});
+    more.push_back({ui::Button::r2, "Refresh home screen"});
+    more.push_back({ui::Button::l2, "Rename"});
+    bx = x;
+    for (const Secondary &item : more)
     {
-        // R2's glyph is wider than a face button's
-        const char *label = "Refresh home screen";
-        const float w = fonts_.semibold.measure(label, 27) + 112;
-        const Rect pill{bx, by, w, 64};
-        list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(0.35f));
-        ui::draw_button(list, fonts_, dark, ui::Button::r2, pill.x + 20, pill.cy(), 34);
-        ui::text(list, fonts_.semibold, label, pill.x + 82, pill.cy() + 10, 27, kWhite);
+        const bool face = item.button == ui::Button::square;
+        const float w = fonts_.semibold.measure(item.label, 22) + (face ? 80 : 92);
+        const Rect pill{bx, by + 82, w, 52};
+        list.bordered_rect(pill, 26, kWhite.with_alpha(0.08f), 1.5f, kWhite.with_alpha(0.28f));
+        ui::draw_button(list, fonts_, dark, item.button, pill.x + 16, pill.cy(), 28);
+        ui::text(list, fonts_.semibold, item.label, pill.x + (face ? 56 : 68), pill.cy() + 8, 22,
+                 kWhite.with_alpha(0.9f));
+        bx += w + 14;
     }
 
     // the icon, large, floating
@@ -1799,32 +2175,9 @@ void App::draw_picker(gfx::DrawList &list) const
     }
 
     // the tabs
-    const auto names = tabs();
-    float tx = kMargin + 54;
     const ui::GlyphStyle dark = ui::GlyphStyle::dark();
-    ui::draw_button(list, fonts_, dark, ui::Button::l1, kMargin, 316, 30);
-    std::vector<Rect> pills;
-    for (std::size_t i = 0; i < names.size(); ++i)
-    {
-        const float w = fonts_.semibold.measure(names[i], 22) + 44;
-        pills.push_back({tx, 294, w, 44});
-        tx += w + 10;
-    }
-    // the highlight springs between the pills
-    const float tp = tab_position_.value;
-    const int lo = std::clamp(static_cast<int>(std::floor(tp)), 0, static_cast<int>(pills.size()) - 1);
-    const int hi = std::clamp(lo + 1, 0, static_cast<int>(pills.size()) - 1);
-    const float f = tp - lo;
-    const Rect highlight{pills[lo].x + (pills[hi].x - pills[lo].x) * f, 294,
-                         pills[lo].w + (pills[hi].w - pills[lo].w) * f, 44};
-    list.rounded_rect(highlight, 22, kWhite);
-    for (std::size_t i = 0; i < names.size(); ++i)
-    {
-        const bool active = static_cast<int>(i) == tab_;
-        ui::text(list, fonts_.semibold, names[i], pills[i].cx(), pills[i].y + 30, 22,
-                 active ? kInk : kWhite.with_alpha(0.75f), gfx::Align::center);
-    }
-    ui::draw_button(list, fonts_, dark, ui::Button::r1, tx + 6, 316, 30);
+    const auto names = tabs();
+    draw_pills(list, std::vector<std::string>(names.begin(), names.end()), tab_position_.value);
 
     // ---- the grid ----
     list.push_clip({0, kGridTop - 24, kPanelX - 30, kGridBottom - kGridTop + 48});
@@ -1908,10 +2261,9 @@ void App::draw_picker(gfx::DrawList &list) const
         ui::text(list, fonts_.regular, line, left, y, 22, kWhite.with_alpha(0.8f));
         ui::text(list, fonts_.regular, "by " + fonts_.regular.font->fit(art->author, 20, kPanelW - 40), left, y + 28,
                  20, kWhite.with_alpha(0.55f));
-        // the framing
-        const char *mode = fit_ ? "Fit: all of it, on a blurred fill" : "Fill: cut to the frame";
+        // the framing, changed on the frame page
         ui::draw_button(list, fonts_, dark, ui::Button::triangle, left, y + 62, 28);
-        ui::text(list, fonts_.semibold, mode, left + 40, y + 70, 21, kWhite.with_alpha(0.9f));
+        ui::text(list, fonts_.semibold, framing_label(), left + 40, y + 70, 21, kWhite.with_alpha(0.9f));
         y += 96;
     }
     // now
@@ -1935,16 +2287,21 @@ void App::draw_picker(gfx::DrawList &list) const
 void App::draw_new_art(gfx::DrawList &list, const Rect &r, float radius) const
 {
     const Art *art = focused_art();
-    const bool current = art && preview_ && preview_url_ == art->url && preview_fit_ == fit_;
+    const bool current = art && preview_ && preview_url_ == art->url && preview_framing_ == framing_;
+    // the frame page's sharper copy of the picture, when it has it
+    const bool sharp = art && frame_picture_ && frame_url_ == art->url;
+    const std::uint32_t texture = sharp ? frame_picture_ : art ? art->texture : 0;
+    const int tw = sharp ? frame_w_ : art ? art->tw : 0, th = sharp ? frame_h_ : art ? art->th : 0;
     if (current)
         list.image(preview_, r, gfx::kFullUv, kWhite, radius);
-    else if (art && art->texture)
+    else if (texture)
     {
         list.rounded_rect(r, radius, kNight);
-        if (fit_)
-            list.image(art->texture, contain(r, art->tw, art->th), gfx::kFullUv, kWhite, radius * 0.5f);
+        if (framing_.fit)
+            list.image(texture, contain(r, tw, th), gfx::kFullUv, kWhite, radius * 0.5f);
         else
-            list.image(art->texture, r, cover_uv(art->tw, art->th, r.w, r.h, pan_), kWhite, radius);
+            list.image(texture, r, cover_uv(tw, th, r.w, r.h, framing_.pan_x, framing_.pan_y, framing_.zoom), kWhite,
+                       radius);
     }
     else
         list.rounded_rect(r, radius, kWhite.with_alpha(0.06f));
@@ -1966,7 +2323,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
     list.bordered_rect(panel, 28, Color::rgb(0x000000, 0.0f), 1.5f, kWhite.with_alpha(0.1f));
     const float x = panel.x + 64;
     float y = panel.y + 92;
-    const Title *title = screen_ == Screen::picker && picker_title_ >= 0
+    const Title *title = (screen_ == Screen::picker || screen_ == Screen::frame) && picker_title_ >= 0
                              ? titles_[static_cast<std::size_t>(picker_title_)].get()
                              : focused_title();
     const std::string name = title ? title->name : "";
@@ -2018,12 +2375,13 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
     case Sheet::restore:
         heading("RESTORE", "The original art of " + name + "?");
         ui::paragraph(list, fonts_.regular,
-                      "Art Swap puts back the icon and background this game came with.",
+                      title && title->name_kept ? "Art Swap puts back the icon, background and name this game came with."
+                                                : "Art Swap puts back the icon and background this game came with.",
                       x, y, 26, panel.w - 128, 40, kWhite.with_alpha(0.85f), 4);
         break;
     case Sheet::refresh:
     {
-        heading("REFRESH THE HOME SCREEN", name);
+        heading(renaming_ ? "RENAME" : "REFRESH THE HOME SCREEN", name);
         const float width = panel.w - 128;
         // a requirement and whether it is met
         auto need = [&](const std::string &label, bool met, const std::string &state) {
@@ -2041,8 +2399,12 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         }
         if (refresh_ == Refresh::unable)
         {
-            y = ui::paragraph(list, fonts_.regular, refresh_why_, x, y, 27, width, 42, kWhite, 5) + 24;
-            ui::text(list, fonts_.semibold, "WHAT A REFRESH NEEDS", x, y, 17, kWhite.with_alpha(0.55f),
+            const std::string why = renaming_ ? "Art Swap renames games that ShadowMountPlus installed from a folder, "
+                                                "which it can then refresh. " + refresh_why_
+                                              : refresh_why_;
+            y = ui::paragraph(list, fonts_.regular, why, x, y, 27, width, 42, kWhite, 5) + 24;
+            ui::text(list, fonts_.semibold, renaming_ ? "WHAT A RENAME NEEDS" : "WHAT A REFRESH NEEDS", x, y, 17,
+                     kWhite.with_alpha(0.55f),
                      gfx::Align::left, 3.0f);
             y += 44;
             need("ShadowMountPlus 1.7 or later, running", !smp_version_.empty(),
@@ -2051,12 +2413,16 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
             break;
         }
         y = ui::paragraph(list, fonts_.regular,
-                          "The home screen keeps its own copy of each game's art, so new art shows once the game is "
-                          "installed again. Art Swap does that for you:",
+                          renamed_to_.empty()
+                              ? "The home screen keeps its own copy of each game's art, so new art shows once the game "
+                                "is installed again. Art Swap does that for you:"
+                              : "Renamed. The home screen shows a game's name as it was when the game was installed, "
+                                "so the new name shows once it is installed again. Art Swap does that for you:",
                           x, y, 25, width, 38, kWhite.with_alpha(0.85f), 3) +
             16;
         const std::string steps[] = {"Art Swap closes.", name + " leaves the home screen for a few seconds.",
-                                     "ShadowMountPlus adds it straight back, with its new art."};
+                                     renamed_to_.empty() ? "ShadowMountPlus adds it straight back, with its new art."
+                                                         : "ShadowMountPlus adds it straight back, with its new name."};
         for (int i = 0; i < 3; ++i)
         {
             list.bordered_rect({x, y - 27, 36, 36}, 18, accent.with_alpha(0.16f), 1.5f, accent.with_alpha(0.8f));
@@ -2210,23 +2576,22 @@ void App::draw_hints(gfx::DrawList &list) const
             hints.push_back({ui::Button::cross, "Icon"});
             if (!(title->pic_desc == "-" || title->pic_desc.empty()))
                 hints.push_back({ui::Button::triangle, "Background"});
-            if (title->kept)
+            if (title->kept || title->name_kept)
                 hints.push_back({ui::Button::square, "Restore"});
             hints.push_back({ui::Button::r2, "Refresh"});
+            hints.push_back({ui::Button::l2, "Rename"});
         }
         hints.push_back({ui::Button::options, "Settings"});
     }
+    else if (screen_ == Screen::frame)
+        hints = {{ui::Button::left_stick, "Move"}, {ui::Button::r2, "Zoom in"}, {ui::Button::l2, "Zoom out"},
+                 {ui::Button::cross, "Use this"}, {ui::Button::circle, "Back"}};
     else
     {
-        const Art *art = focused_art();
-        if (art)
+        if (focused_art())
         {
             hints.push_back({ui::Button::cross, "Use this"});
-            hints.push_back({ui::Button::triangle, fit_ ? "Fill" : "Fit"});
-            const float a = art->h > 0 ? static_cast<float>(art->w) / art->h : 1.0f;
-            const float d = slot_ == "icon" ? 1.0f : 16.0f / 9.0f;
-            if (!fit_ && std::fabs(a / d - 1.0f) > 0.02f)
-                hints.push_back({ui::Button::right_stick, "Move"});
+            hints.push_back({ui::Button::triangle, "Frame"});
         }
         hints.push_back({ui::Button::square, "Another game"});
         hints.push_back({ui::Button::circle, "Back"});

@@ -40,8 +40,8 @@ bool image_decode(const uint8_t *data, size_t len, image_t *out, char *err, size
 /* The region (x, y, w, h, in source pixels) scaled to out_w x out_h (Lanczos 3) */
 bool image_resample(const image_t *src, float x, float y, float w, float h, int out_w, int out_h,
                     image_t *out);
-/* Scaled to fill w x h, the overflow cut; pan -1..1 slides the cut (0 centres it) */
-bool image_cover(const image_t *src, int w, int h, float pan_x, float pan_y, image_t *out);
+/* Scaled to fill w x h, the overflow cut; zoom (1..8) cuts that much closer, pan -1..1 slides the cut (0 centres it) */
+bool image_cover(const image_t *src, int w, int h, float pan_x, float pan_y, float zoom, image_t *out);
 /* All of src inside w x h, over a blurred, darkened fill made from itself
  * (transparent pictures, such as icons, over a dark plate of their own colour) */
 bool image_fit_blur(const image_t *src, int w, int h, image_t *out);

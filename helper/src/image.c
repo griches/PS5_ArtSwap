@@ -409,9 +409,10 @@ bool image_resample(const image_t *src, float x, float y, float w, float h, int 
     return ok;
 }
 
-bool image_cover(const image_t *src, int w, int h, float pan_x, float pan_y, image_t *out)
+bool image_cover(const image_t *src, int w, int h, float pan_x, float pan_y, float zoom, image_t *out)
 {
-    const float scale = fmaxf((float)w / src->w, (float)h / src->h);
+    zoom = fminf(fmaxf(zoom, 1.0f), 8.0f);
+    const float scale = fmaxf((float)w / src->w, (float)h / src->h) * zoom;
     const float rw = (float)w / scale, rh = (float)h / scale;
     pan_x = fminf(fmaxf(pan_x, -1.0f), 1.0f);
     pan_y = fminf(fmaxf(pan_y, -1.0f), 1.0f);
@@ -529,7 +530,7 @@ bool image_fit_blur(const image_t *src, int w, int h, image_t *out)
         /* the picture itself, filled across, blurred and darkened */
         image_t small = {0};
         const int sw = w / 24 > 8 ? w / 24 : 8, sh = h / 24 > 8 ? h / 24 : 8;
-        if (!image_cover(src, sw, sh, 0, 0, &small)) {
+        if (!image_cover(src, sw, sh, 0, 0, 1, &small)) {
             image_free(&fg);
             return false;
         }
