@@ -170,6 +170,12 @@ std::string Helper::key_source() const
     return key_source_;
 }
 
+std::string Helper::key_hint() const
+{
+    std::lock_guard<std::mutex> hold(lock_);
+    return key_hint_;
+}
+
 std::string Helper::lan_address() const
 {
     std::lock_guard<std::mutex> hold(lock_);
@@ -307,6 +313,7 @@ void Helper::launch()
             {
                 std::lock_guard<std::mutex> hold(lock_);
                 key_source_ = row[1];
+                key_hint_ = row.size() >= 3 ? row[2] : "";
             }
             if (row.size() >= 2 && row[0] == "lan")
             {

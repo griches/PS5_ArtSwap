@@ -231,6 +231,7 @@ class App
     Sheet phone_back_ = Sheet::settings; // where ○ goes from the phone sheet
     bool phone_asking_ = false;
     std::string key_state_; // user or none: the helper's answer, then each change
+    std::string key_hint_;  // the key's last four characters
     bool key_explained_ = false; // the explanation has shown once this run
     std::string pending_slot_;  // the picker to open once a key is in
     std::vector<Toast> toasts_;

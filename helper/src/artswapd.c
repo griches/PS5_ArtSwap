@@ -83,6 +83,16 @@ static bool reply_error(int fd, const char *message)
     return send_all(fd, line, strlen(line));
 }
 
+/* "key user 1bb9" or "key none" */
+static void key_line(buf_t *text)
+{
+    char hint[8];
+    if (config_key_hint(hint, sizeof(hint)))
+        buf_printf(text, "key\tuser\t%s\n", hint);
+    else
+        buf_printf(text, "key\tnone\n");
+}
+
 /* ---- the titles ---- */
 
 static void rescan(void)
@@ -198,8 +208,9 @@ static bool handle(int fd, char **field, int n)
         char lan[64];
         if (phone_lan_address(lan, sizeof(lan))[0])
             buf_printf(&text, "lan\t%s\n", lan);
-        buf_printf(&text, "artswapd\t%s\nkey\t%s\nhttp\t%s\t", ARTSWAP_VERSION, config_key_source(),
-                   g_http_ok ? http_backend() : "unavailable");
+        buf_printf(&text, "artswapd\t%s\n", ARTSWAP_VERSION);
+        key_line(&text);
+        buf_printf(&text, "http\t%s\t", g_http_ok ? http_backend() : "unavailable");
         buf_field(&text, g_http_ok ? "" : g_http_error);
         buf_printf(&text, "\n");
         ok = reply_text(fd, &text);
@@ -228,11 +239,11 @@ static bool handle(int fd, char **field, int n)
         else if (!config_set_key(key))
             ok = reply_error(fd, "that does not look like an API key");
         else {
-            buf_printf(&text, "key\t%s\n", config_key_source());
+            key_line(&text);
             ok = reply_text(fd, &text);
         }
     } else if (strcmp(cmd, "KEYSTATE") == 0) {
-        buf_printf(&text, "key\t%s\n", config_key_source());
+        key_line(&text);
         ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "PHONE") == 0) {
         /* PHONE code: open the key page for that code; PHONE alone closes it */

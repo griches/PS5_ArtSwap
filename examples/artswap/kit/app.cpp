@@ -178,6 +178,58 @@ void palette_of(const Picture &p, Color &dark, Color &mid, Color &accent)
     accent = best > 30.0f ? vivid : Color::rgb(0x9fd8ff);
 }
 
+// The small pictures beside settings and choices, drawn with the kit's shapes
+enum class Glyph
+{
+    phone,
+    keyboard,
+    trash,
+    refresh,
+    log,
+    later,
+};
+
+void draw_glyph(gfx::DrawList &list, Glyph glyph, const Rect &box, Color ink)
+{
+    const float cx = box.cx(), cy = box.cy();
+    const Color clear = ink.with_alpha(0.0f);
+    switch (glyph)
+    {
+    case Glyph::phone:
+        list.bordered_rect({cx - 10, cy - 16, 20, 32}, 5, clear, 2.6f, ink);
+        list.line(cx - 4, cy + 10, cx + 4, cy + 10, 2.4f, ink);
+        break;
+    case Glyph::keyboard:
+        list.bordered_rect({cx - 17, cy - 11, 34, 22}, 5, clear, 2.6f, ink);
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 4; ++col)
+                list.circle(cx - 10.5f + col * 7.0f, cy - 4.5f + row * 6.0f, 1.6f, ink);
+        list.line(cx - 7, cy + 6.5f, cx + 7, cy + 6.5f, 2.2f, ink);
+        break;
+    case Glyph::trash:
+        list.line(cx - 13, cy - 10, cx + 13, cy - 10, 2.6f, ink);
+        list.line(cx - 4, cy - 14, cx + 4, cy - 14, 2.6f, ink);
+        list.bordered_rect({cx - 9, cy - 7, 18, 22}, 4, clear, 2.6f, ink);
+        list.line(cx - 3, cy - 2, cx - 3, cy + 10, 2.2f, ink);
+        list.line(cx + 3, cy - 2, cx + 3, cy + 10, 2.2f, ink);
+        break;
+    case Glyph::refresh:
+        list.arc(cx, cy, 14, 2.8f, 0.9f, 5.0f, ink);
+        list.triangle({cx + 4, cy - 19, 11, 11}, ink, 0.0f, 1.5708f);
+        break;
+    case Glyph::log:
+        list.bordered_rect({cx - 12, cy - 15, 24, 30}, 4, clear, 2.6f, ink);
+        for (int i = 0; i < 3; ++i)
+            list.line(cx - 6, cy - 6 + i * 6.5f, cx + (i == 2 ? 2.0f : 6.0f), cy - 6 + i * 6.5f, 2.2f, ink);
+        break;
+    case Glyph::later:
+        list.ring(cx, cy, 14, 2.6f, ink);
+        list.line(cx, cy - 7, cx, cy + 1, 2.4f, ink);
+        list.line(cx, cy + 1, cx + 6, cy + 5, 2.4f, ink);
+        break;
+    }
+}
+
 } // namespace
 
 struct App::Title
@@ -948,6 +1000,7 @@ void App::settings_action(ui::Feedback &feedback)
             if (reply.ok)
             {
                 key_state_ = "none";
+                key_hint_.clear();
                 toast("Your SteamGridDB key is removed", "Add one again to find new art.");
             }
             else
@@ -956,7 +1009,7 @@ void App::settings_action(ui::Feedback &feedback)
         break;
     case 3:
         load_titles(true);
-        toast("Looking at the console again", "");
+        toast("Refreshing the game list", "");
         sheet_ = Sheet::none;
         break;
     case 4:
@@ -1011,6 +1064,12 @@ void App::close_phone()
 void App::key_added(const std::string &how)
 {
     key_state_ = "user";
+    // its last four characters, for the settings
+    helper_.ask({"KEYSTATE"}, [this](Reply &reply) {
+        for (const auto &row : reply.rows())
+            if (row.size() >= 3 && row[0] == "key")
+                key_hint_ = row[2];
+    }, true);
     sheet_ = Sheet::none;
     toast("Your SteamGridDB key is in", how + " Art Swap uses it from now on.");
     if (!pending_slot_.empty() && screen_ == Screen::library && focused_title())
@@ -1044,7 +1103,10 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
     toasts_.erase(std::remove_if(toasts_.begin(), toasts_.end(), [](const Toast &t) { return t.age > t.life; }),
                   toasts_.end());
     if (key_state_.empty() && helper_.state() == Helper::State::ready)
+    {
         key_state_ = helper_.key_source();
+        key_hint_ = helper_.key_hint();
+    }
 
     // OPTIONS: a short press is the settings; the program leaves on a hold
     if (input.is_pressed(Action::menu))
@@ -1584,7 +1646,7 @@ void App::draw_library(gfx::DrawList &list) const
         if (titles_loading_)
         {
             draw_spinner(list, 960, 520, 26);
-            ui::text(list, fonts_.regular, "Looking at the console\xE2\x80\xA6", 960, 600, 28, kWhite.with_alpha(0.8f),
+            ui::text(list, fonts_.regular, "Finding your games\xE2\x80\xA6", 960, 600, 28, kWhite.with_alpha(0.8f),
                      gfx::Align::center);
         }
         else
@@ -1593,8 +1655,8 @@ void App::draw_library(gfx::DrawList &list) const
                      kMargin, 300, 64, kWhite);
             ui::paragraph(list, fonts_.regular,
                           titles_error_.empty()
-                              ? "Art Swap looks in /user/appmeta and in the homebrew folders. Press OPTIONS, then "
-                                "Helper log, to see what it read; \xE2\x9C\x95 looks again."
+                              ? "Art Swap looks in /user/appmeta and in the homebrew folders. \xE2\x9C\x95 refreshes the "
+                                "list; OPTIONS, then Helper log, shows what it read."
                               : titles_error_,
                           kMargin, 370, 28, 1100, 40, kWhite.with_alpha(0.8f), 4);
         }
@@ -1685,7 +1747,7 @@ void App::draw_library(gfx::DrawList &list) const
     const float shelf_in = tween::stagger(age_, 3, 0.09f, 0.6f);
     list.push_opacity(shelf_in);
     char heading[64];
-    std::snprintf(heading, sizeof(heading), "Your titles  \xC2\xB7  %d", static_cast<int>(titles_.size()));
+    std::snprintf(heading, sizeof(heading), "Your games  \xC2\xB7  %d", static_cast<int>(titles_.size()));
     ui::text(list, fonts_.semibold, heading, kMargin, kShelfY - 70, 24, kWhite.with_alpha(0.9f));
     const float lift = 40.0f * (1.0f - shelf_in);
     for (int i = 0; i < static_cast<int>(titles_.size()); ++i)
@@ -1888,9 +1950,11 @@ void App::draw_picker(gfx::DrawList &list) const
 void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
 {
     const float t = sheet_open_.value;
-    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::settings || sheet_ == Sheet::log ||
-                      sheet_ == Sheet::phone || sheet_ == Sheet::key_needed;
-    const float h = tall ? 760.0f : 470.0f;
+    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::log || sheet_ == Sheet::phone;
+    const float h = sheet_ == Sheet::settings     ? 850.0f
+                    : sheet_ == Sheet::key_needed ? 836.0f
+                    : tall                        ? 760.0f
+                                                  : 470.0f;
     const Rect panel{360, (1080 - h) * 0.5f + 40.0f * (1.0f - t), 1200, h};
     list.push_opacity(tween::clamp01(t * 1.4f));
     list.shadow({panel.x, panel.y + 20, panel.w, panel.h}, 44, 60, Color::rgb(0x000000, 0.5f));
@@ -1923,6 +1987,84 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                      ry + 39, 22, f ? kInk.with_alpha(0.7f) : kWhite.with_alpha(0.6f), gfx::Align::right);
         }
         y += row_h * items.size();
+    };
+
+    struct Option
+    {
+        Glyph glyph;
+        std::string title, detail, value;
+        bool enabled = true;
+        bool opens = true; // leads to another screen: a chevron
+    };
+    struct Section
+    {
+        std::string label;
+        std::vector<Option> options;
+    };
+    // Rows in sections; focus counts across them, position is its spring
+    auto options = [&](const std::vector<Section> &sections, int focus, float position) {
+        const float row_h = 84, gap = 6, width = panel.w - 128;
+        std::vector<float> tops;
+        float cy = y;
+        for (const Section &section : sections)
+        {
+            if (!section.label.empty())
+                cy += 40;
+            for (std::size_t i = 0; i < section.options.size(); ++i)
+            {
+                tops.push_back(cy);
+                cy += row_h + gap;
+            }
+        }
+        if (tops.empty())
+            return;
+        // the highlight glides between rows, across the section labels
+        const int lo = std::clamp(static_cast<int>(std::floor(position)), 0, static_cast<int>(tops.size()) - 1);
+        const int hi = std::min(lo + 1, static_cast<int>(tops.size()) - 1);
+        const float f = std::clamp(position - static_cast<float>(lo), 0.0f, 1.0f);
+        const float hy = tops[static_cast<std::size_t>(lo)] +
+                         (tops[static_cast<std::size_t>(hi)] - tops[static_cast<std::size_t>(lo)]) * f;
+        list.glow({x - 22, hy, width + 44, row_h}, 26, 18, accent.with_alpha(0.25f));
+        list.rounded_rect({x - 22, hy, width + 44, row_h}, 26, kWhite);
+        int index = 0;
+        float sy = y;
+        for (const Section &section : sections)
+        {
+            if (!section.label.empty())
+            {
+                ui::text(list, fonts_.semibold, section.label, x, sy + 26, 16, kWhite.with_alpha(0.5f),
+                         gfx::Align::left, 3.0f);
+                sy += 40;
+            }
+            for (const Option &o : section.options)
+            {
+                const bool on = index == focus;
+                list.push_opacity(o.enabled ? 1.0f : 0.4f);
+                const Rect tile{x - 4, sy + 14, 56, 56};
+                list.rounded_rect(tile, 16, on ? accent.with_alpha(0.22f) : kWhite.with_alpha(0.08f));
+                draw_glyph(list, o.glyph, tile, on ? kInk : kWhite.with_alpha(0.9f));
+                const float tx = x + 76;
+                const float value_w = o.value.empty() ? 0.0f : fonts_.regular.measure(o.value, 21) + 30;
+                ui::text(list, fonts_.semibold, fonts_.semibold.font->fit(o.title, 25, width - 130 - value_w), tx,
+                         sy + 38, 25, on ? kInk : kWhite);
+                ui::text(list, fonts_.regular, fonts_.regular.font->fit(o.detail, 19, width - 130 - value_w), tx,
+                         sy + 66, 19, on ? kInk.with_alpha(0.62f) : kWhite.with_alpha(0.55f));
+                if (!o.value.empty())
+                    ui::text(list, fonts_.regular, o.value, x + width - (o.opens ? 34.0f : 0.0f), sy + 50, 21,
+                             on ? kInk.with_alpha(0.7f) : kWhite.with_alpha(0.6f), gfx::Align::right);
+                if (o.opens)
+                {
+                    // a chevron: this row leads to another screen
+                    const Color chev = on ? kInk.with_alpha(0.7f) : kWhite.with_alpha(0.35f);
+                    list.line(x + width - 8, sy + 35, x + width + 1, sy + 42, 2.6f, chev);
+                    list.line(x + width + 1, sy + 42, x + width - 8, sy + 49, 2.6f, chev);
+                }
+                list.pop_opacity();
+                sy += row_h + gap;
+                ++index;
+            }
+        }
+        y = sy;
     };
 
     switch (sheet_)
@@ -1985,22 +2127,33 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
     case Sheet::settings:
     {
         heading("SETTINGS", "Art Swap");
+        // the key's state, as a chip beside the title
         const bool have = key_state_ == "user";
-        list.circle(x + 8, y - 28, 7, have ? Color::rgb(0x30d080) : kAmber);
-        ui::text(list, fonts_.regular, have ? "Your SteamGridDB key is in." : "No SteamGridDB key yet: add yours to find new art.",
-                 x + 26, y - 20, 23, kWhite.with_alpha(0.8f));
-        y += 12;
-        rows({{"Add your key from your phone", "QR code"},
-              {have ? "Type a new key" : "Type your key", "keyboard"},
-              {"Remove your key", have ? "" : "no key"},
-              {"Look at the console again", std::to_string(titles_.size()) + " titles"},
-              {"Helper log", "for a problem report"}},
-             sheet_focus_, sheet_focus_position_.value);
-        y += 24;
-        ui::paragraph(list, fonts_.regular,
-                      "Art Swap " + std::string(kVersion) + "  \xC2\xB7  helper " + kHelperVersion + "  \xC2\xB7  network " +
-                          (helper_.backend().empty() ? "?" : helper_.backend()),
-                      x, y + 20, 22, panel.w - 128, 34, kWhite.with_alpha(0.5f), 2);
+        const std::string state = have ? (key_hint_.empty() ? "Key added" : "Key added  \xC2\xB7  ends in " + key_hint_)
+                                       : "No key yet";
+        const float cw = fonts_.semibold.measure(state, 20) + 62;
+        const Rect chip{panel.x + panel.w - 64 - cw, panel.y + 112, cw, 44};
+        const Color tone = have ? Color::rgb(0x30d080) : kAmber;
+        list.rounded_rect(chip, 22, tone.with_alpha(0.14f));
+        list.bordered_rect(chip, 22, Color::rgb(0x000000, 0.0f), 1.5f, tone.with_alpha(0.6f));
+        list.circle(chip.x + 24, chip.cy(), 6, tone);
+        ui::text(list, fonts_.semibold, state, chip.x + 42, chip.cy() + 7, 20, kWhite);
+        y -= 20;
+        options({{"STEAMGRIDDB KEY",
+                  {{Glyph::phone, "Add your key from your phone", "Scan a code on the TV, then paste the key on your phone",
+                    "QR code"},
+                   {Glyph::keyboard, have ? "Type a new key" : "Type your key", "With the console's keyboard: 32 letters and numbers"},
+                   {Glyph::trash, "Remove your key", "Art Swap stops asking SteamGridDB until you add one", "", have, false}}},
+                 {"GAMES",
+                  {{Glyph::refresh, "Refresh game list",
+                    "Find games, apps and homebrew installed since Art Swap opened",
+                    std::to_string(titles_.size()) + (titles_.size() == 1 ? " game" : " games"), true, false}}},
+                 {"HELP", {{Glyph::log, "Helper log", "What Art Swap's helper did, for a problem report"}}}},
+                sheet_focus_, sheet_focus_position_.value);
+        ui::text(list, fonts_.regular,
+                 "Art Swap " + std::string(kVersion) + "  \xC2\xB7  helper " + kHelperVersion + "  \xC2\xB7  network " +
+                     (helper_.backend().empty() ? "?" : helper_.backend()),
+                 x, panel.y + panel.h - 40, 19, kWhite.with_alpha(0.4f));
         break;
     }
     case Sheet::key_needed:
@@ -2011,7 +2164,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                       "art. SteamGridDB asks everyone who uses it through an app for an API key of their own. "
                       "It is free and takes a minute:",
                       x, y - 8, 25, panel.w - 128, 37, kWhite.with_alpha(0.85f), 4);
-        y += 112;
+        y += 128;
         const char *steps[] = {"Sign in, or make a free account, at steamgriddb.com",
                                "Open Preferences, then API, and copy your key",
                                "Add it here: from your phone is quickest"};
@@ -2022,11 +2175,13 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
             ui::text(list, fonts_.semibold, steps[i], x + 54, y, 24, kWhite);
             y += 48;
         }
-        y += 14;
-        rows({{"Add it from your phone", "QR code"}, {"Type it with the keyboard", "32 characters"}, {"Not now", ""}},
-             sheet_focus_, sheet_focus_position_.value);
+        options({{"", {{Glyph::phone, "Add it from your phone", "Scan a code on the TV, then paste the key on your phone",
+                        "quickest"},
+                       {Glyph::keyboard, "Type it with the keyboard", "32 letters and numbers"},
+                       {Glyph::later, "Not now", "Look around first: changing art asks again", "", true, false}}}},
+                sheet_focus_, sheet_focus_position_.value);
         ui::text(list, fonts_.regular,
-                 "Without a key you can still look through your titles and put back their original art.", x,
+                 "Without a key you can still look through your games and put back their original art.", x,
                  panel.y + panel.h - 44, 21, kWhite.with_alpha(0.55f));
         break;
     }

@@ -18,11 +18,11 @@ connection carries any number of requests, one at a time.
 
 | Request | Answer |
 | --- | --- |
-| `HELLO` | text: `lan <address>` (when the console has one), `artswapd <version>`, `key <user\|none>`, `http <http2\|http1\|curl\|unavailable> <why>` |
+| `HELLO` | text: `lan <address>` (when the console has one), `artswapd <version>`, `key user <last four characters>` or `key none`, `http <http2\|http1\|curl\|unavailable> <why>` |
 | `APPS [rescan]` | text, one line a title: `A id name kind icon pic kept sgdb_id sgdb_name`. kind is `ps5`, `ps4` or `homebrew`; icon and pic describe the slot (`png 512x512 x2`: format, size, number of files) or are `-`; kept is 1 when an `.old` original exists. The first APPS scans; `rescan` scans again. |
 | `ART id slot [w h]` | the slot's art now (`icon`, or `pic`: pic0 before pic1, the `/user/appmeta` copy first), scaled down to fit w × h |
-| `KEY [key]` | checks the key with SteamGridDB, then keeps it in `/data/artswap/apikey.txt`; no key removes it. Text: `key <user\|none>` |
-| `KEYSTATE` | text: `key <user\|none>` |
+| `KEY [key]` | checks the key with SteamGridDB, then keeps it in `/data/artswap/apikey.txt`; no key removes it. Text: the `key` line, as HELLO's |
+| `KEYSTATE` | text: the `key` line, as HELLO's |
 | `PHONE [code]` | with a four-digit code, opens the key page on port 9118 for ten minutes (phone.c); text: `lan <address>`, `port <port>`. Without one, closes it. |
 | `SEARCH term` | text: `G id name year verified`, SteamGridDB's matches, closest first |
 | `MATCH id game name` | keeps the title's SteamGridDB game (`/data/artswap/matches.tsv`); game 0 forgets it |

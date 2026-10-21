@@ -90,7 +90,9 @@ add it:
   at most), needs the code, and closes after ten wrong codes.
 - **With the console's keyboard**.
 
-Settings (OPTIONS) can add, replace or remove the key at any time. It is kept
+Settings (OPTIONS) shows whether a key is in (with its last four characters), and can add, replace or remove it, refresh the game list, or show the helper's log.
+
+The key is kept
 in `/data/artswap/apikey.txt`, which can also be copied over FTP. Without a key,
 Art Swap still lists the titles and restores original art.
 

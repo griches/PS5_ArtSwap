@@ -76,6 +76,8 @@ void config_load(void);
 /* The person's own key (/data/artswap/apikey.txt); false when they have not given one */
 bool config_key(char *out, size_t size);
 const char *config_key_source(void); /* "user" or "none" */
+/* The key's last four characters, to tell one key from another on screen */
+bool config_key_hint(char *out, size_t size);
 bool config_set_key(const char *key);
 
 /* ---- SteamGridDB (sgdb.c) ---- */

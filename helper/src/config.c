@@ -89,3 +89,13 @@ bool config_set_key(const char *key)
     config_load();
     return true;
 }
+
+bool config_key_hint(char *out, size_t size)
+{
+    char key[80];
+    if (!config_key(key, sizeof(key)) || size < 5)
+        return false;
+    const size_t len = strlen(key);
+    copy_str(out, size, key + (len > 4 ? len - 4 : 0));
+    return true;
+}
