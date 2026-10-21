@@ -754,9 +754,11 @@ void App::request_preview()
     char pan[16];
     std::snprintf(pan, sizeof(pan), "%.3f", static_cast<double>(pan_));
     const bool wide = art->h > 0 && static_cast<float>(art->w) / art->h > (icon ? 1.0f : 16.0f / 9.0f);
+    const std::string url = art->url;
+    const bool fit = fit_;
     helper_.ask({"PREVIEW", art->url, slot_, fit_ ? "fit" : "cover", wide ? pan : "0", wide ? "0" : pan,
                  icon ? "512" : "960", icon ? "512" : "540"},
-                [this, serial](Reply &reply) {
+                [this, serial, url, fit](Reply &reply) {
                     if (serial != preview_serial_)
                         return;
                     if (!reply.ok)
@@ -765,7 +767,7 @@ void App::request_preview()
                         toast("The preview did not load", reply.error, true);
                         return;
                     }
-                    upload(std::move(reply.picture), [this, serial](std::uint32_t texture, const Picture &p) {
+                    upload(std::move(reply.picture), [this, serial, url, fit](std::uint32_t texture, const Picture &p) {
                         if (serial != preview_serial_)
                         {
                             if (texture)
@@ -775,6 +777,8 @@ void App::request_preview()
                         preview_loading_ = false;
                         forget(preview_);
                         preview_ = texture;
+                        preview_url_ = url;
+                        preview_fit_ = fit;
                         preview_w_ = p.w;
                         preview_h_ = p.h;
                     });
@@ -1352,6 +1356,12 @@ void App::update_picker(const hui::InputFrame &input, float dt, ui::Feedback &fe
         {
             feedback.play(Cue::modal_open);
             sheet_ = Sheet::confirm;
+            // the picker stops while the sheet is up: the big preview of this picture now, not after
+            if (preview_due_ >= 0.0f)
+            {
+                preview_due_ = -1.0f;
+                request_preview();
+            }
         }
     }
     else if (input.is_pressed(Action::confirm) && !list_error_.empty())
@@ -1886,21 +1896,7 @@ void App::draw_picker(gfx::DrawList &list) const
     ui::text(list, fonts_.semibold, "NEW", fresh.x, fresh.y - 16, 17, kWhite.with_alpha(0.6f), gfx::Align::left, 3.0f);
     list.shadow({fresh.x, fresh.y + 18, fresh.w, fresh.h}, icon ? 32 : 18, 36, Color::rgb(0x000000, 0.55f));
     const float radius = icon ? 32.0f : 14.0f;
-    if (art && preview_)
-        list.image(preview_, fresh, gfx::kFullUv, kWhite, radius);
-    else if (art && art->texture)
-    {
-        // until the helper's preview arrives: the thumbnail, framed the same way
-        list.rounded_rect(fresh, radius, kNight);
-        if (fit_)
-            list.image(art->texture, contain(fresh, art->tw, art->th), gfx::kFullUv, kWhite, radius * 0.5f);
-        else
-            list.image(art->texture, fresh, cover_uv(art->tw, art->th, fresh.w, fresh.h, pan_), kWhite, radius);
-    }
-    else
-        list.rounded_rect(fresh, radius, kWhite.with_alpha(0.06f));
-    if (art && (preview_loading_ || preview_due_ >= 0.0f))
-        draw_spinner(list, fresh.x + fresh.w - 30, fresh.y + 30, 12);
+    draw_new_art(list, fresh, radius);
     list.bordered_rect(fresh, radius, Color::rgb(0x000000, 0.0f), 2, kWhite.with_alpha(0.2f));
 
     const float left = icon ? kPanelX : fresh.x;
@@ -1932,6 +1928,28 @@ void App::draw_picker(gfx::DrawList &list) const
         ui::text(list, fonts_.regular, "original kept", now.x + now.w + 22, now.y + 86, 20,
                  title.accent.with_alpha(0.9f));
     list.pop_opacity();
+}
+
+// What the chosen picture would make: the helper's preview of it, or, until that arrives, its
+// thumbnail framed the same way. Never the preview of the picture chosen before.
+void App::draw_new_art(gfx::DrawList &list, const Rect &r, float radius) const
+{
+    const Art *art = focused_art();
+    const bool current = art && preview_ && preview_url_ == art->url && preview_fit_ == fit_;
+    if (current)
+        list.image(preview_, r, gfx::kFullUv, kWhite, radius);
+    else if (art && art->texture)
+    {
+        list.rounded_rect(r, radius, kNight);
+        if (fit_)
+            list.image(art->texture, contain(r, art->tw, art->th), gfx::kFullUv, kWhite, radius * 0.5f);
+        else
+            list.image(art->texture, r, cover_uv(art->tw, art->th, r.w, r.h, pan_), kWhite, radius);
+    }
+    else
+        list.rounded_rect(r, radius, kWhite.with_alpha(0.06f));
+    if (art && (preview_loading_ || preview_due_ >= 0.0f))
+        draw_spinner(list, r.x + r.w - 30, r.y + 30, 12);
 }
 
 void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
@@ -1983,11 +2001,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         heading(icon ? "NEW ICON" : "NEW BACKGROUND", "For " + name + "?");
         const Rect pic = icon ? Rect{panel.x + panel.w - 64 - 260, panel.y + 150, 260, 260}
                               : Rect{panel.x + panel.w - 64 - 400, panel.y + 170, 400, 225};
-        const Art *art = focused_art();
-        if (preview_)
-            list.image(preview_, pic, gfx::kFullUv, kWhite, icon ? 26.0f : 10.0f);
-        else if (art && art->texture)
-            list.image(art->texture, pic, cover_uv(art->tw, art->th, pic.w, pic.h, pan_), kWhite, icon ? 26.0f : 10.0f);
+        draw_new_art(list, pic, icon ? 26.0f : 10.0f);
         const std::string file = icon ? "icon0" : "pic0 and pic1";
         ui::paragraph(list, fonts_.regular,
                       "Art Swap writes it over " + file +
@@ -2051,16 +2065,17 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
             y += 52;
         }
         y += 14;
-        // saved data: what the refresh does to keep it
-        const Rect safe{x - 4, y - 8, width + 8, 172};
+        // saved data: what the refresh does to keep it, in a box as tall as its lines
+        const std::string kept = "Nothing is deleted: the game's folder stays where it is. Art Swap copies its saves "
+                                 "and settings aside first, then checks every file and puts back anything missing.";
+        const float kept_lines =
+            static_cast<float>(std::min<std::size_t>(fonts_.regular.font->wrap(kept, 22, width - 40).size(), 3));
+        const Rect safe{x - 4, y - 8, width + 8, 78 + 32 * (kept_lines - 1) + 38};
         list.bordered_rect(safe, 18, Color::rgb(0x3ddc84, 0.08f), 1.5f, Color::rgb(0x3ddc84, 0.45f));
-        ui::text(list, fonts_.semibold, "YOUR SAVED DATA STAYS", safe.x + 24, safe.y + 38, 17, Color::rgb(0x3ddc84),
+        ui::text(list, fonts_.semibold, "YOUR SAVED DATA STAYS", safe.x + 24, safe.y + 40, 17, Color::rgb(0x3ddc84),
                  gfx::Align::left, 3.0f);
-        ui::paragraph(list, fonts_.regular,
-                      "Nothing is deleted: the game's folder stays where it is. Before anything changes, Art Swap "
-                      "copies the game's saves and settings aside; afterwards it checks every file and puts back "
-                      "anything missing.",
-                      safe.x + 24, safe.y + 76, 22, safe.w - 48, 32, kWhite.with_alpha(0.85f), 3);
+        ui::paragraph(list, fonts_.regular, kept, safe.x + 24, safe.y + 78, 22, safe.w - 48, 32,
+                      kWhite.with_alpha(0.85f), 3);
         y = safe.y + safe.h + 48;
         // what it needs; once it has started, what it is doing
         if (refresh_ == Refresh::starting)

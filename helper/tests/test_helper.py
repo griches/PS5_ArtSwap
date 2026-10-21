@@ -163,7 +163,7 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.1.2", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.1.3", f"HELLO names the version ({hello})")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
 
@@ -250,6 +250,13 @@ def main() -> int:
         h.rows("APPLY", "PPSA99314", "icon", lists["square"][-1][2], "cover", "0", "0")
         check(sha(str(icon_meta) + ".old") == originals[icon_meta], "a second change keeps the first original")
 
+        # the home screen's copy made again from the folder without its .old (an install whose copy-back
+        # did not happen): the next change keeps the folder's original for it, not the art shown now
+        Path(str(icon_meta) + ".old").unlink()
+        shutil.copy(icon_hb, icon_meta)
+        h.rows("APPLY", "PPSA99314", "icon", square[2], "cover", "0", "0")
+        check(sha(str(icon_meta) + ".old") == originals[icon_meta], "a copy that lost its .old keeps the folder's original")
+
         # a PS4 title's PNG background (RGB), fit mode
         report = h.rows("APPLY", "CUSA00001", "pic", hero[2], "fit", "0", "0")
         im = Image.open(base / "user/appmeta/CUSA00001/pic0.png")
@@ -322,7 +329,8 @@ def main() -> int:
         check(len(list((base / "data/artswap/saves").glob("PPSA99314-*"))) == 2,
               "a copy that had to be used is kept")
 
-        # restore
+        # restore; a copy without its .old takes the folder's original
+        Path(str(base / "user/appmeta/PPSA99314/pic0.dds") + ".old").unlink()
         report = h.rows("RESTORE", "PPSA99314", "all")
         check(sum(r[0] == "R" for r in report) == 6, f"RESTORE puts six files back ({len(report)})")
         for p in list(base.rglob("PPSA99314/**/*.png")) + list(base.rglob("PPSA99314/**/*.dds")):

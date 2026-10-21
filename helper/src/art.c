@@ -3,10 +3,11 @@
  *
  * Before a file is replaced the first time, the original is copied beside it
  * as <file>.old (icon0.png.old, pic0.dds.old); an .old that exists is never
- * written again, so it is always the art the title came with. Restoring moves
- * each .old back over its file. New art is written in the form of the file it
- * replaces (container, size, channels, DDS format, levels and header), so the
- * home screen reads it as it read the original.
+ * written again, so it is always the art the title came with. A copy without
+ * one (the home screen's, made again from the folder) takes another copy's.
+ * Restoring moves each .old back over its file. New art is written in the
+ * form of the file it replaces (container, size, channels, DDS format, levels
+ * and header), so the home screen reads it as it read the original.
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -17,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 /* The file to show for a slot: pic0 before pic1, the home screen's copy first */
@@ -60,6 +62,28 @@ bool art_current(const app_t *app, const char *slot, int max_w, int max_h, image
     }
     image_free(&full);
     return ok;
+}
+
+/* The original another copy of this picture keeps (the folder's sce_sys/icon0.png.old for the home
+ * screen's icon0.png): ShadowMountPlus makes the home screen's copies again from the folder, without
+ * the .old beside them, so a copy can lose its own while the folder still has the art it came with */
+static bool other_old(const app_t *app, const art_file_t *file, buf_t *out)
+{
+    const char *name = strrchr(file->path, '/');
+    for (int i = 0; name != NULL && i < app->nfiles; i++) {
+        const art_file_t *other = &app->files[i];
+        const char *other_name = strrchr(other->path, '/');
+        if (other == file || other_name == NULL || strcasecmp(name, other_name) != 0)
+            continue;
+        char old[420], real_old[512];
+        art_format_t fmt;
+        snprintf(old, sizeof(old), "%s.old", other->path);
+        if (file_exists(cpath(old, real_old, sizeof(real_old))) && file_read(real_old, out) &&
+            image_probe(out->data, out->len, &fmt) && fmt.w == file->fmt.w && fmt.h == file->fmt.h)
+            return true;
+        buf_free(out);
+    }
+    return false;
 }
 
 /* The picture made for one target size */
@@ -128,13 +152,16 @@ bool art_apply(const app_t *app, const char *slot, const char *url, const char *
         }
         if (ok)
             ok = image_encode_like(&made, &fmt, original.data, original.len, &encoded, err, errlen);
-        /* the original, kept once */
+        /* the original, kept once: another copy's, if it keeps one, rather than the art shown now */
         if (ok && !file_exists(real_old)) {
-            ok = file_write_replace(real_old, original.data, original.len, real);
+            buf_t kept = {0};
+            const buf_t *keep = other_old(app, file, &kept) ? &kept : &original;
+            ok = file_write_replace(real_old, keep->data, keep->len, real);
             if (!ok)
                 snprintf(err, errlen, "the original could not be kept as %s", old);
             else
                 buf_printf(report, "O\t%s\n", old);
+            buf_free(&kept);
         }
         if (ok) {
             ok = file_write_replace(real, encoded.data, encoded.len, real);
@@ -158,6 +185,25 @@ bool art_apply(const app_t *app, const char *slot, const char *url, const char *
 bool art_restore(const app_t *app, const char *slot, buf_t *report, char *err, size_t errlen)
 {
     int restored = 0, failed = 0;
+    /* first the copies without their .old: another copy's original, before the moves below take it */
+    for (int i = 0; i < app->nfiles; i++) {
+        const art_file_t *file = &app->files[i];
+        if (strcmp(slot, "all") != 0 && !slot_matches(file, slot))
+            continue;
+        char real[512], real_old[512], old[420];
+        cpath(file->path, real, sizeof(real));
+        snprintf(old, sizeof(old), "%s.old", file->path);
+        buf_t kept = {0};
+        if (file_exists(cpath(old, real_old, sizeof(real_old))) || !other_old(app, file, &kept))
+            continue;
+        if (file_write_replace(real, kept.data, kept.len, real)) {
+            buf_printf(report, "R\t%s\n", file->path);
+            restored++;
+        } else {
+            failed++;
+        }
+        buf_free(&kept);
+    }
     for (int i = 0; i < app->nfiles; i++) {
         const art_file_t *file = &app->files[i];
         if (strcmp(slot, "all") != 0 && !slot_matches(file, slot))

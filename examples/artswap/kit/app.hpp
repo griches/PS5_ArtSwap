@@ -125,6 +125,7 @@ class App
     void request_thumbs();
     void request_preview();
     std::vector<const char *> tabs() const;
+    void draw_new_art(hui::gfx::DrawList &list, const hui::gfx::Rect &r, float radius) const;
     Art *focused_art();
     const Art *focused_art() const;
 
@@ -236,6 +237,8 @@ class App
     float preview_due_ = -1.0f;
     int preview_serial_ = 0;
     std::uint32_t preview_ = 0;
+    std::string preview_url_; // the picture preview_ was made from, and in which framing:
+    bool preview_fit_ = false; // shown only for that picture, never for the next one
     int preview_w_ = 0, preview_h_ = 0;
     bool preview_loading_ = false;
     std::uint32_t current_art_ = 0; // the slot's art now, for "Now"
