@@ -4,16 +4,11 @@
 #   helper/tools/build.sh            build/helper/artswapd.elf, built in the VM "ps5"
 #   helper/tools/build.sh host       build/helper-host/artswapd, built on this machine
 #
-# The built-in SteamGridDB key comes from SGDB_KEY in the project's .env (never
-# committed); without one the helper has no key of its own and asks for one.
-#
 # Copyright (C) 2026 Gary Riches
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 target=${1:-payload}
-
-python3 "$root/helper/tools/key-header.py" "$root/.env" "$root/build/helper/builtin_key.h"
 
 if [[ $target == host ]]; then
     exec make -C "$root/helper" host

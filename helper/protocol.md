@@ -18,10 +18,12 @@ connection carries any number of requests, one at a time.
 
 | Request | Answer |
 | --- | --- |
-| `HELLO` | text: `artswapd <version>`, `key <user\|builtin\|none>`, `http <http2\|http1\|curl\|unavailable> <why>` |
+| `HELLO` | text: `lan <address>` (when the console has one), `artswapd <version>`, `key <user\|none>`, `http <http2\|http1\|curl\|unavailable> <why>` |
 | `APPS [rescan]` | text, one line a title: `A id name kind icon pic kept sgdb_id sgdb_name`. kind is `ps5`, `ps4` or `homebrew`; icon and pic describe the slot (`png 512x512 x2`: format, size, number of files) or are `-`; kept is 1 when an `.old` original exists. The first APPS scans; `rescan` scans again. |
 | `ART id slot [w h]` | the slot's art now (`icon`, or `pic`: pic0 before pic1, the `/user/appmeta` copy first), scaled down to fit w × h |
-| `KEY [key]` | checks the key with SteamGridDB, then keeps it in `/data/artswap/apikey.txt`; no key goes back to the built-in one. Text: `key <source>` |
+| `KEY [key]` | checks the key with SteamGridDB, then keeps it in `/data/artswap/apikey.txt`; no key removes it. Text: `key <user\|none>` |
+| `KEYSTATE` | text: `key <user\|none>` |
+| `PHONE [code]` | with a four-digit code, opens the key page on port 9118 for ten minutes (phone.c); text: `lan <address>`, `port <port>`. Without one, closes it. |
 | `SEARCH term` | text: `G id name year verified`, SteamGridDB's matches, closest first |
 | `MATCH id game name` | keeps the title's SteamGridDB game (`/data/artswap/matches.tsv`); game 0 forgets it |
 | `LIST game kind [page]` | text: `P page total limit`, then `I id url thumb width height style author mime` a picture, and `H count` for icons hidden as too small. Kinds: `square`, `covers`, `wide`, `heroes`, `icons`, `logos`. Static pictures only, nothing marked NSFW. |
@@ -40,5 +42,9 @@ connection carries any number of requests, one at a time.
   never writes an `.old` that exists. Files are written whole beside the target
   and renamed over it, with the original's mode and owner.
 - It fetches pictures only from SteamGridDB's own hosts.
+- It keeps no key of its own: only the person's, in `/data/artswap/apikey.txt`.
+- The key page listens on the network only between `PHONE code` and `PHONE`
+  (or ten minutes, a saved key, or ten wrong codes), and saves only a key that
+  comes with the code and that SteamGridDB accepts.
 - It leaves 90 seconds after its last connection closes, or 10 minutes after
   starting if nobody connects.

@@ -10,7 +10,8 @@
 # art is a real one of ours (Eternal Darkness: icon0.png, BC7 pic0/pic1.dds).
 # Then runs the host helper on it and checks every request, the files written
 # (format, size, header, levels), the .old originals, and restoring them.
-# Needs network access and the built-in key (SGDB_KEY in .env).
+# Needs network access and a SteamGridDB key: SGDB_KEY in .env goes into the
+# made-up console's /data/artswap/apikey.txt, as a person's own key would.
 #
 # Copyright (C) 2026 Gary Riches
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -25,6 +26,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from PIL import Image
@@ -36,7 +40,16 @@ from client import Helper, HelperError  # noqa: E402
 
 ED = ROOT.parent / "PS5_EternalDarkness/ps5/sce_sys"
 PORT = 19117
+PHONE_PORT = 19118
 failures = []
+
+
+def env_key():
+    env = ROOT / ".env"
+    for line in env.read_text().splitlines() if env.exists() else []:
+        if line.startswith("SGDB_KEY="):
+            return line.split("=", 1)[1].strip()
+    sys.exit("put SGDB_KEY=<your SteamGridDB key> in .env first")
 
 
 def check(condition, what):
@@ -128,7 +141,10 @@ def main() -> int:
     shots.mkdir()
     originals = {p: sha(p) for p in base.rglob("*") if p.is_file() and p.suffix in (".png", ".dds")}
 
-    env = dict(os.environ, ARTSWAP_ROOT=str(base), ARTSWAP_PORT=str(PORT))
+    key = env_key()
+    (base / "data/artswap/apikey.txt").write_text(key + "\n")
+    env = dict(os.environ, ARTSWAP_ROOT=str(base), ARTSWAP_PORT=str(PORT), ARTSWAP_PHONE_PORT=str(PHONE_PORT),
+               ARTSWAP_LAN="127.0.0.1")
     helper_bin = ROOT / "build/helper-host/artswapd"
     log = open(work / "helper.out", "w")
     proc = subprocess.Popen([str(helper_bin)], env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -138,7 +154,8 @@ def main() -> int:
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
         check(hello.get("artswapd") == "0.1.0", f"HELLO names the version ({hello})")
-        check(hello.get("key") == "builtin", "the built-in key is in")
+        check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
+        check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
 
         apps = {r[1]: r for r in h.rows("APPS")}
         print("     " + "\n     ".join("\t".join(r) for r in apps.values()))
@@ -251,7 +268,64 @@ def main() -> int:
             check(False, "a wrong key is refused")
         except HelperError as e:
             check("401" in str(e) or "refused" in str(e), f"a wrong key is refused ({e})")
-        check("key\tbuiltin" in h.ask("KEY", ""), "KEY with nothing goes back to the built-in key")
+        check("key\tnone" in h.ask("KEY", ""), "KEY with nothing removes the key")
+        check(not (base / "data/artswap/apikey.txt").exists(), "apikey.txt is gone")
+        try:
+            h.rows("SEARCH", "Portal")
+            check(False, "with no key, SteamGridDB is not asked")
+        except HelperError as e:
+            check("No SteamGridDB key" in str(e), f"with no key, the answer says how to add one ({e})")
+
+        # the key page, from a phone
+        page = f"http://127.0.0.1:{PHONE_PORT}"
+        try:
+            urllib.request.urlopen(page + "/1234", timeout=2)
+            check(False, "nothing listens before PHONE")
+        except (urllib.error.URLError, ConnectionError, OSError):
+            check(True, "nothing listens before PHONE")
+        rows = dict(r[:2] for r in h.rows("PHONE", "4831"))
+        check(rows.get("lan") == "127.0.0.1" and rows.get("port") == str(PHONE_PORT), f"PHONE opens the page ({rows})")
+        time.sleep(0.5)
+        html = urllib.request.urlopen(page + "/4831", timeout=5).read().decode()
+        check("Add your SteamGridDB API key" in html and "name=code value='4831'" in html, "the QR code's page carries the code")
+        html = urllib.request.urlopen(page + "/", timeout=5).read().decode()
+        check("The code on your TV" in html, "the plain address asks for the code")
+        (work / "shots/phone-page.html").write_text(urllib.request.urlopen(page + "/4831", timeout=5).read().decode())
+
+        def post(code, value):
+            data = urllib.parse.urlencode({"code": code, "key": value}).encode()
+            try:
+                response = urllib.request.urlopen(page + "/", data=data, timeout=30)
+                return response.status, response.read().decode()
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode()
+
+        status, html = post("1111", key)
+        check(status == 403 and "not the code on your TV" in html, f"a wrong code is refused ({status})")
+        check("key\tnone" in h.ask("KEYSTATE"), "a wrong code saves nothing")
+        status, html = post("4831", "0123456789abcdef0123456789abcdef")
+        check(status == 200 and "did not accept that key" in html, "a key SteamGridDB refuses is not kept")
+        check("key\tnone" in h.ask("KEYSTATE"), "... and nothing is saved")
+        status, html = post("4831", key)
+        check(status == 200 and "Your key is saved" in html, f"the right code and key are saved ({status})")
+        (work / "shots/phone-done.html").write_text(html)
+        check("key\tuser" in h.ask("KEYSTATE"), "KEYSTATE says the key is in")
+        check((base / "data/artswap/apikey.txt").read_text().strip() == key, "apikey.txt holds the key")
+        time.sleep(1.0)
+        try:
+            urllib.request.urlopen(page + "/4831", timeout=2)
+            check(False, "the page closes once the key is in")
+        except (urllib.error.URLError, ConnectionError, OSError):
+            check(True, "the page closes once the key is in")
+        h.rows("PHONE", "5555")
+        time.sleep(0.5)
+        h.ask("PHONE")
+        time.sleep(1.0)
+        try:
+            urllib.request.urlopen(page + "/5555", timeout=2)
+            check(False, "PHONE alone closes the page")
+        except (urllib.error.URLError, ConnectionError, OSError):
+            check(True, "PHONE alone closes the page")
 
         check("apply" in h.ask("LOG"), "LOG gives the helper's log")
         h.ask("BYE")

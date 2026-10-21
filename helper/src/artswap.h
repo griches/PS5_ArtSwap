@@ -73,9 +73,9 @@ bool http_get(const char *url, const char *bearer, buf_t *out, int *status, char
 
 /* ---- configuration: the API key ---- */
 void config_load(void);
-/* The key requests use: the person's own (/data/artswap/apikey.txt) or the built-in one */
+/* The person's own key (/data/artswap/apikey.txt); false when they have not given one */
 bool config_key(char *out, size_t size);
-const char *config_key_source(void); /* "user", "builtin" or "none" */
+const char *config_key_source(void); /* "user" or "none" */
 bool config_set_key(const char *key);
 
 /* ---- SteamGridDB (sgdb.c) ---- */

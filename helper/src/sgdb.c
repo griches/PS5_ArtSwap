@@ -47,7 +47,7 @@ static cJSON *api_get(const char *path, const char *key, char *err, size_t errle
     char own_key[80];
     if (key == NULL) {
         if (!config_key(own_key, sizeof(own_key))) {
-            snprintf(err, errlen, "No SteamGridDB API key: add one in Settings");
+            snprintf(err, errlen, "No SteamGridDB key yet: add yours in Art Swap's settings (OPTIONS)");
             return NULL;
         }
         key = own_key;

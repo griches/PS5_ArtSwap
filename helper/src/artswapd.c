@@ -10,6 +10,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "art.h"
+#include "phone.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -194,6 +195,9 @@ static bool handle(int fd, char **field, int n)
     bool ok = true;
 
     if (strcmp(cmd, "HELLO") == 0) {
+        char lan[64];
+        if (phone_lan_address(lan, sizeof(lan))[0])
+            buf_printf(&text, "lan\t%s\n", lan);
         buf_printf(&text, "artswapd\t%s\nkey\t%s\nhttp\t%s\t", ARTSWAP_VERSION, config_key_source(),
                    g_http_ok ? http_backend() : "unavailable");
         buf_field(&text, g_http_ok ? "" : g_http_error);
@@ -225,6 +229,21 @@ static bool handle(int fd, char **field, int n)
             ok = reply_error(fd, "that does not look like an API key");
         else {
             buf_printf(&text, "key\t%s\n", config_key_source());
+            ok = reply_text(fd, &text);
+        }
+    } else if (strcmp(cmd, "KEYSTATE") == 0) {
+        buf_printf(&text, "key\t%s\n", config_key_source());
+        ok = reply_text(fd, &text);
+    } else if (strcmp(cmd, "PHONE") == 0) {
+        /* PHONE code: open the key page for that code; PHONE alone closes it */
+        if (n < 2 || field[1][0] == 0) {
+            phone_stop();
+            ok = reply_text(fd, &text);
+        } else if (!phone_start(field[1], err, sizeof(err))) {
+            ok = reply_error(fd, err);
+        } else {
+            char lan[64];
+            buf_printf(&text, "lan\t%s\nport\t%d\n", phone_lan_address(lan, sizeof(lan)), phone_port());
             ok = reply_text(fd, &text);
         }
     } else if (strcmp(cmd, "SEARCH") == 0) {

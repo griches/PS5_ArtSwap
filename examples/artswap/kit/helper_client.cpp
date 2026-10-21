@@ -170,6 +170,12 @@ std::string Helper::key_source() const
     return key_source_;
 }
 
+std::string Helper::lan_address() const
+{
+    std::lock_guard<std::mutex> hold(lock_);
+    return lan_address_;
+}
+
 void Helper::set_status(const std::string &text)
 {
     std::lock_guard<std::mutex> hold(lock_);
@@ -301,6 +307,11 @@ void Helper::launch()
             {
                 std::lock_guard<std::mutex> hold(lock_);
                 key_source_ = row[1];
+            }
+            if (row.size() >= 2 && row[0] == "lan")
+            {
+                std::lock_guard<std::mutex> hold(lock_);
+                lan_address_ = row[1];
             }
             if (row.size() >= 2 && row[0] == "http")
             {

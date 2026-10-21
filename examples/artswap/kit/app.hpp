@@ -91,6 +91,8 @@ class App
         settings,
         log,
         restore,
+        phone,
+        key_needed,
     };
 
     // ---- the titles ----
@@ -119,6 +121,11 @@ class App
     void choose_game(int row);
     void open_settings();
     void settings_action(hui::ui::Feedback &feedback);
+    void open_phone();
+    void close_phone();
+    void key_added(const std::string &how);
+    // ✕ or △ on a title: the picker, or first the explanation when there is no key
+    void want_picker(const std::string &slot, hui::ui::Feedback &feedback);
     void type_key();
     void type_search();
     void toast(const std::string &title, const std::string &detail, bool error = false);
@@ -217,7 +224,15 @@ class App
     hui::tween::Spring sheet_focus_position_;
     std::string working_text_;
     std::string log_text_;
-    std::string key_state_; // builtin, user or none: the helper's answer, then each KEY's
+    std::string pairing_code_; // the phone sheet's code, new each time it opens
+    std::string phone_address_; // where the key page is, as the helper said
+    std::string phone_error_;
+    float phone_poll_ = 0.0f;
+    Sheet phone_back_ = Sheet::settings; // where ○ goes from the phone sheet
+    bool phone_asking_ = false;
+    std::string key_state_; // user or none: the helper's answer, then each change
+    bool key_explained_ = false; // the explanation has shown once this run
+    std::string pending_slot_;  // the picker to open once a key is in
     std::vector<Toast> toasts_;
 };
 

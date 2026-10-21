@@ -75,14 +75,24 @@ through that loader.
 
 ## The SteamGridDB API key
 
-SteamGridDB's API needs a key. A release build carries one, so Art Swap works
-straight away. To use your own (it is free): sign in at steamgriddb.com, open
-Preferences, then API. Enter the key in Art Swap's settings, or put it in
-`/data/artswap/apikey.txt` over FTP. "Use the built-in key" in the settings
-goes back.
+SteamGridDB's API needs a key, and each person registers their own: it is free,
+and SteamGridDB's terms do not cover sharing one. No key is built into Art Swap.
 
-The built-in key comes from `SGDB_KEY` in this repository's ignored `.env` at
-build time. It never goes into the source.
+When Art Swap has no key it says so: on the first start, when ✕ or △ would need
+SteamGridDB, and at the top of the screen. It explains what the key is and how
+to get one (steamgriddb.com, sign in, Preferences, API), and offers two ways to
+add it:
+
+- **From your phone**: the TV shows a QR code, the console's address and a
+  four-digit code. The phone opens a small page served by the helper on port
+  9118, takes the key, checks it with SteamGridDB and saves it; the TV notices
+  and carries on. The page exists only while that screen is open (ten minutes
+  at most), needs the code, and closes after ten wrong codes.
+- **With the console's keyboard**.
+
+Settings (OPTIONS) can add, replace or remove the key at any time. It is kept
+in `/data/artswap/apikey.txt`, which can also be copied over FTP. Without a key,
+Art Swap still lists the titles and restores original art.
 
 ## How it works
 
@@ -101,7 +111,8 @@ write `/user/appmeta`. Art Swap is therefore two programs:
 The title carries the helper (`artswapd.elf` in its folder) and hands it to the
 ELF loader when no helper answers. A helper of another version is asked to
 leave and replaced. The helper leaves by itself 90 seconds after Art Swap
-closes. It answers only on 127.0.0.1. Its requests are in
+closes. It answers only on 127.0.0.1, apart from the key page above while it
+is open. Its requests are in
 [`helper/protocol.md`](helper/protocol.md).
 
 On the console the helper keeps its files in `/data/artswap/`:
@@ -112,7 +123,7 @@ On the console the helper keeps its files in `/data/artswap/`:
 | `scan.txt` | every title found, and each art file with its format and size |
 | `appmeta-files.txt` | every file in each title's `/user/appmeta` folder |
 | `matches.tsv` | the SteamGridDB game chosen for each title |
-| `apikey.txt` | your own API key, if you gave one |
+| `apikey.txt` | your SteamGridDB API key |
 | `cache/` | downloaded pictures (trimmed to 192 MB when over 256 MB) |
 | `no-appdb` | if present, names are never read from the system's `app.db` |
 
@@ -130,7 +141,9 @@ These need the console and have not been run there yet:
 - the layout of `/user/appmeta` for retail PS5 and PS4 games on this firmware
   (`appmeta-files.txt` records it);
 - whether the home screen shows new art without a restart;
-- the keyboard dialog (the code is Wind Waker HD's, which works there).
+- the keyboard dialog (the code is Wind Waker HD's, which works there);
+- the key page reached from a phone: the helper finds the console's address by
+  asking the network stack which address it would send from, and listens on 9118.
 
 ## Building
 
@@ -141,13 +154,15 @@ the UI kit's fork), with this folder mounted at the same path.
 ps5/tools/vm.sh build                  # dist/PPSA99318/ with eboot.bin and artswapd.elf
 helper/tools/build.sh                  # the helper alone: build/helper/artswapd.elf
 helper/tools/build.sh host             # the helper for this Mac (libcurl)
-python3 helper/tests/test_helper.py    # the helper against a made-up console and SteamGridDB
+python3 helper/tests/test_helper.py    # the helper against a made-up console and SteamGridDB, the key page too
 tools/preview/run.sh                   # the screens with the real helper, drawn in the VM: build/preview/*.png
+NOKEY=1 tools/preview/run.sh FILE      # ... as someone who has not added a key yet
 ```
 
 The preview's tour is a script of presses (`tools/preview/preview_main.cpp`
 has the default; `tools/preview/run.sh FILE` runs another). Put `SGDB_KEY=...`
-in `.env` first: the tests and the preview talk to SteamGridDB.
+in `.env` first: the tests and the preview talk to SteamGridDB, and put that key
+into their made-up console's `apikey.txt`. It never goes into a build.
 
 The title is made from the [PS5 Vulkan Template](https://github.com/mihawk-99/PS5_VulkanTemplate)
 at `b577e950`, with its UI module. Art Swap's code is in `examples/artswap/kit/`
@@ -168,6 +183,8 @@ at `b577e950`, with its UI module. Art Swap's code is in `examples/artswap/kit/`
   (public domain); `helper/third_party/SOURCES.txt` pins each. Its BC7 encoder
   follows PS5 RetroArch's `tools/make-title-art.py` (GPL-3.0-or-later). The
   keyboard follows PS5_WindWakerHD's.
+- The QR code is drawn with [Nayuki's QR Code generator](https://github.com/nayuki/QR-Code-generator)
+  (MIT), in `examples/artswap/kit/qrcodegen.*`.
 - **The art Art Swap offers** is SteamGridDB's, made and uploaded by its
   community; each picture shows its author. Art Swap is not affiliated with
   SteamGridDB, Valve or Sony.

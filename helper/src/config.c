@@ -1,16 +1,15 @@
 /*
  * Art Swap helper - the SteamGridDB API key.
  *
- * A key the person gave (Settings in the title, or /data/artswap/apikey.txt
- * copied over FTP) wins; otherwise the key built into the release is used,
- * when the build had one (helper/tools/build.sh reads SGDB_KEY from the
- * project's ignored .env and writes it, masked, into builtin_key.h).
+ * Every person registers a key of their own (SteamGridDB's terms do not
+ * cover sharing one): from their phone (phone.c), with the console's
+ * keyboard, or as /data/artswap/apikey.txt copied over FTP. No key is built
+ * into Art Swap.
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "artswap.h"
-#include "builtin_key.h"
 
 #include <ctype.h>
 #include <pthread.h>
@@ -53,37 +52,22 @@ void config_load(void)
     buf_free(&text);
 }
 
-static bool builtin_key(char *out, size_t size)
-{
-    static const uint8_t masked[] = ARTSWAP_BUILTIN_KEY;
-    const size_t len = sizeof(masked) - 1; /* the array ends in a 0 byte */
-    if (len == 0 || len + 1 > size)
-        return false;
-    for (size_t i = 0; i < len; i++)
-        out[i] = (char)(masked[i] ^ (uint8_t)(0x5a + i * 7));
-    out[len] = 0;
-    return true;
-}
-
 bool config_key(char *out, size_t size)
 {
     pthread_mutex_lock(&g_lock);
-    const bool user = g_user_key[0] != 0;
-    if (user)
+    const bool have = g_user_key[0] != 0;
+    if (have)
         copy_str(out, size, g_user_key);
     pthread_mutex_unlock(&g_lock);
-    return user || builtin_key(out, size);
+    return have;
 }
 
 const char *config_key_source(void)
 {
-    char key[80];
     pthread_mutex_lock(&g_lock);
-    const bool user = g_user_key[0] != 0;
+    const bool have = g_user_key[0] != 0;
     pthread_mutex_unlock(&g_lock);
-    if (user)
-        return "user";
-    return builtin_key(key, sizeof(key)) ? "builtin" : "none";
+    return have ? "user" : "none";
 }
 
 bool config_set_key(const char *key)
@@ -91,7 +75,7 @@ bool config_set_key(const char *key)
     char path[512];
     data_path("apikey.txt", path, sizeof(path));
     if (key[0] == 0) {
-        /* back to the built-in key */
+        /* forget the key */
         remove(path);
         config_load();
         return true;

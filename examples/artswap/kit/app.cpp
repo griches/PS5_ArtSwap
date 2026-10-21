@@ -16,9 +16,11 @@
 #include "app.hpp"
 
 #include "audio/cues.hpp"
+#include "qrcodegen.hpp"
 #include "ui/glyphs.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -358,6 +360,13 @@ void App::load_titles(bool rescan)
                     request_icon(*titles_[static_cast<std::size_t>(i)]);
             }
         ring_.snap(card_rect(focus_, true));
+        if (key_state_ == "none" && !key_explained_ && sheet_ == Sheet::none)
+        {
+            key_explained_ = true;
+            sheet_ = Sheet::key_needed;
+            sheet_focus_ = 0;
+            sheet_focus_position_.snap(0.0f);
+        }
     }, true);
 }
 
@@ -899,14 +908,13 @@ void App::type_key()
             sheet_ = Sheet::working;
             working_text_ = "Checking the key with SteamGridDB";
             helper_.ask({"KEY", text}, [this](Reply &reply) {
-                sheet_ = Sheet::settings;
+                sheet_ = Sheet::none;
                 if (!reply.ok)
                 {
                     toast("The key was not taken", reply.error, true);
                     return;
                 }
-                key_state_ = "user";
-                toast("Your API key is saved", "Art Swap uses it from now on.");
+                key_added("SteamGridDB accepted it.");
             }, true);
         }))
         toast("The keyboard did not open", "", true);
@@ -924,9 +932,13 @@ void App::settings_action(ui::Feedback &feedback)
     switch (sheet_focus_)
     {
     case 0:
+        feedback.play(Cue::modal_open);
+        open_phone();
+        return;
+    case 1:
         type_key();
         break;
-    case 1:
+    case 2:
         if (key_state_ != "user")
         {
             feedback.play(Cue::error);
@@ -935,22 +947,19 @@ void App::settings_action(ui::Feedback &feedback)
         helper_.ask({"KEY", ""}, [this](Reply &reply) {
             if (reply.ok)
             {
-                key_state_ = "builtin";
-                for (const auto &row : reply.rows())
-                    if (row.size() >= 2 && row[0] == "key")
-                        key_state_ = row[1];
-                toast("Back to the built-in key", "");
+                key_state_ = "none";
+                toast("Your SteamGridDB key is removed", "Add one again to find new art.");
             }
             else
-                toast("The key did not change", reply.error, true);
+                toast("The key was not removed", reply.error, true);
         }, true);
         break;
-    case 2:
+    case 3:
         load_titles(true);
         toast("Looking at the console again", "");
         sheet_ = Sheet::none;
         break;
-    case 3:
+    case 4:
         sheet_ = Sheet::log;
         log_text_ = "Reading the helper's log\xE2\x80\xA6";
         helper_.ask({"LOG"}, [this](Reply &reply) { log_text_ = reply.ok ? reply.text : reply.error; }, true);
@@ -959,6 +968,69 @@ void App::settings_action(ui::Feedback &feedback)
         break;
     }
     feedback.play(Cue::select);
+}
+
+void App::open_phone()
+{
+    // a code the phone's page must send back, so only someone who can see the TV sets the key
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    char code[8];
+    std::snprintf(code, sizeof(code), "%04d", static_cast<int>((now / 7919) % 9000 + 1000));
+    pairing_code_ = code;
+    phone_address_.clear();
+    phone_error_.clear();
+    phone_poll_ = 1.0f;
+    phone_back_ = sheet_ == Sheet::key_needed ? Sheet::key_needed : Sheet::settings;
+    sheet_ = Sheet::phone;
+    helper_.ask({"PHONE", pairing_code_}, [this](Reply &reply) {
+        if (!reply.ok)
+        {
+            phone_error_ = reply.error;
+            return;
+        }
+        std::string lan, port = "9118";
+        for (const auto &row : reply.rows())
+        {
+            if (row.size() >= 2 && row[0] == "lan")
+                lan = row[1];
+            if (row.size() >= 2 && row[0] == "port")
+                port = row[1];
+        }
+        if (lan.empty())
+            phone_error_ = "The console has no network address, so a phone cannot reach it. Type the key instead.";
+        else
+            phone_address_ = lan + ":" + port;
+    }, true);
+}
+
+void App::close_phone()
+{
+    helper_.ask({"PHONE"}, nullptr, true);
+}
+
+void App::key_added(const std::string &how)
+{
+    key_state_ = "user";
+    sheet_ = Sheet::none;
+    toast("Your SteamGridDB key is in", how + " Art Swap uses it from now on.");
+    if (!pending_slot_.empty() && screen_ == Screen::library && focused_title())
+        open_picker(focus_, pending_slot_);
+    pending_slot_.clear();
+}
+
+void App::want_picker(const std::string &slot, ui::Feedback &feedback)
+{
+    if (key_state_ != "user")
+    {
+        pending_slot_ = slot;
+        sheet_ = Sheet::key_needed;
+        sheet_focus_ = 0;
+        sheet_focus_position_.snap(0.0f);
+        feedback.play(Cue::modal_open);
+        return;
+    }
+    feedback.play(Cue::open);
+    open_picker(focus_, slot);
 }
 
 // ---------------------------------------------------------------- update
@@ -996,6 +1068,21 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
     {
         open_settings();
         feedback.play(Cue::modal_open);
+    }
+
+    // the phone sheet: has the key page taken a key?
+    if (sheet_ == Sheet::phone && !phone_address_.empty() && !phone_asking_ && (phone_poll_ -= dt) <= 0.0f)
+    {
+        phone_poll_ = 1.0f;
+        phone_asking_ = true;
+        helper_.ask({"KEYSTATE"}, [this](Reply &reply) {
+            phone_asking_ = false;
+            if (!reply.ok || sheet_ != Sheet::phone)
+                return;
+            for (const auto &row : reply.rows())
+                if (row.size() >= 2 && row[0] == "key" && row[1] == "user")
+                    key_added("Your phone sent it and SteamGridDB accepted it.");
+        }, true);
     }
 
     // ---- animation ----
@@ -1115,10 +1202,7 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
         return;
     }
     if (input.is_pressed(Action::confirm))
-    {
-        feedback.play(Cue::open);
-        open_picker(focus_, "icon");
-    }
+        want_picker("icon", feedback);
     else if (input.is_pressed(Action::north))
     {
         if (title->pic_desc == "-" || title->pic_desc.empty())
@@ -1127,10 +1211,7 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
             toast(title->name + " has no background", "There is no pic0 or pic1 file for it to replace.", true);
         }
         else
-        {
-            feedback.play(Cue::open);
-            open_picker(focus_, "pic");
-        }
+            want_picker("pic", feedback);
     }
     else if (input.is_pressed(Action::west))
     {
@@ -1287,11 +1368,27 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
             sheet_ = Sheet::settings;
         }
         return;
+    case Sheet::phone:
+        if (input.is_pressed(Action::back))
+        {
+            feedback.play(Cue::back);
+            close_phone();
+            sheet_ = phone_back_;
+        }
+        else if (input.is_pressed(Action::west))
+        {
+            feedback.play(Cue::select);
+            close_phone();
+            type_key();
+        }
+        return;
     default:
         break;
     }
     // the lists: search results, settings
-    const int rows = sheet_ == Sheet::search ? 1 + static_cast<int>(results_.size()) : 4;
+    const int rows = sheet_ == Sheet::search       ? 1 + static_cast<int>(results_.size())
+                     : sheet_ == Sheet::key_needed ? 3
+                                                   : 5;
     if (input.nav == Direction::up || input.nav == Direction::down)
     {
         const int next = std::clamp(sheet_focus_ + (input.nav == Direction::down ? 1 : -1), 0, rows - 1);
@@ -1307,6 +1404,21 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
     {
         feedback.play(Cue::modal_close);
         sheet_ = Sheet::none;
+        pending_slot_.clear();
+        return;
+    }
+    if (input.is_pressed(Action::confirm) && sheet_ == Sheet::key_needed)
+    {
+        feedback.play(Cue::select);
+        if (sheet_focus_ == 0)
+            open_phone();
+        else if (sheet_focus_ == 1)
+            type_key();
+        else
+        {
+            sheet_ = Sheet::none;
+            pending_slot_.clear();
+        }
         return;
     }
     if (input.is_pressed(Action::confirm))
@@ -1452,7 +1564,7 @@ void App::draw_top_bar(gfx::DrawList &list) const
     }
     else if (key_state_ == "none")
     {
-        right = "Add a SteamGridDB API key in Settings";
+        right = "No SteamGridDB key: press OPTIONS to add yours";
         dot = kAmber;
     }
     else
@@ -1776,7 +1888,8 @@ void App::draw_picker(gfx::DrawList &list) const
 void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
 {
     const float t = sheet_open_.value;
-    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::settings || sheet_ == Sheet::log;
+    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::settings || sheet_ == Sheet::log ||
+                      sheet_ == Sheet::phone || sheet_ == Sheet::key_needed;
     const float h = tall ? 760.0f : 470.0f;
     const Rect panel{360, (1080 - h) * 0.5f + 40.0f * (1.0f - t), 1200, h};
     list.push_opacity(tween::clamp01(t * 1.4f));
@@ -1872,18 +1985,100 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
     case Sheet::settings:
     {
         heading("SETTINGS", "Art Swap");
-        const std::string key = key_state_ == "user" ? "your own" : key_state_ == "builtin" ? "built in" : "none";
-        rows({{"SteamGridDB API key", key},
-              {"Use the built-in key", key_state_ == "user" ? "" : "in use"},
+        const bool have = key_state_ == "user";
+        list.circle(x + 8, y - 28, 7, have ? Color::rgb(0x30d080) : kAmber);
+        ui::text(list, fonts_.regular, have ? "Your SteamGridDB key is in." : "No SteamGridDB key yet: add yours to find new art.",
+                 x + 26, y - 20, 23, kWhite.with_alpha(0.8f));
+        y += 12;
+        rows({{"Add your key from your phone", "QR code"},
+              {have ? "Type a new key" : "Type your key", "keyboard"},
+              {"Remove your key", have ? "" : "no key"},
               {"Look at the console again", std::to_string(titles_.size()) + " titles"},
               {"Helper log", "for a problem report"}},
              sheet_focus_, sheet_focus_position_.value);
-        y += 30;
+        y += 24;
         ui::paragraph(list, fonts_.regular,
-                      "A free key of your own: steamgriddb.com, sign in, Preferences, API. Art Swap " +
-                          std::string(kVersion) + "  \xC2\xB7  helper " + kHelperVersion + "  \xC2\xB7  network " +
+                      "Art Swap " + std::string(kVersion) + "  \xC2\xB7  helper " + kHelperVersion + "  \xC2\xB7  network " +
                           (helper_.backend().empty() ? "?" : helper_.backend()),
-                      x, y + 20, 22, panel.w - 128, 34, kWhite.with_alpha(0.6f), 3);
+                      x, y + 20, 22, panel.w - 128, 34, kWhite.with_alpha(0.5f), 2);
+        break;
+    }
+    case Sheet::key_needed:
+    {
+        heading("BEFORE YOU START", "Add your SteamGridDB key");
+        ui::paragraph(list, fonts_.regular,
+                      "Art Swap finds new icons and backgrounds on SteamGridDB, a free site where people share game "
+                      "art. SteamGridDB asks everyone who uses it through an app for an API key of their own. "
+                      "It is free and takes a minute:",
+                      x, y - 8, 25, panel.w - 128, 37, kWhite.with_alpha(0.85f), 4);
+        y += 112;
+        const char *steps[] = {"Sign in, or make a free account, at steamgriddb.com",
+                               "Open Preferences, then API, and copy your key",
+                               "Add it here: from your phone is quickest"};
+        for (int i = 0; i < 3; ++i)
+        {
+            list.circle(x + 18, y - 8, 18, accent.with_alpha(0.9f));
+            ui::text(list, fonts_.semibold, std::to_string(i + 1), x + 18, y, 20, kInk, gfx::Align::center);
+            ui::text(list, fonts_.semibold, steps[i], x + 54, y, 24, kWhite);
+            y += 48;
+        }
+        y += 14;
+        rows({{"Add it from your phone", "QR code"}, {"Type it with the keyboard", "32 characters"}, {"Not now", ""}},
+             sheet_focus_, sheet_focus_position_.value);
+        ui::text(list, fonts_.regular,
+                 "Without a key you can still look through your titles and put back their original art.", x,
+                 panel.y + panel.h - 44, 21, kWhite.with_alpha(0.55f));
+        break;
+    }
+    case Sheet::phone:
+    {
+        heading("YOUR OWN API KEY", "From your phone");
+        if (!phone_error_.empty())
+        {
+            ui::paragraph(list, fonts_.regular, phone_error_, x, y + 10, 26, panel.w - 128, 40, kAmber, 4);
+            break;
+        }
+        if (phone_address_.empty())
+        {
+            draw_spinner(list, x + 20, y + 20, 16);
+            ui::text(list, fonts_.regular, "Opening the key page\xE2\x80\xA6", x + 58, y + 30, 24, kWhite.with_alpha(0.8f));
+            break;
+        }
+        const std::string address = phone_address_;
+        const std::string url = "http://" + address + "/" + pairing_code_;
+        // the QR code, on a white plate with its quiet zone
+        const qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(url.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
+        const float plate = 340.0f;
+        const Rect code{panel.x + panel.w - 64 - plate, y - 6, plate, plate};
+        list.rounded_rect(code, 24, kWhite);
+        const float cell = (plate - 48.0f) / static_cast<float>(qr.getSize());
+        for (int my = 0; my < qr.getSize(); ++my)
+            for (int mx = 0; mx < qr.getSize(); ++mx)
+                if (qr.getModule(mx, my))
+                    list.rounded_rect({code.x + 24 + mx * cell, code.y + 24 + my * cell, cell + 0.6f, cell + 0.6f}, 0,
+                                      kInk);
+        // the steps
+        const float width = panel.w - 128 - plate - 48;
+        auto step = [&](int n, const std::string &title, const std::string &detail) {
+            list.circle(x + 20, y - 9, 20, accent.with_alpha(0.9f));
+            ui::text(list, fonts_.semibold, std::to_string(n), x + 20, y, 22, kInk, gfx::Align::center);
+            ui::text(list, fonts_.semibold, title, x + 58, y, 26, kWhite);
+            const float after = ui::paragraph(list, fonts_.regular, detail, x + 58, y + 38, 22, width - 58, 32,
+                                              kWhite.with_alpha(0.72f), 3);
+            y = after + 30;
+        };
+        step(1, "Scan the code with your phone", "Your phone opens Art Swap's key page on this console.");
+        step(2, "Or type the address", "http://" + address + " and the code " + pairing_code_ +
+                                         ", on a phone or computer on the same network.");
+        step(3, "Paste your key, then Save", "Get it at steamgriddb.com: sign in, Preferences, API.");
+        // the code, large, for typing
+        ui::text(list, fonts_.semibold, "CODE", code.x, code.y + code.h + 46, 17, kWhite.with_alpha(0.6f),
+                 gfx::Align::left, 3.0f);
+        ui::text(list, fonts_.display, pairing_code_, code.x + 70, code.y + code.h + 54, 44, kWhite, gfx::Align::left,
+                 10.0f);
+        draw_spinner(list, x + 20, panel.y + panel.h - 66, 16);
+        ui::text(list, fonts_.regular, "Waiting for your phone\xE2\x80\xA6", x + 58, panel.y + panel.h - 58, 24,
+                 kWhite.with_alpha(0.85f));
         break;
     }
     case Sheet::log:
@@ -1954,6 +2149,10 @@ void App::draw_hints(gfx::DrawList &list) const
         hints = {{ui::Button::cross, "Choose"}, {ui::Button::circle, "Back"}};
     else if (sheet_ == Sheet::log)
         hints = {{ui::Button::circle, "Back"}};
+    else if (sheet_ == Sheet::phone)
+        hints = {{ui::Button::square, "Type it instead"}, {ui::Button::circle, "Back"}};
+    else if (sheet_ == Sheet::key_needed)
+        hints = {{ui::Button::cross, "Choose"}, {ui::Button::circle, "Not now"}};
     else if (sheet_ == Sheet::working)
         hints = {};
     else if (screen_ == Screen::starting)

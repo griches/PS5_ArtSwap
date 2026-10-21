@@ -3,8 +3,7 @@
 #   make                 build/helper/artswapd.elf  (PS5_PAYLOAD_SDK: the payload SDK)
 #   make host            build/helper-host/artswapd (libcurl; the console's paths under $ARTSWAP_ROOT)
 #
-# Run through helper/tools/build.sh, which finds the SDK (in the VM) and writes
-# the built-in key header first.
+# Run through helper/tools/build.sh, which finds the SDK (in the VM).
 #
 # Copyright (C) 2026 Gary Riches
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -13,14 +12,14 @@ ROOT := $(abspath $(CURDIR)/..)
 OUT := $(ROOT)/build/helper
 HOST_OUT := $(ROOT)/build/helper-host
 
-SOURCES := src/artswapd.c src/art.c src/scan.c src/sgdb.c src/image.c src/bc7enc.c src/config.c src/util.c
+SOURCES := src/artswapd.c src/art.c src/phone.c src/scan.c src/sgdb.c src/image.c src/bc7enc.c src/config.c src/util.c
 THIRD := src/stb_impl.c third_party/cJSON.c
 SQLITE := third_party/sqlite3.c
 SQLITE_FLAGS := -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION=1 -DSQLITE_DEFAULT_MEMSTATUS=0 \
 	-DSQLITE_MAX_MMAP_SIZE=0 -DSQLITE_TEMP_STORE=3 -DSQLITE_OMIT_DEPRECATED=1 -DSQLITE_OMIT_SHARED_CACHE=1 \
 	-DSQLITE_DQS=0
 WARN := -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
-HEADERS := $(wildcard src/*.h) $(OUT)/builtin_key.h
+HEADERS := $(wildcard src/*.h)
 
 .PHONY: all host clean
 all: $(OUT)/artswapd.elf

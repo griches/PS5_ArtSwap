@@ -7,14 +7,16 @@
 # tools/preview/preview_main.cpp), lays out a made-up console
 # (helper/tests/test_helper.py's), starts the helper on it, and runs the
 # preview's script of presses against it. The helper talks to SteamGridDB, so
-# this needs the network and the built-in key (SGDB_KEY in .env).
+# this needs the network and a key: SGDB_KEY in .env goes into the made-up
+# console's /data/artswap/apikey.txt (NOKEY=1 leaves it out, to see Art Swap
+# without one).
 #
 # Copyright (C) 2026 Gary Riches
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 if [[ $(uname) == Darwin ]]; then
-    exec limactl shell --workdir / ps5 -- bash -lc 'cd "$1"; shift; exec bash tools/preview/run.sh "$@"' _ "$root" "$@"
+    exec limactl shell --workdir / ps5 -- env NOKEY="${NOKEY:-}" bash -lc 'cd "$1"; shift; exec bash tools/preview/run.sh "$@"' _ "$root" "$@"
 fi
 script=${1:-}
 work=$HOME/ps5/build/artswap-preview
@@ -22,13 +24,12 @@ out=$root/build/preview
 kit=$root/.deps/hui
 mkdir -p "$work/obj" "$out"
 
-python3 "$root/helper/tools/key-header.py" "$root/.env" "$root/build/helper/builtin_key.h"
 make -s -C "$root/helper" host HOST_OUT="$work/helper" >/dev/null
 
 # the preview: the kit without its console layer, entry point and OpenGL backend
 sources=("$root/tools/preview/preview_main.cpp" "$root/tools/preview/platform_host.cpp"
     "$root/examples/artswap/kit/app.cpp" "$root/examples/artswap/kit/helper_client.cpp"
-    "$root/examples/artswap/kit/keyboard.cpp")
+    "$root/examples/artswap/kit/keyboard.cpp" "$root/examples/artswap/kit/qrcodegen.cpp")
 while IFS= read -r -d '' source; do
     sources+=("$source")
 done < <(find "$kit/src" -type f \( -name '*.cpp' -o -name '*.c' \) ! -path "$kit/src/platform/*" \
@@ -68,8 +69,10 @@ if base.exists():
     shutil.rmtree(base)
 test_helper.make_console(base)
 PY
+key=$(sed -n 's/^SGDB_KEY=//p' "$root/.env" 2>/dev/null || true)
+[[ -n ${NOKEY:-} || -z $key ]] || printf '%s\n' "$key" > "$work/console-root/data/artswap/apikey.txt"
 port=19217
-ARTSWAP_ROOT="$work/console-root" ARTSWAP_PORT=$port "$work/helper/artswapd" > "$work/helper.out" 2>&1 &
+ARTSWAP_ROOT="$work/console-root" ARTSWAP_PORT=$port ARTSWAP_LAN=192.168.0.190 "$work/helper/artswapd" > "$work/helper.out" 2>&1 &
 helper=$!
 trap 'kill $helper 2>/dev/null || true' EXIT
 sleep 1
