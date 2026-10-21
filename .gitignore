@@ -3,3 +3,5 @@ dist/
 klog/
 .deps/
 imgui.ini
+.env
+__pycache__/

@@ -1,0 +1,5 @@
+stb a7d4c2175630e1ea5b6f8dd00ab96fed0b97b96d (nothings/stb, public domain or MIT)
+bcdec 80859ed3b7afb1c527a2a99d70c61457bea72d0c (iOrange/bcdec, MIT or Unlicense)
+cJSON v1.7.18 (DaveGamble/cJSON, MIT)
+sqlite 3.50.4 amalgamation (public domain)
+stb_dxt.h, stb_image.h, stb_image_write.h from the same stb commit

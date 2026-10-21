@@ -38,7 +38,7 @@ set_source_files_properties(${ui_kit_sources} PROPERTIES COMPILE_OPTIONS "-w")
 # a program's main file is wrapped in, since it opens the kit's own namespaces
 set(ui_program_sources)
 foreach(id IN LISTS PS5_SAMPLES)
-	file(GLOB program_kit_sources ${ROOT}/examples/${id}/kit/*.cpp)
+	file(GLOB program_kit_sources CONFIGURE_DEPENDS ${ROOT}/examples/${id}/kit/*.cpp)
 	list(APPEND ui_program_sources ${program_kit_sources})
 endforeach()
 

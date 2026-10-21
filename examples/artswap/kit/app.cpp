@@ -1,0 +1,1999 @@
+/*
+ * Art Swap - the screens (app.hpp).
+ *
+ * The library is laid out like the console's own home screen, after the
+ * kit's Aurora Shelf design: the focused title's background fills the
+ * screen, its name and what can be changed on the left, its icon large on
+ * the right, every title's icon on a shelf below. The picker keeps that frame
+ * and swaps the shelf for a grid of SteamGridDB's art, with a preview of
+ * exactly what would be written (the helper makes it) beside the current
+ * art. Changing anything goes through a confirmation that says the original
+ * is kept as an .old file.
+ *
+ * Copyright (C) 2026 Gary Riches
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+#include "app.hpp"
+
+#include "audio/cues.hpp"
+#include "ui/glyphs.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+
+namespace artswap
+{
+
+namespace
+{
+
+namespace gfx = hui::gfx;
+namespace ui = hui::ui;
+namespace tween = hui::tween;
+using gfx::Color;
+using gfx::Rect;
+using hui::Action;
+using hui::Direction;
+using hui::audio::Cue;
+
+const Color kWhite = Color::rgb(0xffffff);
+const Color kInk = Color::rgb(0x0b0d16);
+const Color kNight = Color::rgb(0x05070d);
+const Color kAmber = Color::rgb(0xf5a524);
+const Color kRed = Color::rgb(0xff6b6b);
+constexpr float kMargin = 96.0f;
+constexpr float kCard = 196.0f;
+constexpr float kCardGap = 26.0f;
+constexpr float kCardGrow = 1.2f;
+constexpr float kShelfY = 770.0f;
+constexpr float kGridX = 96.0f;
+constexpr float kGridTop = 340.0f;
+constexpr float kGridWidth = 1104.0f;
+constexpr float kGridBottom = 950.0f;
+constexpr float kGridGap = 24.0f;
+constexpr float kPanelX = 1268.0f;
+constexpr float kPanelW = 556.0f;
+
+struct Kind
+{
+    const char *tab;   // shown
+    const char *kind;  // the helper's LIST kind
+    float cell_w, cell_h;
+    bool fit;          // the framing it starts with
+};
+
+const Kind kIconKinds[] = {
+    {"Square", "square", 200, 200, false},
+    {"Covers", "covers", 168, 252, true},
+    {"Icons", "icons", 200, 200, true},
+};
+const Kind kPicKinds[] = {
+    {"Heroes", "heroes", 520, 168, false},
+    {"Wide", "wide", 344, 161, false},
+};
+
+std::string upper(const std::string &text)
+{
+    return ui::upper(text);
+}
+
+// "png 512x512 x2" -> "PNG 512×512, 2 files"
+std::string describe(const std::string &desc)
+{
+    if (desc.empty() || desc == "-")
+        return "none";
+    char format[32] = "", size[32] = "";
+    int copies = 1;
+    if (std::sscanf(desc.c_str(), "%31s %31s x%d", format, size, &copies) < 2)
+        return desc;
+    std::string out = upper(format);
+    for (std::size_t at; (at = out.find("DDS-")) != std::string::npos;)
+        out.replace(at, 4, "DDS ");
+    std::string dims = size;
+    const std::size_t x = dims.find('x');
+    if (x != std::string::npos)
+        dims.replace(x, 1, "\xC3\x97");
+    out += " " + dims;
+    if (copies > 1)
+        out += ", " + std::to_string(copies) + " files";
+    return out;
+}
+
+std::string kind_label(const std::string &kind)
+{
+    if (kind == "homebrew")
+        return "HOMEBREW";
+    if (kind == "ps4")
+        return "PS4 GAME";
+    return "PS5 GAME";
+}
+
+// The texture rectangle that fills a w x h frame from a tw x th picture,
+// the overflow cut, pan -1..1 along the cut axis
+Rect cover_uv(int tw, int th, float w, float h, float pan)
+{
+    if (tw <= 0 || th <= 0)
+        return gfx::kFullUv;
+    const float a = static_cast<float>(tw) / th, d = w / h;
+    if (a > d)
+    {
+        const float uw = d / a;
+        return {(1.0f - uw) * (pan + 1.0f) * 0.5f, 0.0f, uw, 1.0f};
+    }
+    const float vh = a / d;
+    return {0.0f, (1.0f - vh) * (pan + 1.0f) * 0.5f, 1.0f, vh};
+}
+
+// The rectangle inside frame that shows a tw x th picture whole
+Rect contain(const Rect &frame, int tw, int th)
+{
+    if (tw <= 0 || th <= 0)
+        return frame;
+    const float s = std::min(frame.w / tw, frame.h / th);
+    const float w = tw * s, h = th * s;
+    return {frame.x + (frame.w - w) * 0.5f, frame.y + (frame.h - h) * 0.5f, w, h};
+}
+
+// Dark, middle and accent colours from a picture, for the backdrop and the glow
+void palette_of(const Picture &p, Color &dark, Color &mid, Color &accent)
+{
+    double r = 0, g = 0, b = 0;
+    int n = 0;
+    float best = -1.0f;
+    Color vivid = Color::rgb(0x7ff0d8);
+    for (int y = 0; y < p.h; y += 6)
+        for (int x = 0; x < p.w; x += 6)
+        {
+            const std::uint8_t *px = &p.rgba[(static_cast<std::size_t>(y) * p.w + x) * 4];
+            if (px[3] < 128)
+                continue;
+            r += px[0];
+            g += px[1];
+            b += px[2];
+            n++;
+            const int hi = std::max({px[0], px[1], px[2]}), lo = std::min({px[0], px[1], px[2]});
+            const float score = static_cast<float>(hi - lo) * (0.4f + hi / 425.0f);
+            if (score > best)
+            {
+                best = score;
+                vivid = {px[0] / 255.0f, px[1] / 255.0f, px[2] / 255.0f, 1.0f};
+            }
+        }
+    if (n == 0)
+        return;
+    mid = {static_cast<float>(r / n / 255.0), static_cast<float>(g / n / 255.0), static_cast<float>(b / n / 255.0),
+           1.0f};
+    dark = gfx::mix(mid, kNight, 0.7f);
+    // the accent bright enough to read on the dark page
+    const float top = std::max({vivid.r, vivid.g, vivid.b});
+    if (top > 0.01f && top < 0.85f)
+    {
+        const float lift = 0.85f / top;
+        vivid = {std::min(1.0f, vivid.r * lift), std::min(1.0f, vivid.g * lift), std::min(1.0f, vivid.b * lift), 1.0f};
+    }
+    accent = best > 30.0f ? vivid : Color::rgb(0x9fd8ff);
+}
+
+} // namespace
+
+struct App::Title
+{
+    std::string id, name, kind, icon_desc, pic_desc, sgdb_name;
+    bool kept = false;
+    long sgdb_id = 0;
+    std::uint32_t icon = 0;
+    bool icon_asked = false, icon_failed = false;
+    std::uint32_t background = 0;
+    int background_w = 0, background_h = 0;
+    bool background_asked = false, background_failed = false;
+    float background_used = 0.0f;
+    Color dark = Color::rgb(0x0e121c), mid = Color::rgb(0x27324a), accent = Color::rgb(0x9fd8ff);
+};
+
+struct App::Art
+{
+    std::string url, thumb, style, author, mime;
+    int w = 0, h = 0;
+    std::uint32_t texture = 0;
+    int tw = 0, th = 0;
+    bool asked = false, failed = false, tried_full = false;
+};
+
+App::App(const ui::Fonts &fonts, Helper &helper, TextureSink &textures, Keyboard *keyboard)
+    : fonts_(fonts), helper_(helper), textures_(textures), keyboard_(keyboard)
+{
+    palette_[0].snap(Color::rgb(0x070910));
+    palette_[1].snap(Color::rgb(0x0e1424));
+    palette_[2].snap(Color::rgb(0x1d2a44));
+    palette_[3].snap(Color::rgb(0x3b5b8c));
+    helper_.start();
+}
+
+App::~App()
+{
+    for (auto &title : titles_)
+    {
+        forget(title->icon);
+        forget(title->background);
+    }
+    for (auto &art : arts_)
+        forget(art->texture);
+    forget(preview_);
+    forget(current_art_);
+}
+
+Color App::accent() const
+{
+    const Title *title = focused_title();
+    return title ? title->accent : Color::rgb(0x9fd8ff);
+}
+
+// ---------------------------------------------------------------- textures
+
+void App::upload(Picture picture, std::function<void(std::uint32_t, const Picture &)> done)
+{
+    uploads_.push_back({std::move(picture), std::move(done)});
+}
+
+void App::forget(std::uint32_t &texture)
+{
+    if (texture != 0)
+        textures_.destroy(texture);
+    texture = 0;
+}
+
+void App::pump()
+{
+    helper_.pump();
+    if (keyboard_)
+        keyboard_->pump();
+    // a few uploads a frame: each waits for the queue
+    for (int i = 0; i < 6 && !uploads_.empty(); ++i)
+    {
+        Upload next = std::move(uploads_.front());
+        uploads_.erase(uploads_.begin());
+        const std::uint32_t texture =
+            next.picture.w > 0 ? textures_.create(next.picture.w, next.picture.h, next.picture.rgba.data()) : 0;
+        if (next.done)
+            next.done(texture, next.picture);
+        else if (texture)
+            textures_.destroy(texture);
+    }
+}
+
+// ---------------------------------------------------------------- titles
+
+App::Title *App::focused_title()
+{
+    if (focus_ < 0 || focus_ >= static_cast<int>(titles_.size()))
+        return nullptr;
+    return titles_[static_cast<std::size_t>(focus_)].get();
+}
+
+const App::Title *App::focused_title() const
+{
+    if (focus_ < 0 || focus_ >= static_cast<int>(titles_.size()))
+        return nullptr;
+    return titles_[static_cast<std::size_t>(focus_)].get();
+}
+
+void App::load_titles(bool rescan)
+{
+    if (titles_loading_)
+        return;
+    titles_loading_ = true;
+    std::vector<std::string> request{"APPS"};
+    if (rescan)
+        request.push_back("rescan");
+    helper_.ask(request, [this, rescan](Reply &reply) {
+        titles_loading_ = false;
+        if (!reply.ok)
+        {
+            titles_error_ = reply.error;
+            if (screen_ == Screen::starting)
+                screen_ = Screen::library;
+            return;
+        }
+        titles_error_.clear();
+        std::string keep_focus = focused_title() ? focused_title()->id : "";
+        std::vector<std::unique_ptr<Title>> old = std::move(titles_);
+        titles_.clear();
+        for (const auto &row : reply.rows())
+        {
+            if (row.size() < 9 || row[0] != "A")
+                continue;
+            auto title = std::make_unique<Title>();
+            title->id = row[1];
+            title->name = row[2];
+            title->kind = row[3];
+            title->icon_desc = row[4];
+            title->pic_desc = row[5];
+            title->kept = row[6] == "1";
+            title->sgdb_id = std::strtol(row[7].c_str(), nullptr, 10);
+            title->sgdb_name = row[8];
+            // keep the pictures already loaded, unless this is a fresh look
+            for (auto &before : old)
+                if (before && before->id == title->id && !rescan)
+                {
+                    title->icon = before->icon;
+                    title->icon_asked = before->icon_asked;
+                    title->background = before->background;
+                    title->background_w = before->background_w;
+                    title->background_h = before->background_h;
+                    title->background_asked = before->background_asked;
+                    title->dark = before->dark;
+                    title->mid = before->mid;
+                    title->accent = before->accent;
+                    before->icon = before->background = 0;
+                }
+            titles_.push_back(std::move(title));
+        }
+        for (auto &before : old)
+            if (before)
+            {
+                if (before->background == backdrop_ || before->background == backdrop_old_)
+                    backdrop_ = backdrop_old_ = 0;
+                forget(before->icon);
+                forget(before->background);
+            }
+        focus_ = 0;
+        for (int i = 0; i < static_cast<int>(titles_.size()); ++i)
+            if (titles_[static_cast<std::size_t>(i)]->id == keep_focus)
+                focus_ = i;
+        shown_ = -1;
+        if (screen_ == Screen::starting)
+        {
+            screen_ = Screen::library;
+            age_ = 0.0f;
+        }
+        // icons outward from the focus, so the first ones on screen come first
+        const int count = static_cast<int>(titles_.size());
+        for (int d = 0; d < count; ++d)
+            for (int side : {1, -1})
+            {
+                const int i = focus_ + side * d;
+                if (i >= 0 && i < count && (d > 0 || side == 1))
+                    request_icon(*titles_[static_cast<std::size_t>(i)]);
+            }
+        ring_.snap(card_rect(focus_, true));
+    }, true);
+}
+
+void App::request_icon(Title &title)
+{
+    if (title.icon_asked)
+        return;
+    title.icon_asked = true;
+    const std::string id = title.id;
+    helper_.ask({"ART", id, "icon", "256", "256"}, [this, id](Reply &reply) {
+        Title *t = nullptr;
+        for (auto &each : titles_)
+            if (each->id == id)
+                t = each.get();
+        if (t == nullptr)
+            return;
+        if (!reply.ok)
+        {
+            t->icon_failed = true;
+            return;
+        }
+        upload(std::move(reply.picture), [this, id](std::uint32_t texture, const Picture &picture) {
+            for (auto &each : titles_)
+                if (each->id == id)
+                {
+                    forget(each->icon);
+                    each->icon = texture;
+                    palette_of(picture, each->dark, each->mid, each->accent);
+                    return;
+                }
+            if (texture)
+                textures_.destroy(texture);
+        });
+    });
+}
+
+void App::request_background(Title &title)
+{
+    if (title.background_asked || title.pic_desc == "-" || title.pic_desc.empty())
+        return;
+    title.background_asked = true;
+    const std::string id = title.id;
+    helper_.ask({"ART", id, "pic", "960", "540"}, [this, id](Reply &reply) {
+        Title *t = nullptr;
+        for (auto &each : titles_)
+            if (each->id == id)
+                t = each.get();
+        if (t == nullptr)
+            return;
+        if (!reply.ok)
+        {
+            t->background_failed = true;
+            return;
+        }
+        upload(std::move(reply.picture), [this, id](std::uint32_t texture, const Picture &picture) {
+            Title *target = nullptr;
+            for (auto &each : titles_)
+                if (each->id == id)
+                    target = each.get();
+            if (target == nullptr)
+            {
+                if (texture)
+                    textures_.destroy(texture);
+                return;
+            }
+            forget(target->background);
+            target->background = texture;
+            target->background_w = picture.w;
+            target->background_h = picture.h;
+            target->background_used = clock_;
+            // at most eight backgrounds held: the least recently shown go
+            std::vector<Title *> held;
+            for (auto &each : titles_)
+                if (each->background && each->background != backdrop_ && each->background != backdrop_old_ &&
+                    each.get() != target)
+                    held.push_back(each.get());
+            std::sort(held.begin(), held.end(),
+                      [](Title *a, Title *b) { return a->background_used < b->background_used; });
+            for (std::size_t i = 0; i + 7 < held.size(); ++i)
+            {
+                forget(held[i]->background);
+                held[i]->background_asked = false;
+            }
+        });
+    }, true);
+}
+
+// ---------------------------------------------------------------- the picker
+
+std::vector<const char *> App::tabs() const
+{
+    std::vector<const char *> out;
+    if (slot_ == "icon")
+        for (const Kind &k : kIconKinds)
+            out.push_back(k.tab);
+    else
+        for (const Kind &k : kPicKinds)
+            out.push_back(k.tab);
+    return out;
+}
+
+static const Kind &kind_of(const std::string &slot, int tab)
+{
+    if (slot == "icon")
+        return kIconKinds[std::clamp(tab, 0, 2)];
+    return kPicKinds[std::clamp(tab, 0, 1)];
+}
+
+App::Art *App::focused_art()
+{
+    if (art_focus_ < 0 || art_focus_ >= static_cast<int>(arts_.size()))
+        return nullptr;
+    return arts_[static_cast<std::size_t>(art_focus_)].get();
+}
+
+const App::Art *App::focused_art() const
+{
+    if (art_focus_ < 0 || art_focus_ >= static_cast<int>(arts_.size()))
+        return nullptr;
+    return arts_[static_cast<std::size_t>(art_focus_)].get();
+}
+
+void App::open_picker(int title, const std::string &slot)
+{
+    picker_title_ = title;
+    slot_ = slot;
+    screen_ = Screen::picker;
+    age_ = 0.0f;
+    list_error_.clear();
+    forget(current_art_);
+    Title &t = *titles_[static_cast<std::size_t>(title)];
+    const int gen = generation_;
+    const std::string w = slot == "icon" ? "512" : "960", h = slot == "icon" ? "512" : "540";
+    helper_.ask({"ART", t.id, slot, w, h}, [this, gen](Reply &reply) {
+        if (gen > generation_ || screen_ != Screen::picker || !reply.ok)
+            return;
+        upload(std::move(reply.picture), [this](std::uint32_t texture, const Picture &picture) {
+            forget(current_art_);
+            current_art_ = texture;
+            current_w_ = picture.w;
+            current_h_ = picture.h;
+        });
+    }, true);
+    tab_ = 0;
+    tab_position_.snap(0.0f);
+    set_tab(0);
+}
+
+void App::close_picker()
+{
+    helper_.drop(generation_);
+    generation_++;
+    for (auto &art : arts_)
+        forget(art->texture);
+    arts_.clear();
+    forget(preview_);
+    forget(current_art_);
+    screen_ = Screen::library;
+    age_ = 0.3f;
+    picker_title_ = -1;
+}
+
+void App::set_tab(int tab)
+{
+    helper_.drop(generation_);
+    generation_++;
+    for (auto &art : arts_)
+        forget(art->texture);
+    arts_.clear();
+    forget(preview_);
+    tab_ = tab;
+    art_focus_ = 0;
+    page_ = 0;
+    total_ = 0;
+    hidden_ = 0;
+    list_error_.clear();
+    grid_scroll_.position.snap(0.0f);
+    fit_ = kind_of(slot_, tab).fit;
+    pan_ = 0.0f;
+    preview_due_ = -1.0f;
+    preview_serial_++;
+    preview_loading_ = false;
+    cell_ring_.snap(cell_rect(0));
+    match_and_list();
+}
+
+void App::match_and_list()
+{
+    if (picker_title_ < 0)
+        return;
+    Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
+    if (title.sgdb_id > 0)
+    {
+        load_page();
+        return;
+    }
+    // not matched yet: SteamGridDB's closest name, kept for next time
+    matching_ = true;
+    const int gen = generation_;
+    const std::string id = title.id, name = title.name;
+    helper_.ask({"SEARCH", name}, [this, gen, id, name](Reply &reply) {
+        if (gen != generation_)
+            return;
+        matching_ = false;
+        if (!reply.ok)
+        {
+            list_error_ = reply.error;
+            return;
+        }
+        for (const auto &row : reply.rows())
+            if (row.size() >= 3 && row[0] == "G")
+            {
+                for (auto &t : titles_)
+                    if (t->id == id)
+                    {
+                        t->sgdb_id = std::strtol(row[1].c_str(), nullptr, 10);
+                        t->sgdb_name = row[2];
+                    }
+                helper_.ask({"MATCH", id, row[1], row[2]}, nullptr);
+                load_page();
+                return;
+            }
+        list_error_ = "SteamGridDB has no game called \xE2\x80\x9C" + name +
+                      "\xE2\x80\x9D. Press \xE2\x96\xA1 to look for it under another name.";
+    }, true, gen);
+}
+
+void App::load_page()
+{
+    if (picker_title_ < 0 || listing_)
+        return;
+    const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
+    listing_ = true;
+    const int gen = generation_, page = page_;
+    helper_.ask({"LIST", std::to_string(title.sgdb_id), kind_of(slot_, tab_).kind, std::to_string(page)},
+                [this, gen](Reply &reply) {
+                    if (gen != generation_)
+                        return;
+                    listing_ = false;
+                    if (!reply.ok)
+                    {
+                        list_error_ = reply.error;
+                        return;
+                    }
+                    const bool first = arts_.empty();
+                    for (const auto &row : reply.rows())
+                    {
+                        if (row.size() >= 4 && row[0] == "P")
+                            total_ = std::atoi(row[2].c_str());
+                        else if (row.size() >= 2 && row[0] == "H")
+                            hidden_ += std::atoi(row[1].c_str());
+                        else if (row.size() >= 9 && row[0] == "I")
+                        {
+                            auto art = std::make_unique<Art>();
+                            art->url = row[2];
+                            art->thumb = row[3];
+                            art->w = std::atoi(row[4].c_str());
+                            art->h = std::atoi(row[5].c_str());
+                            art->style = row[6];
+                            art->author = row[7];
+                            art->mime = row[8];
+                            arts_.push_back(std::move(art));
+                        }
+                    }
+                    page_++;
+                    request_thumbs();
+                    if (first && !arts_.empty())
+                    {
+                        preview_due_ = 0.0f;
+                        cell_ring_.snap(cell_rect(art_focus_));
+                    }
+                },
+                true, gen);
+}
+
+void App::request_thumbs()
+{
+    const Rect cell = cell_size();
+    const int cols = columns();
+    const float pitch = cell.h + kGridGap;
+    const int first_row = std::max(0, static_cast<int>(grid_scroll_.offset() / pitch) - 1);
+    const int last_row = first_row + static_cast<int>((kGridBottom - kGridTop) / pitch) + 3;
+    const int gen = generation_;
+    const int want_w = static_cast<int>(cell.w * 2), want_h = static_cast<int>(cell.h * 2);
+    for (int i = first_row * cols; i < std::min(static_cast<int>(arts_.size()), (last_row + 1) * cols); ++i)
+    {
+        Art &art = *arts_[static_cast<std::size_t>(i)];
+        if (art.asked)
+            continue;
+        art.asked = true;
+        const std::string url = art.thumb.empty() ? art.url : art.thumb;
+        helper_.ask({"THUMB", url, std::to_string(want_w), std::to_string(want_h)},
+                    [this, gen, i, want_w, want_h](Reply &reply) {
+                        if (gen != generation_ || i >= static_cast<int>(arts_.size()))
+                            return;
+                        Art &a = *arts_[static_cast<std::size_t>(i)];
+                        if (!reply.ok)
+                        {
+                            // the thumbnail failed: once from the full picture
+                            if (!a.tried_full && !a.url.empty())
+                            {
+                                a.tried_full = true;
+                                helper_.ask({"THUMB", a.url, std::to_string(want_w), std::to_string(want_h)},
+                                            [this, gen, i](Reply &again) {
+                                                if (gen != generation_ || i >= static_cast<int>(arts_.size()))
+                                                    return;
+                                                if (!again.ok)
+                                                {
+                                                    arts_[static_cast<std::size_t>(i)]->failed = true;
+                                                    return;
+                                                }
+                                                upload(std::move(again.picture),
+                                                       [this, gen, i](std::uint32_t texture, const Picture &p) {
+                                                           if (gen != generation_ ||
+                                                               i >= static_cast<int>(arts_.size()))
+                                                           {
+                                                               if (texture)
+                                                                   textures_.destroy(texture);
+                                                               return;
+                                                           }
+                                                           Art &b = *arts_[static_cast<std::size_t>(i)];
+                                                           b.texture = texture;
+                                                           b.tw = p.w;
+                                                           b.th = p.h;
+                                                       });
+                                            },
+                                            false, gen);
+                            }
+                            else
+                                a.failed = true;
+                            return;
+                        }
+                        upload(std::move(reply.picture), [this, gen, i](std::uint32_t texture, const Picture &p) {
+                            if (gen != generation_ || i >= static_cast<int>(arts_.size()))
+                            {
+                                if (texture)
+                                    textures_.destroy(texture);
+                                return;
+                            }
+                            Art &b = *arts_[static_cast<std::size_t>(i)];
+                            b.texture = texture;
+                            b.tw = p.w;
+                            b.th = p.h;
+                        });
+                    },
+                    false, gen);
+    }
+}
+
+void App::request_preview()
+{
+    const Art *art = focused_art();
+    if (art == nullptr || picker_title_ < 0)
+        return;
+    const int serial = ++preview_serial_;
+    preview_loading_ = true;
+    const bool icon = slot_ == "icon";
+    char pan[16];
+    std::snprintf(pan, sizeof(pan), "%.3f", static_cast<double>(pan_));
+    const bool wide = art->h > 0 && static_cast<float>(art->w) / art->h > (icon ? 1.0f : 16.0f / 9.0f);
+    helper_.ask({"PREVIEW", art->url, slot_, fit_ ? "fit" : "cover", wide ? pan : "0", wide ? "0" : pan,
+                 icon ? "512" : "960", icon ? "512" : "540"},
+                [this, serial](Reply &reply) {
+                    if (serial != preview_serial_)
+                        return;
+                    if (!reply.ok)
+                    {
+                        preview_loading_ = false;
+                        toast("The preview did not load", reply.error, true);
+                        return;
+                    }
+                    upload(std::move(reply.picture), [this, serial](std::uint32_t texture, const Picture &p) {
+                        if (serial != preview_serial_)
+                        {
+                            if (texture)
+                                textures_.destroy(texture);
+                            return;
+                        }
+                        preview_loading_ = false;
+                        forget(preview_);
+                        preview_ = texture;
+                        preview_w_ = p.w;
+                        preview_h_ = p.h;
+                    });
+                },
+                true, generation_);
+}
+
+// ---------------------------------------------------------------- actions
+
+void App::toast(const std::string &title, const std::string &detail, bool error)
+{
+    toasts_.push_back({title, detail, error, 0.0f, error ? 8.0f : 6.0f});
+    if (toasts_.size() > 3)
+        toasts_.erase(toasts_.begin());
+}
+
+void App::apply()
+{
+    const Art *art = focused_art();
+    if (art == nullptr || picker_title_ < 0)
+        return;
+    Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
+    sheet_ = Sheet::working;
+    working_text_ = slot_ == "icon" ? "Writing the new icon" : "Writing the new background";
+    const std::string id = title.id, name = title.name, slot = slot_;
+    char pan[16];
+    std::snprintf(pan, sizeof(pan), "%.3f", static_cast<double>(pan_));
+    const bool wide = art->h > 0 && static_cast<float>(art->w) / art->h > (slot == "icon" ? 1.0f : 16.0f / 9.0f);
+    helper_.ask({"APPLY", id, slot, art->url, fit_ ? "fit" : "cover", wide ? pan : "0", wide ? "0" : pan},
+                [this, id, name, slot](Reply &reply) {
+                    sheet_ = Sheet::none;
+                    if (!reply.ok)
+                    {
+                        toast("That did not work", reply.error, true);
+                        return;
+                    }
+                    int written = 0;
+                    std::string first_old;
+                    for (const auto &row : reply.rows())
+                    {
+                        written += row[0] == "W";
+                        if (row[0] == "O" && first_old.empty() && row.size() > 1)
+                            first_old = row[1].substr(row[1].rfind('/') + 1);
+                    }
+                    for (auto &t : titles_)
+                        if (t->id == id)
+                        {
+                            t->kept = true;
+                            if (slot == "icon")
+                            {
+                                t->icon_asked = false;
+                                request_icon(*t);
+                            }
+                            else
+                            {
+                                t->background_asked = false;
+                                request_background(*t);
+                            }
+                        }
+                    toast(std::string(slot == "icon" ? "New icon" : "New background") + " for " + name,
+                          std::to_string(written) + (written == 1 ? " file" : " files") +
+                              " written; the originals are kept as .old files. If the home screen still shows the "
+                              "old art, restart the console.");
+                    close_picker();
+                },
+                true);
+}
+
+void App::restore()
+{
+    Title *title = focused_title();
+    if (title == nullptr)
+        return;
+    sheet_ = Sheet::working;
+    working_text_ = "Putting the original art back";
+    const std::string id = title->id, name = title->name;
+    helper_.ask({"RESTORE", id, "all"}, [this, id, name](Reply &reply) {
+        sheet_ = Sheet::none;
+        if (!reply.ok)
+        {
+            toast("Nothing was put back", reply.error, true);
+            return;
+        }
+        for (auto &t : titles_)
+            if (t->id == id)
+            {
+                t->kept = false;
+                t->icon_asked = false;
+                t->background_asked = false;
+                request_icon(*t);
+                request_background(*t);
+            }
+        toast("The original art of " + name + " is back",
+              "If the home screen still shows the replaced art, restart the console.");
+    }, true);
+}
+
+void App::open_search(const std::string &term)
+{
+    sheet_ = Sheet::search;
+    sheet_focus_ = results_.empty() ? 0 : sheet_focus_;
+    search_term_ = term;
+    searching_ = true;
+    search_error_.clear();
+    results_.clear();
+    sheet_focus_ = 0;
+    sheet_focus_position_.snap(0.0f);
+    helper_.ask({"SEARCH", term}, [this, term](Reply &reply) {
+        if (term != search_term_)
+            return;
+        searching_ = false;
+        if (!reply.ok)
+        {
+            search_error_ = reply.error;
+            return;
+        }
+        for (const auto &row : reply.rows())
+            if (row.size() >= 5 && row[0] == "G")
+                results_.push_back(row);
+        if (results_.empty())
+            search_error_ = "Nothing on SteamGridDB is called \xE2\x80\x9C" + term + "\xE2\x80\x9D";
+        else
+            sheet_focus_ = 1;
+    }, true);
+}
+
+void App::choose_game(int row)
+{
+    if (row < 1 || row > static_cast<int>(results_.size()) || picker_title_ < 0)
+        return;
+    const auto &game = results_[static_cast<std::size_t>(row - 1)];
+    Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
+    title.sgdb_id = std::strtol(game[1].c_str(), nullptr, 10);
+    title.sgdb_name = game[2];
+    helper_.ask({"MATCH", title.id, game[1], game[2]}, nullptr, true);
+    sheet_ = Sheet::none;
+    set_tab(tab_);
+}
+
+void App::type_search()
+{
+    const Title *title = picker_title_ >= 0 ? titles_[static_cast<std::size_t>(picker_title_)].get() : nullptr;
+    if (keyboard_ == nullptr ||
+        !keyboard_->open("Search SteamGridDB", search_term_.empty() && title ? title->name : search_term_, 80,
+                         [this](bool ok, std::string text) {
+                             if (ok && !text.empty())
+                                 open_search(text);
+                         }))
+        toast("The keyboard did not open", "", true);
+}
+
+void App::type_key()
+{
+    if (keyboard_ == nullptr ||
+        !keyboard_->open("SteamGridDB API key", "", 64, [this](bool ok, std::string text) {
+            if (!ok || text.empty())
+                return;
+            sheet_ = Sheet::working;
+            working_text_ = "Checking the key with SteamGridDB";
+            helper_.ask({"KEY", text}, [this](Reply &reply) {
+                sheet_ = Sheet::settings;
+                if (!reply.ok)
+                {
+                    toast("The key was not taken", reply.error, true);
+                    return;
+                }
+                key_state_ = "user";
+                toast("Your API key is saved", "Art Swap uses it from now on.");
+            }, true);
+        }))
+        toast("The keyboard did not open", "", true);
+}
+
+void App::open_settings()
+{
+    sheet_ = Sheet::settings;
+    sheet_focus_ = 0;
+    sheet_focus_position_.snap(0.0f);
+}
+
+void App::settings_action(ui::Feedback &feedback)
+{
+    switch (sheet_focus_)
+    {
+    case 0:
+        type_key();
+        break;
+    case 1:
+        if (key_state_ != "user")
+        {
+            feedback.play(Cue::error);
+            return;
+        }
+        helper_.ask({"KEY", ""}, [this](Reply &reply) {
+            if (reply.ok)
+            {
+                key_state_ = "builtin";
+                for (const auto &row : reply.rows())
+                    if (row.size() >= 2 && row[0] == "key")
+                        key_state_ = row[1];
+                toast("Back to the built-in key", "");
+            }
+            else
+                toast("The key did not change", reply.error, true);
+        }, true);
+        break;
+    case 2:
+        load_titles(true);
+        toast("Looking at the console again", "");
+        sheet_ = Sheet::none;
+        break;
+    case 3:
+        sheet_ = Sheet::log;
+        log_text_ = "Reading the helper's log\xE2\x80\xA6";
+        helper_.ask({"LOG"}, [this](Reply &reply) { log_text_ = reply.ok ? reply.text : reply.error; }, true);
+        break;
+    default:
+        break;
+    }
+    feedback.play(Cue::select);
+}
+
+// ---------------------------------------------------------------- update
+
+void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
+{
+    age_ += dt;
+    clock_ += dt;
+    for (Toast &t : toasts_)
+        t.age += dt;
+    toasts_.erase(std::remove_if(toasts_.begin(), toasts_.end(), [](const Toast &t) { return t.age > t.life; }),
+                  toasts_.end());
+    if (key_state_.empty() && helper_.state() == Helper::State::ready)
+        key_state_ = helper_.key_source();
+
+    // OPTIONS: a short press is the settings; the program leaves on a hold
+    if (input.is_pressed(Action::menu))
+        menu_held_ = 0.0f;
+    else if (menu_held_ >= 0.0f && input.is_held(Action::menu))
+        menu_held_ += dt;
+    const bool menu_tap = menu_held_ >= 0.0f && (input.released & hui::action_bit(Action::menu)) != 0 &&
+                          menu_held_ < 0.45f;
+    if (!input.is_held(Action::menu) && !input.is_pressed(Action::menu))
+        menu_held_ = -1.0f;
+
+    if (sheet_ != Sheet::none)
+        update_sheet(input, feedback);
+    else if (screen_ == Screen::starting)
+        update_starting(input, feedback);
+    else if (screen_ == Screen::library)
+        update_library(input, dt, feedback);
+    else
+        update_picker(input, dt, feedback);
+    if (menu_tap && sheet_ == Sheet::none && screen_ != Screen::starting)
+    {
+        open_settings();
+        feedback.play(Cue::modal_open);
+    }
+
+    // ---- animation ----
+    sheet_open_.target = sheet_ != Sheet::none ? 1.0f : 0.0f;
+    sheet_open_.update(dt, 14.0f);
+    sheet_focus_position_.target = static_cast<float>(sheet_focus_);
+    sheet_focus_position_.update(dt, 22.0f);
+    nudge_.update(dt, 9.0f);
+    hero_.update(dt);
+    backdrop_fade_.update(dt);
+    tab_position_.target = static_cast<float>(tab_);
+    tab_position_.update(dt, 18.0f);
+
+    const Title *title = screen_ == Screen::picker && picker_title_ >= 0
+                             ? titles_[static_cast<std::size_t>(picker_title_)].get()
+                             : focused_title();
+    if (title)
+    {
+        palette_[0].target(gfx::mix(title->dark, kNight, 0.4f));
+        palette_[1].target(gfx::mix(title->dark, title->mid, 0.35f));
+        palette_[2].target(title->mid);
+        palette_[3].target(gfx::mix(title->mid, title->accent, 0.55f));
+    }
+    for (ui::SpringColor &colour : palette_)
+        colour.update(dt, 4.0f);
+
+    // the background behind the screen follows the focus, cross-faded
+    if (Title *focused = screen_ == Screen::picker && picker_title_ >= 0
+                             ? titles_[static_cast<std::size_t>(picker_title_)].get()
+                             : focused_title())
+    {
+        focus_rest_ += dt;
+        if (focus_rest_ > 0.12f)
+            request_background(*focused);
+        if (focused->background != 0 && focused->background != backdrop_)
+        {
+            backdrop_old_ = backdrop_;
+            backdrop_ = focused->background;
+            backdrop_fade_.start(0.45f);
+        }
+        if (focused->background)
+            focused->background_used = clock_;
+    }
+
+    // shelf and grid motion
+    if (!titles_.empty())
+    {
+        const float start = static_cast<float>(focus_) * (kCard + kCardGap);
+        shelf_scroll_.reveal(start, start + kCard * kCardGrow, gfx::kVirtualWidth - kMargin, kMargin * 2.2f);
+    }
+    shelf_scroll_.update(dt, 12.0f);
+    ring_.target(card_rect(focus_, true));
+    ring_.update(dt, 20.0f);
+    if (screen_ == Screen::picker)
+    {
+        const Rect cell = cell_rect(art_focus_);
+        const float top = cell.y + grid_scroll_.offset() - kGridTop;
+        grid_scroll_.reveal(top, top + cell.h, kGridBottom - kGridTop, 40.0f);
+        grid_scroll_.update(dt, 14.0f);
+        cell_ring_.target(cell_rect(art_focus_));
+        cell_ring_.update(dt, 22.0f);
+        if (preview_due_ >= 0.0f)
+        {
+            preview_due_ -= dt;
+            if (preview_due_ < 0.0f)
+                request_preview();
+        }
+    }
+}
+
+void App::update_starting(const hui::InputFrame &input, ui::Feedback &feedback)
+{
+    if (helper_.state() == Helper::State::ready && !titles_loading_)
+        load_titles(false);
+    if (helper_.state() == Helper::State::failed && input.is_pressed(Action::confirm))
+    {
+        feedback.play(Cue::select);
+        helper_.start();
+    }
+}
+
+void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
+{
+    const int count = static_cast<int>(titles_.size());
+    int next = focus_;
+    if (input.nav == Direction::left || input.nav == Direction::right)
+        next += input.nav == Direction::right ? 1 : -1;
+    if (input.is_pressed(Action::page_next))
+        next += 6;
+    if (input.is_pressed(Action::page_prev))
+        next -= 6;
+    if (next != focus_ && count > 0)
+    {
+        const int clamped = std::clamp(next, 0, count - 1);
+        if (clamped == focus_)
+        {
+            if (!input.nav_repeat)
+            {
+                feedback.play(Cue::error, 1.0f, 0.0f, 0.6f);
+                nudge_.trigger();
+                nudge_direction_ = next > focus_ ? 1.0f : -1.0f;
+            }
+        }
+        else
+        {
+            focus_ = clamped;
+            focus_rest_ = 0.0f;
+            hero_.start(0.35f);
+            feedback.play(Cue::focus, 1.0f, ui::pan_for_x(card_rect(focus_, false).cx()));
+        }
+    }
+    Title *title = focused_title();
+    if (title == nullptr)
+    {
+        if (input.is_pressed(Action::confirm) && !titles_loading_)
+            load_titles(true);
+        return;
+    }
+    if (input.is_pressed(Action::confirm))
+    {
+        feedback.play(Cue::open);
+        open_picker(focus_, "icon");
+    }
+    else if (input.is_pressed(Action::north))
+    {
+        if (title->pic_desc == "-" || title->pic_desc.empty())
+        {
+            feedback.play(Cue::error);
+            toast(title->name + " has no background", "There is no pic0 or pic1 file for it to replace.", true);
+        }
+        else
+        {
+            feedback.play(Cue::open);
+            open_picker(focus_, "pic");
+        }
+    }
+    else if (input.is_pressed(Action::west))
+    {
+        if (title->kept)
+        {
+            sheet_ = Sheet::restore;
+            feedback.play(Cue::modal_open);
+        }
+        else
+            feedback.play(Cue::error);
+    }
+    (void)dt;
+}
+
+void App::update_picker(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
+{
+    const int count = static_cast<int>(arts_.size());
+    const int cols = columns();
+    if (input.is_pressed(Action::back))
+    {
+        feedback.play(Cue::back);
+        close_picker();
+        return;
+    }
+    const int tab_count = static_cast<int>(tabs().size());
+    if (input.is_pressed(Action::page_next) || input.is_pressed(Action::page_prev))
+    {
+        const int next = std::clamp(tab_ + (input.is_pressed(Action::page_next) ? 1 : -1), 0, tab_count - 1);
+        if (next != tab_)
+        {
+            feedback.play(Cue::tab);
+            set_tab(next);
+        }
+        else
+            feedback.play(Cue::error, 1.0f, 0.0f, 0.5f);
+        return;
+    }
+    if (input.is_pressed(Action::west))
+    {
+        feedback.play(Cue::modal_open);
+        const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
+        open_search(title.name);
+        return;
+    }
+    if (count > 0)
+    {
+        int next = art_focus_;
+        switch (input.nav)
+        {
+        case Direction::left:
+            next -= 1;
+            break;
+        case Direction::right:
+            next += 1;
+            break;
+        case Direction::up:
+            next -= cols;
+            break;
+        case Direction::down:
+            next += cols;
+            break;
+        default:
+            break;
+        }
+        if (next != art_focus_)
+        {
+            if (next >= count && input.nav == Direction::down && art_focus_ / cols < (count - 1) / cols)
+                next = count - 1; // the last row is short
+            if (next >= 0 && next < count)
+            {
+                art_focus_ = next;
+                pan_ = 0.0f;
+                preview_due_ = 0.18f;
+                preview_serial_++;
+                feedback.play(Cue::focus, 1.0f, ui::pan_for_x(cell_rect(next).cx()));
+                request_thumbs();
+            }
+            else if (!input.nav_repeat)
+                feedback.play(Cue::error, 1.0f, 0.0f, 0.5f);
+        }
+        // more from SteamGridDB when the last row is reached
+        if (art_focus_ / cols >= (count - 1) / cols && count < total_ && !listing_)
+            load_page();
+        if (input.is_pressed(Action::north))
+        {
+            fit_ = !fit_;
+            preview_due_ = 0.0f;
+            preview_serial_++;
+            feedback.play(Cue::toggle);
+        }
+        // the right stick slides the part kept, when the frame cuts the picture
+        const Art *art = focused_art();
+        if (art && !fit_)
+        {
+            const bool icon = slot_ == "icon";
+            const float a = art->h > 0 ? static_cast<float>(art->w) / art->h : 1.0f;
+            const float d = icon ? 1.0f : 16.0f / 9.0f;
+            const float stick = a > d ? input.stick2_x : input.stick2_y;
+            if (std::fabs(a / d - 1.0f) > 0.02f && std::fabs(stick) > 0.05f)
+            {
+                pan_ = std::clamp(pan_ + stick * dt * 1.2f, -1.0f, 1.0f);
+                preview_due_ = 0.3f;
+                preview_serial_++;
+            }
+        }
+        if (input.is_pressed(Action::confirm) && art)
+        {
+            feedback.play(Cue::modal_open);
+            sheet_ = Sheet::confirm;
+        }
+    }
+    else if (input.is_pressed(Action::confirm) && !list_error_.empty())
+    {
+        feedback.play(Cue::select);
+        set_tab(tab_);
+    }
+}
+
+void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
+{
+    switch (sheet_)
+    {
+    case Sheet::working:
+        return;
+    case Sheet::confirm:
+        if (input.is_pressed(Action::confirm))
+        {
+            feedback.play(Cue::launch);
+            feedback.rumble(0.5f, 0.12f);
+            apply();
+        }
+        else if (input.is_pressed(Action::back))
+        {
+            feedback.play(Cue::modal_close);
+            sheet_ = Sheet::none;
+        }
+        return;
+    case Sheet::restore:
+        if (input.is_pressed(Action::confirm))
+        {
+            feedback.play(Cue::select);
+            restore();
+        }
+        else if (input.is_pressed(Action::back))
+        {
+            feedback.play(Cue::modal_close);
+            sheet_ = Sheet::none;
+        }
+        return;
+    case Sheet::log:
+        if (input.is_pressed(Action::back) || input.is_pressed(Action::confirm))
+        {
+            feedback.play(Cue::back);
+            sheet_ = Sheet::settings;
+        }
+        return;
+    default:
+        break;
+    }
+    // the lists: search results, settings
+    const int rows = sheet_ == Sheet::search ? 1 + static_cast<int>(results_.size()) : 4;
+    if (input.nav == Direction::up || input.nav == Direction::down)
+    {
+        const int next = std::clamp(sheet_focus_ + (input.nav == Direction::down ? 1 : -1), 0, rows - 1);
+        if (next != sheet_focus_)
+        {
+            sheet_focus_ = next;
+            feedback.play(Cue::focus, 1.0f, 0.2f);
+        }
+        else if (!input.nav_repeat)
+            feedback.play(Cue::error, 1.0f, 0.0f, 0.5f);
+    }
+    if (input.is_pressed(Action::back))
+    {
+        feedback.play(Cue::modal_close);
+        sheet_ = Sheet::none;
+        return;
+    }
+    if (input.is_pressed(Action::confirm))
+    {
+        if (sheet_ == Sheet::search)
+        {
+            feedback.play(Cue::select);
+            if (sheet_focus_ == 0)
+                type_search();
+            else
+                choose_game(sheet_focus_);
+        }
+        else
+            settings_action(feedback);
+    }
+}
+
+// ---------------------------------------------------------------- layout
+
+Rect App::card_rect(int index, bool focused) const
+{
+    float x = kMargin + static_cast<float>(index) * (kCard + kCardGap) - shelf_scroll_.offset();
+    if (!focused && index > focus_)
+        x += kCard * (kCardGrow - 1.0f);
+    if (!focused)
+        return {x, kShelfY, kCard, kCard};
+    const float grown = kCard * kCardGrow;
+    return {x, kShelfY - (grown - kCard), grown, grown};
+}
+
+Rect App::cell_size() const
+{
+    const Kind &k = kind_of(slot_, tab_);
+    return {0, 0, k.cell_w, k.cell_h};
+}
+
+int App::columns() const
+{
+    const Rect cell = cell_size();
+    return std::max(1, static_cast<int>((kGridWidth + kGridGap) / (cell.w + kGridGap)));
+}
+
+Rect App::cell_rect(int index) const
+{
+    const Rect cell = cell_size();
+    const int cols = columns();
+    const int row = index / cols, col = index % cols;
+    return {kGridX + col * (cell.w + kGridGap), kGridTop + row * (cell.h + kGridGap) - grid_scroll_.offset(), cell.w,
+            cell.h};
+}
+
+// ---------------------------------------------------------------- drawing
+
+void App::draw(hui::app::Frame &frame) const
+{
+    draw_backdrop(frame);
+    gfx::DrawList &list = frame.scene;
+    const float back = sheet_open_.value;
+    list.push_transform(1.0f - 0.03f * back, 960, 540, 0, 0);
+    if (screen_ == Screen::starting)
+        draw_starting(list);
+    else
+    {
+        draw_top_bar(list);
+        if (screen_ == Screen::library)
+            draw_library(list);
+        else
+            draw_picker(list);
+    }
+    list.pop_transform();
+    if (back > 0.01f)
+    {
+        list.rounded_rect({0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight}, 0, kNight.with_alpha(0.5f * back));
+        frame.glass = true;
+        draw_sheet(frame.overlay, frame.glass_texture);
+    }
+    draw_hints(back > 0.5f ? frame.overlay : frame.scene);
+    draw_toasts(frame.overlay);
+}
+
+void App::draw_backdrop(hui::app::Frame &frame) const
+{
+    frame.backdrop.mode = gfx::BackdropMode::aurora;
+    for (int i = 0; i < 4; ++i)
+        frame.backdrop.colors[i] = palette_[i].value();
+    frame.backdrop.time = clock_;
+
+    gfx::DrawList &list = frame.scene;
+    const Rect screen{0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight};
+    const float t = backdrop_fade_.running ? tween::smoothstep(backdrop_fade_.progress()) : 1.0f;
+    const float strength = screen_ == Screen::picker ? 0.45f : 1.0f;
+    if (backdrop_old_ && t < 1.0f)
+        list.image(backdrop_old_, screen, gfx::kFullUv, kWhite.with_alpha(strength * (1.0f - t)));
+    if (backdrop_)
+        list.image(backdrop_, screen, gfx::kFullUv, kWhite.with_alpha(strength * t));
+    // legibility: dark on the left, where the text is, and under the shelf
+    list.gradient_rect_h({0, 0, 1350, 1080}, 0, kNight.with_alpha(0.88f), kNight.with_alpha(0.0f));
+    list.gradient_rect({0, 0, 1920, 180}, 0, kNight.with_alpha(0.6f), kNight.with_alpha(0.0f));
+    list.gradient_rect({0, 600, 1920, 480}, 0, kNight.with_alpha(0.0f), kNight.with_alpha(0.92f));
+}
+
+void App::draw_spinner(gfx::DrawList &list, float cx, float cy, float radius) const
+{
+    list.ring(cx, cy, radius, radius * 0.16f, kWhite.with_alpha(0.12f));
+    list.arc(cx, cy, radius, radius * 0.16f, clock_ * 5.0f, 1.9f, kWhite.with_alpha(0.9f));
+}
+
+void App::draw_starting(gfx::DrawList &list) const
+{
+    const float in = tween::stagger(age_, 0, 0.05f, 0.6f);
+    list.push_opacity(in);
+    ui::text(list, fonts_.display, "Art Swap", 960, 470, 104, kWhite, gfx::Align::center);
+    ui::text(list, fonts_.semibold, "HOME-SCREEN ART FROM STEAMGRIDDB", 960, 530, 20, kWhite.with_alpha(0.6f),
+             gfx::Align::center, 5.0f);
+    const bool failed = helper_.state() == Helper::State::failed;
+    if (!failed)
+    {
+        draw_spinner(list, 960, 640, 26);
+        ui::text(list, fonts_.regular, helper_.status() + "\xE2\x80\xA6", 960, 720, 26, kWhite.with_alpha(0.75f),
+                 gfx::Align::center);
+    }
+    else
+    {
+        list.rounded_rect({560, 600, 800, 4}, 2, kRed.with_alpha(0.7f));
+        ui::paragraph(list, fonts_.regular, helper_.status(), 960, 668, 28, 760, 40, kWhite, 4, gfx::Align::center);
+    }
+    list.pop_opacity();
+}
+
+void App::draw_top_bar(gfx::DrawList &list) const
+{
+    const float in = tween::stagger(age_, 0, 0.05f, 0.5f);
+    list.push_opacity(in);
+    const float w = ui::text(list, fonts_.semibold, "Art Swap", kMargin, 92, 28, kWhite);
+    list.rounded_rect({kMargin, 104, w, 4}, 2, palette_[3].value());
+    std::string right;
+    Color dot = Color::rgb(0x30d080);
+    const std::string backend = helper_.backend();
+    if (backend.rfind("unavailable", 0) == 0)
+    {
+        right = "No network for the helper";
+        dot = kRed;
+    }
+    else if (key_state_ == "none")
+    {
+        right = "Add a SteamGridDB API key in Settings";
+        dot = kAmber;
+    }
+    else
+        right = std::string("SteamGridDB") + (key_state_ == "user" ? " \xC2\xB7 your key" : "");
+    const float tw = ui::text(list, fonts_.regular, right, 1824, 92, 24, kWhite.with_alpha(0.75f), gfx::Align::right);
+    list.circle(1824 - tw - 20, 84, 7, dot);
+    list.pop_opacity();
+}
+
+void App::draw_library(gfx::DrawList &list) const
+{
+    const Title *title = focused_title();
+    if (title == nullptr)
+    {
+        const float in = tween::stagger(age_, 1, 0.08f, 0.6f);
+        list.push_opacity(in);
+        if (titles_loading_)
+        {
+            draw_spinner(list, 960, 520, 26);
+            ui::text(list, fonts_.regular, "Looking at the console\xE2\x80\xA6", 960, 600, 28, kWhite.with_alpha(0.8f),
+                     gfx::Align::center);
+        }
+        else
+        {
+            ui::text(list, fonts_.display, titles_error_.empty() ? "No titles with art found" : "The titles did not load",
+                     kMargin, 300, 64, kWhite);
+            ui::paragraph(list, fonts_.regular,
+                          titles_error_.empty()
+                              ? "Art Swap looks in /user/appmeta and in the homebrew folders. Press OPTIONS, then "
+                                "Helper log, to see what it read; \xE2\x9C\x95 looks again."
+                              : titles_error_,
+                          kMargin, 370, 28, 1100, 40, kWhite.with_alpha(0.8f), 4);
+        }
+        list.pop_opacity();
+        return;
+    }
+
+    // ---- the hero: what this title is and what can change ----
+    const float in = tween::stagger(age_, 1, 0.08f, 0.6f);
+    const float arrive = hero_.running ? tween::quint_out(hero_.progress()) : 1.0f;
+    list.push_opacity(in * (0.25f + 0.75f * arrive));
+    const float x = kMargin + 30.0f * (1.0f - arrive);
+    ui::text(list, fonts_.semibold, kind_label(title->kind) + "  \xC2\xB7  " + title->id, x, 212, 20, title->accent,
+             gfx::Align::left, 4.0f);
+    ui::text(list, fonts_.display, fonts_.display.font->fit(title->name, 84, 1150), x - 4, 306, 84, kWhite);
+    ui::text(list, fonts_.regular,
+             "Icon  " + describe(title->icon_desc) + "     Background  " + describe(title->pic_desc), x, 362, 25,
+             kWhite.with_alpha(0.78f));
+    float y = 412;
+    if (title->kept)
+    {
+        const std::string chip = "Custom art  \xC2\xB7  originals kept as .old";
+        const float cw = fonts_.semibold.measure(chip, 21) + 44;
+        list.bordered_rect({x, y - 30, cw, 44}, 22, title->accent.with_alpha(0.14f), 1.5f,
+                           title->accent.with_alpha(0.7f));
+        ui::text(list, fonts_.semibold, chip, x + 22, y, 21, kWhite);
+        y += 52;
+    }
+    if (!title->sgdb_name.empty())
+    {
+        ui::text(list, fonts_.regular, "SteamGridDB: " + title->sgdb_name, x, y, 22, kWhite.with_alpha(0.55f));
+    }
+
+    // the actions, as the console draws its Play button
+    const ui::GlyphStyle light = ui::GlyphStyle::light();
+    const ui::GlyphStyle dark = ui::GlyphStyle::dark();
+    float bx = x;
+    const float by = 500;
+    {
+        const char *label = "Change icon";
+        const float w = fonts_.semibold.measure(label, 27) + 100;
+        const Rect pill{bx, by, w, 64};
+        list.glow(pill, 32, 18, title->accent.with_alpha(0.35f));
+        list.rounded_rect(pill, 32, kWhite);
+        ui::draw_button(list, fonts_, light, ui::Button::cross, pill.x + 20, pill.cy(), 34);
+        ui::text(list, fonts_.semibold, label, pill.x + 70, pill.cy() + 10, 27, kInk);
+        bx += w + 20;
+    }
+    {
+        const bool has_pic = !(title->pic_desc == "-" || title->pic_desc.empty());
+        const char *label = "Change background";
+        const float w = fonts_.semibold.measure(label, 27) + 100;
+        const Rect pill{bx, by, w, 64};
+        list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(has_pic ? 0.35f : 0.12f));
+        list.push_opacity(has_pic ? 1.0f : 0.4f);
+        ui::draw_button(list, fonts_, dark, ui::Button::triangle, pill.x + 20, pill.cy(), 34);
+        ui::text(list, fonts_.semibold, label, pill.x + 70, pill.cy() + 10, 27, kWhite);
+        list.pop_opacity();
+        bx += w + 20;
+    }
+    if (title->kept)
+    {
+        const char *label = "Restore";
+        const float w = fonts_.semibold.measure(label, 27) + 100;
+        const Rect pill{bx, by, w, 64};
+        list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(0.35f));
+        ui::draw_button(list, fonts_, dark, ui::Button::square, pill.x + 20, pill.cy(), 34);
+        ui::text(list, fonts_.semibold, label, pill.x + 70, pill.cy() + 10, 27, kWhite);
+    }
+
+    // the icon, large, floating
+    const float bob = std::sin(clock_ * 0.8f) * 6.0f;
+    const Rect art{1376 + 40.0f * (1.0f - arrive), 150 + bob, 400, 400};
+    list.glow(art.inset(30), 60, 90, title->accent.with_alpha(0.3f));
+    list.shadow({art.x, art.y + 26, art.w, art.h}, 36, 46, Color::rgb(0x000000, 0.55f));
+    if (title->icon)
+        list.image(title->icon, art, gfx::kFullUv, kWhite, 36);
+    else
+    {
+        list.rounded_rect(art, 36, title->mid.with_alpha(0.6f));
+        if (!title->icon_failed)
+            draw_spinner(list, art.cx(), art.cy(), 24);
+    }
+    list.bordered_rect(art, 36, Color::rgb(0x000000, 0.0f), 2, kWhite.with_alpha(0.16f));
+    list.pop_opacity();
+
+    // ---- the shelf ----
+    const float shelf_in = tween::stagger(age_, 3, 0.09f, 0.6f);
+    list.push_opacity(shelf_in);
+    char heading[64];
+    std::snprintf(heading, sizeof(heading), "Your titles  \xC2\xB7  %d", static_cast<int>(titles_.size()));
+    ui::text(list, fonts_.semibold, heading, kMargin, kShelfY - 70, 24, kWhite.with_alpha(0.9f));
+    const float lift = 40.0f * (1.0f - shelf_in);
+    for (int i = 0; i < static_cast<int>(titles_.size()); ++i)
+    {
+        if (i == focus_)
+            continue;
+        Rect rect = card_rect(i, false);
+        rect.y += lift;
+        if (rect.x > gfx::kVirtualWidth || rect.x + rect.w < -80.0f)
+            continue;
+        const Title &t = *titles_[static_cast<std::size_t>(i)];
+        if (t.icon)
+            list.image(t.icon, rect, gfx::kFullUv, kWhite.with_alpha(0.8f), 22);
+        else
+        {
+            list.rounded_rect(rect, 22, t.mid.with_alpha(0.5f));
+            ui::text(list, fonts_.semibold, fonts_.semibold.font->fit(t.name, 20, rect.w - 24), rect.x + 12,
+                     rect.y + rect.h - 16, 20, kWhite.with_alpha(0.8f));
+        }
+        if (t.kept)
+            list.circle(rect.x + rect.w - 18, rect.y + 18, 7, t.accent);
+    }
+    Rect ring = ring_.value();
+    ring.y += lift;
+    ring.x += ui::shake(nudge_.value, clock_, 16.0f, 8.0f) * nudge_direction_;
+    list.shadow({ring.x, ring.y + 18, ring.w, ring.h}, 26, 34, Color::rgb(0x000000, 0.6f));
+    list.glow(ring, 26, 26, title->accent.with_alpha(0.4f + 0.15f * ui::breathe(clock_)));
+    if (title->icon)
+        list.image(title->icon, ring, gfx::kFullUv, kWhite, 26);
+    else
+        list.rounded_rect(ring, 26, title->mid);
+    list.bordered_rect(ring.inset(-5), 30, Color::rgb(0x000000, 0.0f), 4, kWhite);
+    // the focused title's name under its card, as the home screen shows it
+    ui::text(list, fonts_.semibold, fonts_.semibold.font->fit(title->name, 22, 420), ring.x, ring.y + ring.h + 40, 22,
+             kWhite);
+    list.pop_opacity();
+}
+
+void App::draw_picker(gfx::DrawList &list) const
+{
+    if (picker_title_ < 0)
+        return;
+    const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
+    const bool icon = slot_ == "icon";
+    const float in = tween::stagger(age_, 1, 0.06f, 0.5f);
+    list.push_opacity(in);
+
+    ui::text(list, fonts_.semibold, icon ? "CHANGE THE ICON" : "CHANGE THE BACKGROUND", kMargin, 168, 20,
+             title.accent, gfx::Align::left, 4.0f);
+    ui::text(list, fonts_.display, fonts_.display.font->fit(title.name, 60, 1100), kMargin - 3, 234, 60, kWhite);
+    std::string game;
+    if (matching_)
+        game = "Finding " + title.name + " on SteamGridDB\xE2\x80\xA6";
+    else if (!title.sgdb_name.empty())
+        game = "SteamGridDB: " + title.sgdb_name;
+    const float gw = ui::text(list, fonts_.regular, game, kMargin, 276, 23, kWhite.with_alpha(0.7f));
+    if (!game.empty())
+    {
+        const ui::GlyphStyle dark = ui::GlyphStyle::dark();
+        ui::draw_button(list, fonts_, dark, ui::Button::square, kMargin + gw + 22, 268, 28);
+        ui::text(list, fonts_.regular, "Another game", kMargin + gw + 60, 276, 21, kWhite.with_alpha(0.55f));
+    }
+
+    // the tabs
+    const auto names = tabs();
+    float tx = kMargin + 54;
+    const ui::GlyphStyle dark = ui::GlyphStyle::dark();
+    ui::draw_button(list, fonts_, dark, ui::Button::l1, kMargin, 316, 30);
+    std::vector<Rect> pills;
+    for (std::size_t i = 0; i < names.size(); ++i)
+    {
+        const float w = fonts_.semibold.measure(names[i], 22) + 44;
+        pills.push_back({tx, 294, w, 44});
+        tx += w + 10;
+    }
+    // the highlight springs between the pills
+    const float tp = tab_position_.value;
+    const int lo = std::clamp(static_cast<int>(std::floor(tp)), 0, static_cast<int>(pills.size()) - 1);
+    const int hi = std::clamp(lo + 1, 0, static_cast<int>(pills.size()) - 1);
+    const float f = tp - lo;
+    const Rect highlight{pills[lo].x + (pills[hi].x - pills[lo].x) * f, 294,
+                         pills[lo].w + (pills[hi].w - pills[lo].w) * f, 44};
+    list.rounded_rect(highlight, 22, kWhite);
+    for (std::size_t i = 0; i < names.size(); ++i)
+    {
+        const bool active = static_cast<int>(i) == tab_;
+        ui::text(list, fonts_.semibold, names[i], pills[i].cx(), pills[i].y + 30, 22,
+                 active ? kInk : kWhite.with_alpha(0.75f), gfx::Align::center);
+    }
+    ui::draw_button(list, fonts_, dark, ui::Button::r1, tx + 6, 316, 30);
+
+    // ---- the grid ----
+    list.push_clip({0, kGridTop - 24, kPanelX - 30, kGridBottom - kGridTop + 48});
+    if (!arts_.empty())
+        list.glow(cell_ring_.value(), 16, 22, title.accent.with_alpha(0.45f));
+    for (int i = 0; i < static_cast<int>(arts_.size()); ++i)
+    {
+        const Rect r = cell_rect(i);
+        if (r.y > kGridBottom + 24 || r.y + r.h < kGridTop - 24)
+            continue;
+        const Art &art = *arts_[static_cast<std::size_t>(i)];
+        const bool focused = i == art_focus_;
+        if (art.texture)
+            list.image(art.texture, r, cover_uv(art.tw, art.th, r.w, r.h, 0.0f),
+                       kWhite.with_alpha(focused ? 1.0f : 0.82f), 14);
+        else
+        {
+            list.rounded_rect(r, 14, kWhite.with_alpha(0.06f + 0.04f * ui::breathe(clock_ + i * 0.2f)));
+            if (art.failed)
+                ui::text(list, fonts_.regular, "no picture", r.cx(), r.cy() + 8, 18, kWhite.with_alpha(0.4f),
+                         gfx::Align::center);
+        }
+    }
+    if (!arts_.empty())
+        list.bordered_rect(cell_ring_.value().inset(-5), 18, Color::rgb(0x000000, 0.0f), 4, kWhite);
+    list.pop_clip();
+
+    // the grid's own messages
+    if (arts_.empty())
+    {
+        if (listing_ || matching_)
+        {
+            draw_spinner(list, kGridX + 40, kGridTop + 60, 22);
+            ui::text(list, fonts_.regular, "Asking SteamGridDB\xE2\x80\xA6", kGridX + 84, kGridTop + 70, 26,
+                     kWhite.with_alpha(0.8f));
+        }
+        else if (!list_error_.empty())
+        {
+            ui::paragraph(list, fonts_.regular, list_error_, kGridX, kGridTop + 60, 27, 1050, 40, kWhite, 4);
+            ui::text(list, fonts_.regular, "\xE2\x9C\x95 tries again", kGridX, kGridTop + 230, 22,
+                     kWhite.with_alpha(0.55f));
+        }
+        else
+        {
+            const std::string what = names[static_cast<std::size_t>(tab_)];
+            ui::paragraph(list, fonts_.regular,
+                          "SteamGridDB has nothing under " + what + " for this game yet" +
+                              (hidden_ ? " (only icons too small to use)" : "") +
+                              ". Try the other tabs, or \xE2\x96\xA1 for another game.",
+                          kGridX, kGridTop + 60, 27, 1050, 40, kWhite.with_alpha(0.85f), 4);
+        }
+    }
+    else if (listing_)
+        draw_spinner(list, kPanelX - 70, kGridBottom - 10, 16);
+
+    // ---- the preview: what would be written, beside what is there ----
+    const Art *art = focused_art();
+    const Rect fresh = icon ? Rect{kPanelX + 88, kGridTop - 10, 380, 380} : Rect{kPanelX, kGridTop, kPanelW, kPanelW * 9 / 16};
+    ui::text(list, fonts_.semibold, "NEW", fresh.x, fresh.y - 16, 17, kWhite.with_alpha(0.6f), gfx::Align::left, 3.0f);
+    list.shadow({fresh.x, fresh.y + 18, fresh.w, fresh.h}, icon ? 32 : 18, 36, Color::rgb(0x000000, 0.55f));
+    const float radius = icon ? 32.0f : 14.0f;
+    if (art && preview_)
+        list.image(preview_, fresh, gfx::kFullUv, kWhite, radius);
+    else if (art && art->texture)
+    {
+        // until the helper's preview arrives: the thumbnail, framed the same way
+        list.rounded_rect(fresh, radius, kNight);
+        if (fit_)
+            list.image(art->texture, contain(fresh, art->tw, art->th), gfx::kFullUv, kWhite, radius * 0.5f);
+        else
+            list.image(art->texture, fresh, cover_uv(art->tw, art->th, fresh.w, fresh.h, pan_), kWhite, radius);
+    }
+    else
+        list.rounded_rect(fresh, radius, kWhite.with_alpha(0.06f));
+    if (art && (preview_loading_ || preview_due_ >= 0.0f))
+        draw_spinner(list, fresh.x + fresh.w - 30, fresh.y + 30, 12);
+    list.bordered_rect(fresh, radius, Color::rgb(0x000000, 0.0f), 2, kWhite.with_alpha(0.2f));
+
+    const float left = icon ? kPanelX : fresh.x;
+    float y = fresh.y + fresh.h + 36;
+    if (art)
+    {
+        char line[160];
+        std::snprintf(line, sizeof(line), "%d\xC3\x97%d  \xC2\xB7  %s", art->w, art->h, art->style.c_str());
+        ui::text(list, fonts_.regular, line, left, y, 22, kWhite.with_alpha(0.8f));
+        ui::text(list, fonts_.regular, "by " + fonts_.regular.font->fit(art->author, 20, kPanelW - 40), left, y + 28,
+                 20, kWhite.with_alpha(0.55f));
+        // the framing
+        const char *mode = fit_ ? "Fit: all of it, on a blurred fill" : "Fill: cut to the frame";
+        ui::draw_button(list, fonts_, dark, ui::Button::triangle, left, y + 62, 28);
+        ui::text(list, fonts_.semibold, mode, left + 40, y + 70, 21, kWhite.with_alpha(0.9f));
+        y += 96;
+    }
+    // now
+    const Rect now = icon ? Rect{left, y, 96, 96} : Rect{left, y, 192, 108};
+    if (current_art_)
+        list.image(current_art_, now, gfx::kFullUv, kWhite.with_alpha(0.9f), icon ? 16.0f : 8.0f);
+    else
+        list.rounded_rect(now, icon ? 16 : 8, kWhite.with_alpha(0.06f));
+    ui::text(list, fonts_.semibold, "NOW", now.x + now.w + 22, now.y + 28, 17, kWhite.with_alpha(0.6f),
+             gfx::Align::left, 3.0f);
+    ui::text(list, fonts_.regular, describe(icon ? title.icon_desc : title.pic_desc), now.x + now.w + 22, now.y + 58,
+             20, kWhite.with_alpha(0.7f));
+    if (title.kept)
+        ui::text(list, fonts_.regular, "original kept as .old", now.x + now.w + 22, now.y + 86, 20,
+                 title.accent.with_alpha(0.9f));
+    list.pop_opacity();
+}
+
+void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
+{
+    const float t = sheet_open_.value;
+    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::settings || sheet_ == Sheet::log;
+    const float h = tall ? 760.0f : 470.0f;
+    const Rect panel{360, (1080 - h) * 0.5f + 40.0f * (1.0f - t), 1200, h};
+    list.push_opacity(tween::clamp01(t * 1.4f));
+    list.shadow({panel.x, panel.y + 20, panel.w, panel.h}, 44, 60, Color::rgb(0x000000, 0.5f));
+    list.glass(glass, panel, 44, kWhite);
+    list.rounded_rect(panel, 44, gfx::mix(palette_[1].value(), kInk, 0.55f).with_alpha(0.74f));
+    list.bordered_rect(panel, 44, Color::rgb(0x000000, 0.0f), 1.5f, kWhite.with_alpha(0.22f));
+    const float x = panel.x + 64;
+    float y = panel.y + 92;
+    const Title *title = screen_ == Screen::picker && picker_title_ >= 0
+                             ? titles_[static_cast<std::size_t>(picker_title_)].get()
+                             : focused_title();
+    const std::string name = title ? title->name : "";
+    const Color accent = title ? title->accent : Color::rgb(0x9fd8ff);
+
+    auto heading = [&](const std::string &label, const std::string &text) {
+        ui::text(list, fonts_.semibold, label, x, y, 19, accent, gfx::Align::left, 4.0f);
+        ui::text(list, fonts_.display, fonts_.display.font->fit(text, 48, panel.w - 128), x - 2, y + 62, 48, kWhite);
+        y += 120;
+    };
+    auto rows = [&](const std::vector<std::pair<std::string, std::string>> &items, int focus, float position) {
+        const float row_h = 64, width = panel.w - 128;
+        list.rounded_rect({x - 20, y + position * row_h, width + 40, row_h - 8}, 28, kWhite);
+        for (int i = 0; i < static_cast<int>(items.size()); ++i)
+        {
+            const bool f = i == focus;
+            const float ry = y + i * row_h;
+            ui::text(list, fonts_.semibold, fonts_.semibold.font->fit(items[i].first, 26, width * 0.62f), x + 8,
+                     ry + 39, 26, f ? kInk : kWhite.with_alpha(0.9f));
+            ui::text(list, fonts_.regular, fonts_.regular.font->fit(items[i].second, 22, width * 0.36f), x + width - 8,
+                     ry + 39, 22, f ? kInk.with_alpha(0.7f) : kWhite.with_alpha(0.6f), gfx::Align::right);
+        }
+        y += row_h * items.size();
+    };
+
+    switch (sheet_)
+    {
+    case Sheet::confirm:
+    case Sheet::working:
+    {
+        const bool icon = slot_ == "icon";
+        heading(icon ? "NEW ICON" : "NEW BACKGROUND", "For " + name + "?");
+        const Rect pic = icon ? Rect{panel.x + panel.w - 64 - 260, panel.y + 150, 260, 260}
+                              : Rect{panel.x + panel.w - 64 - 400, panel.y + 170, 400, 225};
+        const Art *art = focused_art();
+        if (preview_)
+            list.image(preview_, pic, gfx::kFullUv, kWhite, icon ? 26.0f : 10.0f);
+        else if (art && art->texture)
+            list.image(art->texture, pic, cover_uv(art->tw, art->th, pic.w, pic.h, pan_), kWhite, icon ? 26.0f : 10.0f);
+        const std::string file = icon ? "icon0" : "pic0 and pic1";
+        ui::paragraph(list, fonts_.regular,
+                      "Art Swap writes it over " + file +
+                          " in every copy of the title's art, in the same format and size. Before the first change "
+                          "it keeps each original beside it as an .old file, so Restore can put it back.",
+                      x, y, 25, panel.w - 128 - pic.w - 40, 38, kWhite.with_alpha(0.85f), 6);
+        if (sheet_ == Sheet::working)
+        {
+            draw_spinner(list, x + 22, panel.y + panel.h - 70, 20);
+            ui::text(list, fonts_.semibold, working_text_ + "\xE2\x80\xA6", x + 64, panel.y + panel.h - 60, 26, kWhite);
+        }
+        break;
+    }
+    case Sheet::restore:
+        heading("RESTORE", "The original art of " + name + "?");
+        ui::paragraph(list, fonts_.regular,
+                      "Each .old file Art Swap kept goes back in place of the art it replaced: the icon, the "
+                      "background, or both.",
+                      x, y, 26, panel.w - 128, 40, kWhite.with_alpha(0.85f), 4);
+        break;
+    case Sheet::search:
+    {
+        heading("WHICH GAME IS IT?", name);
+        std::vector<std::pair<std::string, std::string>> items;
+        items.emplace_back("Search for another name\xE2\x80\xA6", "keyboard");
+        for (const auto &row : results_)
+            items.emplace_back(row[2], (row[3] != "0" ? row[3] : std::string()) + (row[4] == "1" ? "  \xE2\x9C\x93" : ""));
+        // a window of rows around the focus
+        const int window = 8;
+        const int first = std::clamp(sheet_focus_ - window / 2, 0, std::max(0, static_cast<int>(items.size()) - window));
+        std::vector<std::pair<std::string, std::string>> shown(
+            items.begin() + first, items.begin() + std::min(static_cast<int>(items.size()), first + window));
+        rows(shown, sheet_focus_ - first, sheet_focus_position_.value - static_cast<float>(first));
+        if (searching_)
+        {
+            draw_spinner(list, x + 22, y + 40, 18);
+            ui::text(list, fonts_.regular, "Searching for \xE2\x80\x9C" + search_term_ + "\xE2\x80\x9D\xE2\x80\xA6",
+                     x + 60, y + 50, 24, kWhite.with_alpha(0.8f));
+        }
+        else if (!search_error_.empty())
+            ui::text(list, fonts_.regular, search_error_, x, y + 50, 24, kAmber);
+        break;
+    }
+    case Sheet::settings:
+    {
+        heading("SETTINGS", "Art Swap");
+        const std::string key = key_state_ == "user" ? "your own" : key_state_ == "builtin" ? "built in" : "none";
+        rows({{"SteamGridDB API key", key},
+              {"Use the built-in key", key_state_ == "user" ? "" : "in use"},
+              {"Look at the console again", std::to_string(titles_.size()) + " titles"},
+              {"Helper log", "for a problem report"}},
+             sheet_focus_, sheet_focus_position_.value);
+        y += 30;
+        ui::paragraph(list, fonts_.regular,
+                      "A free key of your own: steamgriddb.com, sign in, Preferences, API. Art Swap " +
+                          std::string(kVersion) + "  \xC2\xB7  helper " + kHelperVersion + "  \xC2\xB7  network " +
+                          (helper_.backend().empty() ? "?" : helper_.backend()),
+                      x, y + 20, 22, panel.w - 128, 34, kWhite.with_alpha(0.6f), 3);
+        break;
+    }
+    case Sheet::log:
+    {
+        heading("HELPER LOG", "/data/artswap/helper.log");
+        // the last lines that fit
+        std::vector<std::string> lines;
+        std::size_t start = 0;
+        while (start < log_text_.size())
+        {
+            std::size_t end = log_text_.find('\n', start);
+            if (end == std::string::npos)
+                end = log_text_.size();
+            lines.push_back(log_text_.substr(start, end - start));
+            start = end + 1;
+        }
+        const int fit = 15;
+        const int first = std::max(0, static_cast<int>(lines.size()) - fit);
+        for (int i = first; i < static_cast<int>(lines.size()); ++i)
+        {
+            ui::text(list, fonts_.mono, fonts_.mono.font->fit(lines[static_cast<std::size_t>(i)], 18, panel.w - 128),
+                     x, y, 18, kWhite.with_alpha(0.85f));
+            y += 28;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    list.pop_opacity();
+}
+
+void App::draw_toasts(gfx::DrawList &list) const
+{
+    float y = 128;
+    for (const Toast &t : toasts_)
+    {
+        const float in = tween::smoothstep(tween::clamp01(t.age * 4.0f));
+        const float out = tween::clamp01((t.life - t.age) * 2.5f);
+        const float a = in * out;
+        if (a <= 0.01f)
+            continue;
+        const float w = 820.0f;
+        const float h = t.detail.empty() ? 76.0f : 132.0f;
+        const Rect r{1824 - w + 30.0f * (1.0f - in), y, w, h};
+        list.push_opacity(a);
+        list.shadow({r.x, r.y + 12, r.w, r.h}, 24, 30, Color::rgb(0x000000, 0.5f));
+        list.rounded_rect(r, 24, gfx::mix(kInk, palette_[1].value(), 0.3f).with_alpha(0.96f));
+        list.rounded_rect({r.x, r.y, 8, r.h}, 4, t.error ? kRed : accent());
+        ui::text(list, fonts_.semibold, fonts_.semibold.font->fit(t.title, 26, w - 70), r.x + 36, r.y + 46, 26, kWhite);
+        if (!t.detail.empty())
+            ui::paragraph(list, fonts_.regular, t.detail, r.x + 36, r.y + 84, 20, w - 70, 28, kWhite.with_alpha(0.75f), 2);
+        list.pop_opacity();
+        y += h + 16;
+    }
+}
+
+void App::draw_hints(gfx::DrawList &list) const
+{
+    const ui::GlyphStyle style = ui::GlyphStyle::dark();
+    std::vector<ui::Hint> hints;
+    if (sheet_ == Sheet::confirm)
+        hints = {{ui::Button::cross, slot_ == "icon" ? "Use this icon" : "Use this background"},
+                 {ui::Button::circle, "Cancel"}};
+    else if (sheet_ == Sheet::restore)
+        hints = {{ui::Button::cross, "Restore"}, {ui::Button::circle, "Cancel"}};
+    else if (sheet_ == Sheet::search || sheet_ == Sheet::settings)
+        hints = {{ui::Button::cross, "Choose"}, {ui::Button::circle, "Back"}};
+    else if (sheet_ == Sheet::log)
+        hints = {{ui::Button::circle, "Back"}};
+    else if (sheet_ == Sheet::working)
+        hints = {};
+    else if (screen_ == Screen::starting)
+    {
+        if (helper_.state() == Helper::State::failed)
+            hints = {{ui::Button::cross, "Try again"}};
+    }
+    else if (screen_ == Screen::library)
+    {
+        const Title *title = focused_title();
+        if (title)
+        {
+            hints.push_back({ui::Button::cross, "Icon"});
+            if (!(title->pic_desc == "-" || title->pic_desc.empty()))
+                hints.push_back({ui::Button::triangle, "Background"});
+            if (title->kept)
+                hints.push_back({ui::Button::square, "Restore"});
+        }
+        hints.push_back({ui::Button::options, "Settings"});
+    }
+    else
+    {
+        const Art *art = focused_art();
+        if (art)
+        {
+            hints.push_back({ui::Button::cross, "Use this"});
+            hints.push_back({ui::Button::triangle, fit_ ? "Fill" : "Fit"});
+            const float a = art->h > 0 ? static_cast<float>(art->w) / art->h : 1.0f;
+            const float d = slot_ == "icon" ? 1.0f : 16.0f / 9.0f;
+            if (!fit_ && std::fabs(a / d - 1.0f) > 0.02f)
+                hints.push_back({ui::Button::right_stick, "Move"});
+        }
+        hints.push_back({ui::Button::square, "Another game"});
+        hints.push_back({ui::Button::circle, "Back"});
+    }
+    if (hints.empty())
+        return;
+    list.push_opacity(tween::stagger(age_, 6, 0.06f, 0.4f));
+    ui::draw_hints(list, fonts_, style, hints.data(), static_cast<int>(hints.size()), 1824, true);
+    list.pop_opacity();
+}
+
+} // namespace artswap

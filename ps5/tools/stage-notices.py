@@ -20,6 +20,7 @@ The assets' notices stay in assets/NOTICES.txt (ps5/tools/build-assets.py).
 Copyright (C) 2026 Mihawk
 SPDX-License-Identifier: MIT
 """
+import os
 import json
 import re
 import shutil
@@ -117,7 +118,7 @@ def main():
 
     # The UI kit, in a title that has the module
     if (PS5 / "ui/setup-kit.sh").exists():
-        kit = Path(ROOT.parent / "PS5_VKHomebrewUI")
+        kit = Path(os.environ.get("PS5_VKHOMEBREWUI", ROOT.parent / "PS5_VKHomebrewUI"))
         kit_rev = pinned("ui/setup-kit.sh", "revision")
         write_text(out / "ui-kit/LICENSE", kit, kit_rev, "LICENSE")
         parts.append(dict(
@@ -129,7 +130,7 @@ def main():
                         dirty=False)))
 
     # The payload SDK fork: its platform layer and headers
-    sdk = Path(ROOT.parent / "PS5_PayloadSDK")
+    sdk = Path(os.environ.get("PS5_PAYLOAD_SDK_FORK", ROOT.parent / "PS5_PayloadSDK"))
     sdk_rev = pinned("tools/setup-sdk.sh", "sdk_revision")
     write_text(out / "platform/GPL-3.0.txt", sdk, sdk_rev, "LICENSE")
     write_text(out / "platform/musl-regex-COPYRIGHT.txt", sdk, sdk_rev, "platform/src/regex/COPYRIGHT.musl")
@@ -157,7 +158,7 @@ def main():
     provenance = (archive.parent.parent / "PROVENANCE.txt").read_text()
     mesa_rev = re.search(r"^revision: ([0-9a-f]{40})", provenance, re.M).group(1)
     radv_sdk = re.search(r"^sdk: ([0-9a-f]{40})", provenance, re.M)
-    mesa = Path(ROOT.parent / "PS5_Mesa")
+    mesa = Path(os.environ.get("PS5_MESA_DIR", ROOT.parent / "PS5_Mesa"))
     write_text(out / "radv/Mesa-license.rst", mesa, mesa_rev, "docs/license.rst")
     write_tree(out / "radv/licenses", mesa, mesa_rev, "licenses")
     parts.append(dict(

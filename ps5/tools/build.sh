@@ -33,5 +33,10 @@ if [[ ! -f $build/build.ninja ]]; then
         -DPS5_VULKAN_DIR="$vulkan" -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=OFF > "$build.configure.log" 2>&1 \
         || { cat "$build.configure.log" >&2; exit 1; }
 fi
+# Art Swap: the helper payload first; the title folder carries it (artswapd.elf)
+bash "$root/helper/tools/build.sh"
 "$ninja" -C "$build" title
-python3 "$ps5/tools/build-assets.py" --install "$root/dist/$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["titleId"])' "$ps5/sce_sys/param.json")"
+title_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["titleId"])' "$ps5/sce_sys/param.json")
+python3 "$ps5/tools/build-assets.py" --install "$root/dist/$title_id"
+cp "$root/build/helper/artswapd.elf" "$root/dist/$title_id/artswapd.elf"
+echo "==> helper: dist/$title_id/artswapd.elf ($(stat -c %s "$root/dist/$title_id/artswapd.elf") bytes)"
