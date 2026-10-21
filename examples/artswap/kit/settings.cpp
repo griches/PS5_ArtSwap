@@ -439,7 +439,7 @@ void App::draw_settings(gfx::DrawList &list) const
         });
         rows = {{"Add your key from your phone", "QR code", true},
                 {have ? "Type a new key" : "Type your key", "Keyboard", true},
-                {"Remove your key", remove_armed_ > 0.0f ? "Press \xE2\x9C\x95 again to remove" : "", false, have, true}};
+                {"Remove your key", remove_armed_ > 0.0f ? "Select again to remove" : "", false, have, true}};
         static const char *notes[] = {
             "Shows a QR code: your phone opens a page on this console and sends the key to it.",
             "Type the 32 letters and numbers with the console's keyboard.",
@@ -455,7 +455,7 @@ void App::draw_settings(gfx::DrawList &list) const
         });
         staggered(2, [&] {
             draw_tile(list, fonts_, tile_rect(1, 140), "ART CHANGED", std::to_string(kept),
-                      kept ? "Originals kept as .old files: \xE2\x96\xA1 restores them" : "Nothing changed yet");
+                      kept ? (kept == 1 ? "Game with new art" : "Games with new art") : "Nothing changed yet");
         });
         rows = {{"Refresh game list", std::to_string(titles_.size()) + (titles_.size() == 1 ? " game" : " games")}};
         description = settings_in_rows_ ? "Finds games, apps and homebrew installed since Art Swap opened."

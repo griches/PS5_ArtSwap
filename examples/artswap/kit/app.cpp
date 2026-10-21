@@ -8,7 +8,7 @@
  * and swaps the shelf for a grid of SteamGridDB's art, with a preview of
  * exactly what would be written (the helper makes it) beside the current
  * art. Changing anything goes through a confirmation that says the original
- * is kept as an .old file.
+ * is kept, so Restore can put it back.
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -367,7 +367,9 @@ void App::load_titles(bool rescan)
                 if (i >= 0 && i < count && (d > 0 || side == 1))
                     request_icon(*titles_[static_cast<std::size_t>(i)]);
             }
-        ring_.snap(card_rect(focus_, true));
+        grow_.assign(titles_.size(), tween::Spring{});
+        if (!grow_.empty())
+            grow_[static_cast<std::size_t>(focus_)].snap(1.0f);
         if (key_state_ == "none" && !key_explained_ && sheet_ == Sheet::none && screen_ == Screen::library)
         {
             key_explained_ = true;
@@ -596,7 +598,7 @@ void App::match_and_list()
                 return;
             }
         list_error_ = "SteamGridDB has no game called \xE2\x80\x9C" + name +
-                      "\xE2\x80\x9D. Press \xE2\x96\xA1 to look for it under another name.";
+                      "\xE2\x80\x9D. Choose Another game to look for it under another name.";
     }, true, gen);
 }
 
@@ -790,14 +792,6 @@ void App::apply()
                         toast("That did not work", reply.error, true);
                         return;
                     }
-                    int written = 0;
-                    std::string first_old;
-                    for (const auto &row : reply.rows())
-                    {
-                        written += row[0] == "W";
-                        if (row[0] == "O" && first_old.empty() && row.size() > 1)
-                            first_old = row[1].substr(row[1].rfind('/') + 1);
-                    }
                     for (auto &t : titles_)
                         if (t->id == id)
                         {
@@ -814,9 +808,8 @@ void App::apply()
                             }
                         }
                     toast(std::string(slot == "icon" ? "New icon" : "New background") + " for " + name,
-                          std::to_string(written) + (written == 1 ? " file" : " files") +
-                              " written; the originals are kept as .old files. If the home screen still shows the "
-                              "old art, restart the console.");
+                          "Your original is kept, so Restore can put it back. If the home screen still shows "
+                          "the old art, restart the console.");
                     close_picker();
                 },
                 true);
@@ -1020,8 +1013,12 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
         shelf_scroll_.reveal(start, start + kCard * kCardGrow, gfx::kVirtualWidth - kMargin, kMargin * 2.2f);
     }
     shelf_scroll_.update(dt, 12.0f);
-    ring_.target(card_rect(focus_, true));
-    ring_.update(dt, 20.0f);
+    // the selection moves; the cards stay where they are, the selected one growing in its place
+    for (std::size_t i = 0; i < grow_.size(); ++i)
+    {
+        grow_[i].target = static_cast<int>(i) == focus_ ? 1.0f : 0.0f;
+        grow_[i].update(dt, 18.0f);
+    }
     if (screen_ == Screen::picker)
     {
         const Rect cell = cell_rect(art_focus_);
@@ -1077,7 +1074,7 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
             focus_ = clamped;
             focus_rest_ = 0.0f;
             hero_.start(0.35f);
-            feedback.play(Cue::focus, 1.0f, ui::pan_for_x(card_rect(focus_, false).cx()));
+            feedback.play(Cue::focus, 1.0f, ui::pan_for_x(card_rect(focus_).cx()));
         }
     }
     Title *title = focused_title();
@@ -1289,15 +1286,18 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
 
 // ---------------------------------------------------------------- layout
 
-Rect App::card_rect(int index, bool focused) const
+Rect App::card_rect(int index) const
 {
-    float x = kMargin + static_cast<float>(index) * (kCard + kCardGap) - shelf_scroll_.offset();
-    if (!focused && index > focus_)
-        x += kCard * (kCardGrow - 1.0f);
-    if (!focused)
-        return {x, kShelfY, kCard, kCard};
-    const float grown = kCard * kCardGrow;
-    return {x, kShelfY - (grown - kCard), grown, grown};
+    auto size = [&](int i) {
+        const float g = i >= 0 && i < static_cast<int>(grow_.size()) ? grow_[static_cast<std::size_t>(i)].value
+                                                                    : (i == focus_ ? 1.0f : 0.0f);
+        return kCard * (1.0f + (kCardGrow - 1.0f) * g);
+    };
+    float x = kMargin - shelf_scroll_.offset();
+    for (int i = 0; i < index; ++i)
+        x += size(i) + kCardGap;
+    const float s = size(index);
+    return {x, kShelfY - (s - kCard), s, s};
 }
 
 Rect App::cell_size() const
@@ -1458,8 +1458,8 @@ void App::draw_library(gfx::DrawList &list) const
                      kMargin, 300, 64, kWhite);
             ui::paragraph(list, fonts_.regular,
                           titles_error_.empty()
-                              ? "Art Swap looks in /user/appmeta and in the homebrew folders. \xE2\x9C\x95 refreshes the "
-                                "list; OPTIONS, then Helper log, shows what it read."
+                              ? "Art Swap looks in /user/appmeta and in the homebrew folders. Settings, then Helper log, "
+                                "shows what it read."
                               : titles_error_,
                           kMargin, 370, 28, 1100, 40, kWhite.with_alpha(0.8f), 4);
         }
@@ -1481,7 +1481,7 @@ void App::draw_library(gfx::DrawList &list) const
     float y = 412;
     if (title->kept)
     {
-        const std::string chip = "Custom art  \xC2\xB7  originals kept as .old";
+        const std::string chip = "Custom art  \xC2\xB7  original kept";
         const float cw = fonts_.semibold.measure(chip, 21) + 44;
         list.bordered_rect({x, y - 30, cw, 44}, 22, title->accent.with_alpha(0.14f), 1.5f,
                            title->accent.with_alpha(0.7f));
@@ -1557,7 +1557,7 @@ void App::draw_library(gfx::DrawList &list) const
     {
         if (i == focus_)
             continue;
-        Rect rect = card_rect(i, false);
+        Rect rect = card_rect(i);
         rect.y += lift;
         if (rect.x > gfx::kVirtualWidth || rect.x + rect.w < -80.0f)
             continue;
@@ -1573,19 +1573,20 @@ void App::draw_library(gfx::DrawList &list) const
         if (t.kept)
             list.circle(rect.x + rect.w - 18, rect.y + 18, 7, t.accent);
     }
-    Rect ring = ring_.value();
-    ring.y += lift;
-    ring.x += ui::shake(nudge_.value, clock_, 16.0f, 8.0f) * nudge_direction_;
-    list.shadow({ring.x, ring.y + 18, ring.w, ring.h}, 26, 34, Color::rgb(0x000000, 0.6f));
-    list.glow(ring, 26, 26, title->accent.with_alpha(0.4f + 0.15f * ui::breathe(clock_)));
+    // the selected card, in its own place: lifted, lit and ringed as it grows
+    Rect card = card_rect(focus_);
+    card.y += lift;
+    card.x += ui::shake(nudge_.value, clock_, 16.0f, 8.0f) * nudge_direction_;
+    const float grown = grow_.empty() ? 1.0f : grow_[static_cast<std::size_t>(focus_)].value;
+    list.shadow({card.x, card.y + 18, card.w, card.h}, 26, 34, Color::rgb(0x000000, 0.6f * grown));
+    list.glow(card, 26, 26, title->accent.with_alpha((0.4f + 0.15f * ui::breathe(clock_)) * grown));
     if (title->icon)
-        list.image(title->icon, ring, gfx::kFullUv, kWhite, 26);
+        list.image(title->icon, card, gfx::kFullUv, kWhite, 26);
     else
-        list.rounded_rect(ring, 26, title->mid);
-    list.bordered_rect(ring.inset(-5), 30, Color::rgb(0x000000, 0.0f), 4, kWhite);
-    // the focused title's name under its card, as the home screen shows it
-    ui::text(list, fonts_.semibold, fonts_.semibold.font->fit(title->name, 22, 420), ring.x, ring.y + ring.h + 40, 22,
-             kWhite);
+        list.rounded_rect(card, 26, title->mid);
+    list.bordered_rect(card.inset(-5), 30, Color::rgb(0x000000, 0.0f), 4, kWhite.with_alpha(tween::clamp01(grown * 1.5f)));
+    if (title->kept)
+        list.circle(card.x + card.w - 18, card.y + 18, 7, title->accent);
     list.pop_opacity();
 }
 
@@ -1680,8 +1681,8 @@ void App::draw_picker(gfx::DrawList &list) const
         else if (!list_error_.empty())
         {
             ui::paragraph(list, fonts_.regular, list_error_, kGridX, kGridTop + 60, 27, 1050, 40, kWhite, 4);
-            ui::text(list, fonts_.regular, "\xE2\x9C\x95 tries again", kGridX, kGridTop + 230, 22,
-                     kWhite.with_alpha(0.55f));
+            ui::draw_button(list, fonts_, ui::GlyphStyle::dark(), ui::Button::cross, kGridX, kGridTop + 222, 30);
+            ui::text(list, fonts_.regular, "Try again", kGridX + 42, kGridTop + 230, 22, kWhite.with_alpha(0.7f));
         }
         else
         {
@@ -1689,7 +1690,7 @@ void App::draw_picker(gfx::DrawList &list) const
             ui::paragraph(list, fonts_.regular,
                           "SteamGridDB has nothing under " + what + " for this game yet" +
                               (hidden_ ? " (only icons too small to use)" : "") +
-                              ". Try the other tabs, or \xE2\x96\xA1 for another game.",
+                              ". Try the other tabs, or another game.",
                           kGridX, kGridTop + 60, 27, 1050, 40, kWhite.with_alpha(0.85f), 4);
         }
     }
@@ -1745,7 +1746,7 @@ void App::draw_picker(gfx::DrawList &list) const
     ui::text(list, fonts_.regular, describe(icon ? title.icon_desc : title.pic_desc), now.x + now.w + 22, now.y + 58,
              20, kWhite.with_alpha(0.7f));
     if (title.kept)
-        ui::text(list, fonts_.regular, "original kept as .old", now.x + now.w + 22, now.y + 86, 20,
+        ui::text(list, fonts_.regular, "original kept", now.x + now.w + 22, now.y + 86, 20,
                  title.accent.with_alpha(0.9f));
     list.pop_opacity();
 }
@@ -1806,8 +1807,8 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         const std::string file = icon ? "icon0" : "pic0 and pic1";
         ui::paragraph(list, fonts_.regular,
                       "Art Swap writes it over " + file +
-                          " in every copy of the title's art, in the same format and size. Before the first change "
-                          "it keeps each original beside it as an .old file, so Restore can put it back.",
+                          " in every copy of the game's art, in the same format and size. The original is kept, so "
+                          "Restore can always put it back.",
                       x, y, 25, panel.w - 128 - pic.w - 40, 38, kWhite.with_alpha(0.85f), 6);
         if (sheet_ == Sheet::working)
         {
@@ -1819,8 +1820,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
     case Sheet::restore:
         heading("RESTORE", "The original art of " + name + "?");
         ui::paragraph(list, fonts_.regular,
-                      "Each .old file Art Swap kept goes back in place of the art it replaced: the icon, the "
-                      "background, or both.",
+                      "Art Swap puts back the art this game came with: the icon, the background, or both.",
                       x, y, 26, panel.w - 128, 40, kWhite.with_alpha(0.85f), 4);
         break;
     case Sheet::search:
@@ -1829,7 +1829,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         std::vector<std::pair<std::string, std::string>> items;
         items.emplace_back("Search for another name\xE2\x80\xA6", "keyboard");
         for (const auto &row : results_)
-            items.emplace_back(row[2], (row[3] != "0" ? row[3] : std::string()) + (row[4] == "1" ? "  \xE2\x9C\x93" : ""));
+            items.emplace_back(row[2], row[3] != "0" ? row[3] : std::string());
         // a window of rows around the focus
         const int window = 8;
         const int first = std::clamp(sheet_focus_ - window / 2, 0, std::max(0, static_cast<int>(items.size()) - window));

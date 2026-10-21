@@ -155,7 +155,8 @@ class App
     void draw_toasts(hui::gfx::DrawList &list) const;
     void draw_hints(hui::gfx::DrawList &list) const;
     void draw_spinner(hui::gfx::DrawList &list, float cx, float cy, float radius) const;
-    hui::gfx::Rect card_rect(int index, bool focused) const;
+    // A card on the shelf where it is now: every card keeps its place, the selected one grows in it
+    hui::gfx::Rect card_rect(int index) const;
     hui::gfx::Rect cell_rect(int index) const;
     hui::gfx::Rect cell_size() const;
     int columns() const;
@@ -189,7 +190,7 @@ class App
     int shown_ = -1;      // the title whose background shows
     float focus_rest_ = 0.0f;
     hui::ui::Scroller shelf_scroll_;
-    hui::ui::SpringRect ring_;
+    std::vector<hui::tween::Spring> grow_; // each card's growth, 0 at rest, 1 selected
     hui::ui::SpringColor palette_[4];
     hui::ui::Pulse nudge_;
     float nudge_direction_ = 0.0f;
