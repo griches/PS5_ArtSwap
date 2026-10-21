@@ -32,8 +32,11 @@ connection carries any number of requests, one at a time.
 | `PREVIEW url slot mode panx pany w h` | what `APPLY` would make, at w × h |
 | `APPLY id slot url [mode panx pany]` | writes the picture into every file of the slot. mode `cover` fills the frame and cuts the overflow (pan -1..1 picks the part kept); `fit` shows all of it on a blurred fill. Text: `O path.old` for each original kept, `W path format size` for each file written |
 | `RESTORE id [slot]` | moves each `.old` back over its file (slot `icon`, `pic` or `all`). Text: `R path` a file |
+| `SMP id` | text: `smp <version>` (`-` when ShadowMountPlus's API does not answer), `game <source_type> <installed> <path>` when it lists the title, `can <1\|0> <why not>`, and the `refresh` line, as REFRESHSTATE's |
+| `REFRESH id [wait]` | starts the home-screen refresh of a title ShadowMountPlus installed from a folder (smp.c), asking for up to wait seconds while a game keeps the console busy. Text: the `refresh` line |
+| `REFRESHSTATE [seen]` | text: `refresh phase id unseen message`; phase `none`, `copying`, `waiting`, `removing`, `adding`, `checking`, `done` or `failed`. A finished refresh is unseen (1) until `REFRESHSTATE seen` |
 | `LOG` | the last 8 KiB of `/data/artswap/helper.log` |
-| `BYE` | the helper leaves |
+| `BYE` | the helper leaves (after a refresh that is running) |
 
 ## Rules the helper keeps
 
@@ -47,5 +50,8 @@ connection carries any number of requests, one at a time.
 - The key page listens on the network only between `PHONE code` and `PHONE`
   (or ten minutes, a saved key, or ten wrong codes), and saves only a key that
   comes with the code and that SteamGridDB accepts.
+- It never asks ShadowMountPlus to uninstall a title installed from a package
+  or an image, and removes nothing until the game's folder has been read whole
+  and the title's saved data copied aside.
 - It leaves 90 seconds after its last connection closes, or 10 minutes after
-  starting if nobody connects.
+  starting if nobody connects, but never during a refresh.

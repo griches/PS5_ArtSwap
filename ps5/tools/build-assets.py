@@ -160,7 +160,7 @@ def notices_text(assets):
             lines.append(f"    Licence text: LICENSES/{Path(asset['licence_file']).name}")
     lines += ["", "CC0-1.0: https://creativecommons.org/publicdomain/zero/1.0/",
               "CC-BY-3.0: https://creativecommons.org/licenses/by/3.0/",
-              "MIT: made by ps5/tools/generate_assets.py (from PS5 Vulkan Template, github.com/mihawk-99/PS5_VulkanTemplate), under LICENSE.md"]
+              "MIT: made by ps5/tools/generate_assets.py (from PS5 Vulkan Template, github.com/mihawk-99/PS5_VulkanTemplate), under ps5/licenses/MIT.txt"]
     # The UI kit's licences, when its assets are in
     used = {asset["licence"] for asset in assets}
     for licence, line in (("OFL-1.1", "OFL-1.1: https://openfontlicense.org"),

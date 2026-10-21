@@ -98,7 +98,7 @@ def main():
 
     # The title: its own code, the foundation and the libraries in its tree
     rev, dirty, remote = revision(ROOT)
-    write_text(out / "title/LICENSE.md", ROOT, rev, "LICENSE.md")
+    write_text(out / "title/LICENSE.md", ROOT, rev, "ps5/licenses/MIT.txt")
     libraries = [("external/imgui/LICENSE.txt", "imgui-LICENSE.txt"), ("external/ktx/LICENSE.md", "ktx-LICENSE.md"),
                  ("external/ktx/NOTICE.md", "ktx-NOTICE.md"), ("external/tinygltf/LICENSE", "tinygltf-LICENSE"),
                  ("ps5/third_party/volk/LICENSE.md", "volk-LICENSE.md")]

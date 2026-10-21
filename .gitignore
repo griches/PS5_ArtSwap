@@ -5,3 +5,4 @@ klog/
 imgui.ini
 .env
 __pycache__/
+.DS_Store
