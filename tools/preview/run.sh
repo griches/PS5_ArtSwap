@@ -73,9 +73,13 @@ PY
 key=$(sed -n 's/^SGDB_KEY=//p' "$root/.env" 2>/dev/null || true)
 [[ -n ${NOKEY:-} || -z $key ]] || printf '%s\n' "$key" > "$work/console-root/data/artswap/apikey.txt"
 port=19217
-ARTSWAP_ROOT="$work/console-root" ARTSWAP_PORT=$port ARTSWAP_LAN=192.168.0.190 "$work/helper/artswapd" > "$work/helper.out" 2>&1 &
+# ShadowMountPlus's API, as helper/tests/fake_smp.py plays it, for the home-screen refresh
+python3 "$root/helper/tests/fake_smp.py" "$work/console-root" 19201 &
+smp=$!
+ARTSWAP_ROOT="$work/console-root" ARTSWAP_PORT=$port ARTSWAP_LAN=192.168.0.190 ARTSWAP_SMP_PORT=19201 \
+    "$work/helper/artswapd" > "$work/helper.out" 2>&1 &
 helper=$!
-trap 'kill $helper 2>/dev/null || true' EXIT
+trap 'kill $helper $smp 2>/dev/null || true' EXIT
 sleep 1
 rm -f "$out"/*.png
 "$work/preview" "$root/dist/PPSA99318/assets/hui" "$out" "$port" ${script:+"$script"}

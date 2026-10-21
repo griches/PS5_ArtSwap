@@ -863,6 +863,128 @@ void App::restore()
     }, true);
 }
 
+// ---------------------------------------------------------------- the home-screen refresh
+
+// The home screen keeps its own copy of a game's art; the helper has ShadowMountPlus
+// install the game again (helper/src/smp.c). First: can it, for this title?
+void App::open_refresh()
+{
+    const Title *title = focused_title();
+    if (title == nullptr)
+        return;
+    sheet_ = Sheet::refresh;
+    refresh_ = Refresh::asking;
+    refresh_id_ = title->id;
+    refresh_why_.clear();
+    refresh_step_.clear();
+    smp_version_.clear();
+    smp_folder_ = false;
+    refresh_polling_ = false;
+    const std::string id = title->id;
+    helper_.ask({"SMP", id}, [this, id](Reply &reply) {
+        if (sheet_ != Sheet::refresh || refresh_id_ != id || refresh_ != Refresh::asking)
+            return;
+        if (!reply.ok)
+        {
+            refresh_ = Refresh::unable;
+            refresh_why_ = reply.error;
+            return;
+        }
+        bool can = false;
+        for (const auto &row : reply.rows())
+        {
+            if (row.size() >= 2 && row[0] == "smp")
+                smp_version_ = row[1] == "-" ? "" : row[1];
+            else if (row.size() >= 2 && row[0] == "game")
+                smp_folder_ = row[1] == "folder";
+            else if (row.size() >= 2 && row[0] == "can")
+            {
+                can = row[1] == "1";
+                refresh_why_ = row.size() >= 3 ? row[2] : "";
+            }
+        }
+        refresh_ = can ? Refresh::ready : Refresh::unable;
+    }, true);
+}
+
+// The helper copies the game's files aside, then waits for the console to be free:
+// Art Swap closes once the copy is whole, and the helper carries on from the home screen
+void App::start_refresh()
+{
+    refresh_ = Refresh::starting;
+    refresh_step_ = "Copying the game's files aside";
+    const std::string id = refresh_id_;
+    helper_.ask({"REFRESH", id, "120"}, [this, id](Reply &reply) {
+        if (sheet_ != Sheet::refresh || refresh_id_ != id)
+            return;
+        if (!reply.ok)
+        {
+            refresh_ = Refresh::unable;
+            refresh_why_ = reply.error;
+            return;
+        }
+        refresh_polling_ = true;
+        refresh_poll_ = 0.3f;
+    }, true);
+}
+
+void App::poll_refresh(float dt)
+{
+    if (!refresh_polling_ || sheet_ != Sheet::refresh || refresh_ != Refresh::starting)
+        return;
+    refresh_poll_ -= dt;
+    if (refresh_poll_ > 0.0f)
+        return;
+    refresh_poll_ = 1e9f; // until this answer
+    const std::string id = refresh_id_;
+    helper_.ask({"REFRESHSTATE"}, [this, id](Reply &reply) {
+        refresh_poll_ = 0.3f;
+        if (sheet_ != Sheet::refresh || refresh_id_ != id || refresh_ != Refresh::starting)
+            return;
+        for (const auto &row : reply.rows())
+            if (row.size() >= 4 && row[0] == "refresh" && row[2] == id)
+            {
+                const std::string &phase = row[1];
+                const std::string message = row.size() >= 5 ? row[4] : "";
+                if (phase == "failed")
+                {
+                    refresh_ = Refresh::unable;
+                    refresh_why_ = message;
+                    refresh_polling_ = false;
+                }
+                else if (phase != "copying")
+                {
+                    // the files are kept aside: the helper waits for Art Swap to close
+                    refresh_step_ = "Closing Art Swap";
+                    refresh_polling_ = false;
+                    close_ = true;
+                }
+            }
+    }, true);
+}
+
+// How the last refresh ended: Art Swap had closed while it ran
+void App::check_last_refresh()
+{
+    if (refresh_checked_ || helper_.state() != Helper::State::ready)
+        return;
+    refresh_checked_ = true;
+    helper_.ask({"REFRESHSTATE"}, [this](Reply &reply) {
+        for (const auto &row : reply.rows())
+        {
+            if (row.size() < 5 || row[0] != "refresh" || row[3] != "1")
+                continue;
+            if (row[1] == "done")
+                toast("Home screen refreshed", row[4] + ". Its saves and files were checked afterwards.");
+            else if (row[1] == "failed")
+                toast("The home-screen refresh did not finish", row[4], true);
+            else
+                continue;
+            helper_.ask({"REFRESHSTATE", "seen"}, nullptr, true);
+        }
+    }, true);
+}
+
 void App::open_search(const std::string &term)
 {
     sheet_ = Sheet::search;
@@ -953,6 +1075,8 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
         key_state_ = helper_.key_source();
         key_hint_ = helper_.key_hint();
     }
+    check_last_refresh();
+    poll_refresh(dt);
 
     // OPTIONS: a short press is the settings; the program leaves on a hold
     if (input.is_pressed(Action::menu))
@@ -1125,6 +1249,11 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
         else
             feedback.play(Cue::error);
     }
+    else if (input.is_pressed(Action::jump_next))
+    {
+        feedback.play(Cue::modal_open);
+        open_refresh();
+    }
     (void)dt;
 }
 
@@ -1267,6 +1396,21 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
         if (input.is_pressed(Action::back) || input.is_pressed(Action::confirm))
         {
             feedback.play(Cue::back);
+            sheet_ = Sheet::none;
+        }
+        return;
+    case Sheet::refresh:
+        if (refresh_ == Refresh::starting)
+            return;
+        if (refresh_ == Refresh::ready && input.is_pressed(Action::confirm))
+        {
+            feedback.play(Cue::launch);
+            start_refresh();
+        }
+        else if (input.is_pressed(Action::back) ||
+                 (refresh_ == Refresh::unable && input.is_pressed(Action::confirm)))
+        {
+            feedback.play(Cue::modal_close);
             sheet_ = Sheet::none;
         }
         return;
@@ -1547,6 +1691,16 @@ void App::draw_library(gfx::DrawList &list) const
         list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(0.35f));
         ui::draw_button(list, fonts_, dark, ui::Button::square, pill.x + 20, pill.cy(), 34);
         ui::text(list, fonts_.semibold, label, pill.x + 70, pill.cy() + 10, 27, kWhite);
+        bx += w + 20;
+    }
+    {
+        // R2's glyph is wider than a face button's
+        const char *label = "Refresh home screen";
+        const float w = fonts_.semibold.measure(label, 27) + 112;
+        const Rect pill{bx, by, w, 64};
+        list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(0.35f));
+        ui::draw_button(list, fonts_, dark, ui::Button::r2, pill.x + 20, pill.cy(), 34);
+        ui::text(list, fonts_.semibold, label, pill.x + 82, pill.cy() + 10, 27, kWhite);
     }
 
     // the icon, large, floating
@@ -1664,8 +1818,16 @@ void App::draw_picker(gfx::DrawList &list) const
 
     // ---- the grid ----
     list.push_clip({0, kGridTop - 24, kPanelX - 30, kGridBottom - kGridTop + 48});
+    // the glow is the chosen picture's, once the ring has reached it: one that travelled with the ring
+    // lit the gaps, and the pictures it passed under, in the game's colour
     if (!arts_.empty())
-        list.glow(cell_ring_.value(), 16, 22, title.accent.with_alpha(0.45f));
+    {
+        const Rect ring = cell_ring_.value(), home = cell_rect(art_focus_);
+        const float off = std::fabs(ring.x - home.x) + std::fabs(ring.y - home.y);
+        const float settled = 1.0f - tween::clamp01(off / 24.0f);
+        if (settled > 0.01f)
+            list.glow(home, 16, 22, title.accent.with_alpha(0.45f * settled));
+    }
     for (int i = 0; i < static_cast<int>(arts_.size()); ++i)
     {
         const Rect r = cell_rect(i);
@@ -1673,6 +1835,9 @@ void App::draw_picker(gfx::DrawList &list) const
             continue;
         const Art &art = *arts_[static_cast<std::size_t>(i)];
         const bool focused = i == art_focus_;
+        // dimmed, not see-through: a dark card under each picture
+        if (art.texture)
+            list.rounded_rect(r, 14, kNight);
         if (art.texture)
             list.image(art.texture, r, cover_uv(art.tw, art.th, r.w, r.h, 0.0f),
                        kWhite.with_alpha(focused ? 1.0f : 0.82f), 14);
@@ -1772,7 +1937,8 @@ void App::draw_picker(gfx::DrawList &list) const
 void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
 {
     const float t = sheet_open_.value;
-    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::log;
+    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::log ||
+                      (sheet_ == Sheet::refresh && (refresh_ == Refresh::ready || refresh_ == Refresh::starting));
     const float h = tall ? 760.0f : 470.0f;
     const Rect panel{360, (1080 - h) * 0.5f + 40.0f * (1.0f - t), 1200, h};
     list.push_opacity(tween::clamp01(t * 1.4f));
@@ -1841,6 +2007,71 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                       "Art Swap puts back the icon and background this game came with.",
                       x, y, 26, panel.w - 128, 40, kWhite.with_alpha(0.85f), 4);
         break;
+    case Sheet::refresh:
+    {
+        heading("REFRESH THE HOME SCREEN", name);
+        const float width = panel.w - 128;
+        // a requirement and whether it is met
+        auto need = [&](const std::string &label, bool met, const std::string &state) {
+            list.circle(x + 8, y - 8, 7, met ? Color::rgb(0x3ddc84) : kRed);
+            ui::text(list, fonts_.regular, label, x + 30, y, 23, kWhite.with_alpha(0.85f));
+            ui::text(list, fonts_.regular, state, x + width, y, 23, kWhite.with_alpha(0.55f), gfx::Align::right);
+            y += 40;
+        };
+        if (refresh_ == Refresh::asking)
+        {
+            draw_spinner(list, x + 22, y + 10, 18);
+            ui::text(list, fonts_.regular, "Asking ShadowMountPlus about " + name + "\xE2\x80\xA6", x + 60, y + 20, 25,
+                     kWhite.with_alpha(0.8f));
+            break;
+        }
+        if (refresh_ == Refresh::unable)
+        {
+            y = ui::paragraph(list, fonts_.regular, refresh_why_, x, y, 27, width, 42, kWhite, 5) + 24;
+            ui::text(list, fonts_.semibold, "WHAT A REFRESH NEEDS", x, y, 17, kWhite.with_alpha(0.55f),
+                     gfx::Align::left, 3.0f);
+            y += 44;
+            need("ShadowMountPlus 1.7 or later, running", !smp_version_.empty(),
+                 smp_version_.empty() ? "not answering" : "ShadowMountPlus " + smp_version_);
+            need("A game ShadowMountPlus installed from a folder", smp_folder_, smp_folder_ ? "yes" : "no");
+            break;
+        }
+        y = ui::paragraph(list, fonts_.regular,
+                          "The home screen keeps its own copy of each game's art, so new art shows once the game is "
+                          "installed again. Art Swap does that for you:",
+                          x, y, 25, width, 38, kWhite.with_alpha(0.85f), 3) +
+            16;
+        const std::string steps[] = {"Art Swap closes.", name + " leaves the home screen for a few seconds.",
+                                     "ShadowMountPlus adds it straight back, with its new art."};
+        for (int i = 0; i < 3; ++i)
+        {
+            list.bordered_rect({x, y - 27, 36, 36}, 18, accent.with_alpha(0.16f), 1.5f, accent.with_alpha(0.8f));
+            ui::text(list, fonts_.semibold, std::to_string(i + 1), x + 18, y - 2, 20, kWhite, gfx::Align::center);
+            ui::text(list, fonts_.regular, fonts_.regular.font->fit(steps[i], 25, width - 56), x + 56, y, 25, kWhite);
+            y += 52;
+        }
+        y += 14;
+        // saved data: what the refresh does to keep it
+        const Rect safe{x - 4, y - 8, width + 8, 172};
+        list.bordered_rect(safe, 18, Color::rgb(0x3ddc84, 0.08f), 1.5f, Color::rgb(0x3ddc84, 0.45f));
+        ui::text(list, fonts_.semibold, "YOUR SAVED DATA STAYS", safe.x + 24, safe.y + 38, 17, Color::rgb(0x3ddc84),
+                 gfx::Align::left, 3.0f);
+        ui::paragraph(list, fonts_.regular,
+                      "Nothing is deleted: the game's folder stays where it is. Before anything changes, Art Swap "
+                      "copies the game's saves and settings aside; afterwards it checks every file and puts back "
+                      "anything missing.",
+                      safe.x + 24, safe.y + 76, 22, safe.w - 48, 32, kWhite.with_alpha(0.85f), 3);
+        y = safe.y + safe.h + 48;
+        // what it needs; once it has started, what it is doing
+        if (refresh_ == Refresh::starting)
+        {
+            draw_spinner(list, x + 18, y - 9, 16);
+            ui::text(list, fonts_.semibold, refresh_step_ + "\xE2\x80\xA6", x + 50, y, 25, kWhite);
+        }
+        else
+            need("ShadowMountPlus 1.7 or later, running", true, "ShadowMountPlus " + smp_version_);
+        break;
+    }
     case Sheet::search:
     {
         heading("WHICH GAME IS IT?", name);
@@ -1932,6 +2163,13 @@ void App::draw_hints(gfx::DrawList &list) const
         hints = {{ui::Button::cross, "Choose"}, {ui::Button::circle, "Back"}};
     else if (sheet_ == Sheet::log)
         hints = {{ui::Button::circle, "Back"}};
+    else if (sheet_ == Sheet::refresh)
+    {
+        if (refresh_ == Refresh::ready)
+            hints = {{ui::Button::cross, "Refresh"}, {ui::Button::circle, "Cancel"}};
+        else if (refresh_ != Refresh::starting)
+            hints = {{ui::Button::circle, "Back"}};
+    }
     else if (sheet_ == Sheet::working)
         hints = {};
     else if (screen_ == Screen::starting)
@@ -1959,6 +2197,7 @@ void App::draw_hints(gfx::DrawList &list) const
                 hints.push_back({ui::Button::triangle, "Background"});
             if (title->kept)
                 hints.push_back({ui::Button::square, "Restore"});
+            hints.push_back({ui::Button::r2, "Refresh"});
         }
         hints.push_back({ui::Button::options, "Settings"});
     }

@@ -12,7 +12,8 @@ ROOT := $(abspath $(CURDIR)/..)
 OUT := $(ROOT)/build/helper
 HOST_OUT := $(ROOT)/build/helper-host
 
-SOURCES := src/artswapd.c src/art.c src/phone.c src/scan.c src/sgdb.c src/image.c src/bc7enc.c src/config.c src/util.c
+SOURCES := src/artswapd.c src/art.c src/phone.c src/scan.c src/sgdb.c src/smp.c src/image.c src/bc7enc.c src/config.c \
+	src/util.c
 THIRD := src/stb_impl.c third_party/cJSON.c
 SQLITE := third_party/sqlite3.c
 SQLITE_FLAGS := -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION=1 -DSQLITE_DEFAULT_MEMSTATUS=0 \
@@ -58,7 +59,15 @@ $(OUT)/tlstest.o: tests/tlstest.c $(HEADERS) | $(OUT)
 $(OUT)/tlstest.elf: $(OUT)/tlstest.o $(OUT)/util.o
 	$(CC) -o $@ $^ -lpthread
 tlstest: $(OUT)/tlstest.elf
-.PHONY: nettest tlstest
+# the ShadowMountPlus refresh test payload (helper/tests/smptest.c)
+SMPTEST_ID ?= PPSA99305
+SMPTEST_FLAGS := -DSMPTEST_ID='"$(SMPTEST_ID)"' $(if $(SMPTEST_REFRESH),-DSMPTEST_REFRESH) \
+	$(if $(SMPTEST_SNAPSHOT),-DSMPTEST_SNAPSHOT='"$(SMPTEST_SNAPSHOT)"') $(if $(SMPTEST_ROOT),-DSMPTEST_ROOT)
+$(OUT)/smptest.elf: tests/smptest.c $(OUT)/smp.o $(OUT)/util.o $(OUT)/cJSON.o $(HEADERS) FORCE | $(OUT)
+	$(CC) -std=gnu11 -O2 -g $(WARN) $(SMPTEST_FLAGS) -c -o $(OUT)/smptest.o tests/smptest.c
+	$(CC) -o $@ $(OUT)/smptest.o $(OUT)/smp.o $(OUT)/util.o $(OUT)/cJSON.o -lpthread
+smptest: $(OUT)/smptest.elf
+.PHONY: nettest tlstest smptest FORCE
 
 # ---- the host build, for tests ----
 HOST_CC ?= cc

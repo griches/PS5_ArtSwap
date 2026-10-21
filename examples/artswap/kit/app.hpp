@@ -65,6 +65,11 @@ class App
     void draw(hui::app::Frame &frame) const;
     // The accent of the screen, for the light bar
     hui::gfx::Color accent() const;
+    // Art Swap has handed a home-screen refresh to the helper and closes, so the console is free for it
+    bool wants_to_close() const
+    {
+        return close_;
+    }
 
   private:
     struct Title;
@@ -92,6 +97,14 @@ class App
         search,
         log,
         restore,
+        refresh, // the home-screen refresh: what happens, then handing it to the helper
+    };
+    enum class Refresh
+    {
+        asking,   // what ShadowMountPlus can do for the title
+        ready,    // it can: the steps, Refresh or Cancel
+        unable,   // it cannot: why
+        starting, // the helper copies the game's files aside; then Art Swap closes
     };
 
     // ---- the titles ----
@@ -120,6 +133,10 @@ class App
     void restore();
     void open_search(const std::string &term);
     void choose_game(int row);
+    void open_refresh();
+    void start_refresh();
+    void poll_refresh(float dt);
+    void check_last_refresh();
     // ---- settings and adding the key: full pages (settings.cpp) ----
     void open_settings();
     void update_settings(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
@@ -257,6 +274,18 @@ class App
     bool key_explained_ = false; // the explanation has shown once this run
     std::string pending_slot_;  // the picker to open once a key is in
     std::vector<Toast> toasts_;
+
+    // the home-screen refresh
+    Refresh refresh_ = Refresh::asking;
+    std::string refresh_id_;
+    std::string refresh_why_;   // why it cannot, or why it stopped
+    std::string refresh_step_;  // what the helper is doing
+    std::string smp_version_;   // ShadowMountPlus's version, empty when it did not answer
+    bool smp_folder_ = false;   // ShadowMountPlus installed the title from a folder
+    float refresh_poll_ = 0.0f;
+    bool refresh_polling_ = false;
+    bool refresh_checked_ = false; // the last refresh's end, asked for once at the start
+    bool close_ = false;
 };
 
 } // namespace artswap

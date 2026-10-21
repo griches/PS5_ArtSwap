@@ -37,10 +37,12 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 from client import Helper, HelperError  # noqa: E402
+import fake_smp  # noqa: E402
 
 ED = ROOT.parent / "PS5_EternalDarkness/ps5/sce_sys"
 PORT = 19117
 PHONE_PORT = 19118
+SMP_PORT = 19101
 failures = []
 
 
@@ -144,7 +146,15 @@ def main() -> int:
     key = env_key()
     (base / "data/artswap/apikey.txt").write_text(key + "\n")
     env = dict(os.environ, ARTSWAP_ROOT=str(base), ARTSWAP_PORT=str(PORT), ARTSWAP_PHONE_PORT=str(PHONE_PORT),
-               ARTSWAP_LAN="127.0.0.1")
+               ARTSWAP_LAN="127.0.0.1", ARTSWAP_SMP_PORT=str(SMP_PORT))
+    smp = fake_smp.serve(base, SMP_PORT)
+    # a homebrew game's own save, and the system's saved data of the title
+    save = base / "data/homebrew/PPSA99314/userdata/card.gci"
+    save.parent.mkdir(parents=True)
+    save.write_bytes(os.urandom(32832))
+    sysave = base / "user/home/1000/savedata_prospero/PPSA99314/sdimg_SAVE0"
+    sysave.parent.mkdir(parents=True)
+    sysave.write_bytes(os.urandom(65536))
     helper_bin = ROOT / "build/helper-host/artswapd"
     log = open(work / "helper.out", "w")
     proc = subprocess.Popen([str(helper_bin)], env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -153,7 +163,7 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.1.1", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.1.2", f"HELLO names the version ({hello})")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
 
@@ -249,13 +259,77 @@ def main() -> int:
         apps = {r[1]: r for r in h.rows("APPS")}
         check(apps["PPSA99314"][6] == "1", "APPS says the originals are kept")
 
+        # the home-screen refresh, through ShadowMountPlus (fake_smp.py)
+        def refresh_state():
+            return next(r for r in h.rows("REFRESHSTATE") if r[0] == "refresh")
+
+        def refresh_until_end(seconds=40):
+            end = time.time() + seconds
+            while time.time() < end:
+                state = refresh_state()
+                if state[1] in ("done", "failed"):
+                    return state
+                time.sleep(0.25)
+            return refresh_state()
+
+        info = {r[0]: r for r in h.rows("SMP", "PPSA99314")}
+        check(info["smp"][1] == "1.7fake" and info["can"][1] == "1", f"SMP: a folder title can be refreshed ({info})")
+        info = {r[0]: r for r in h.rows("SMP", "CUSA00001")}
+        check(info["can"][1] == "0" and "package" in info["can"][2], f"SMP: never a package ({info['can']})")
+        try:
+            h.rows("REFRESH", "CUSA00001", "0")
+            check(False, "REFRESH refuses a package")
+        except HelperError as e:
+            check("package" in str(e), f"REFRESH refuses a package ({e})")
+
+        icon_old = sha(str(icon_meta) + ".old")
+        save_sha, sysave_sha = sha(save), sha(sysave)
+        smp.console.busy = True
+        h.rows("REFRESH", "PPSA99314", "0")
+        state = refresh_until_end()
+        check(state[1] == "failed" and "Device busy" in state[4], f"a busy console: the refresh stops ({state})")
+        check((base / "user/appmeta/PPSA99314/icon0.png").exists(), "a busy console: nothing is removed")
+        check(not list((base / "data/artswap/saves").glob("PPSA99314-*")), "a busy console: no copy is left over")
+
+        # the title closes: the refresh waits for the console to be free
+        h.rows("REFRESH", "PPSA99314", "20")
+        time.sleep(1.5)
+        check(refresh_state()[1] == "waiting", "the refresh waits while the console is busy")
+        smp.console.busy = False
+        state = refresh_until_end()
+        check(state[1] == "done", f"the refresh is done ({state})")
+        check(state[3] == "1", "the end is kept for the title's next start")
+        check((base / "user/appmeta/PPSA99314/param.json").exists(), "the title is back on the home screen")
+        check(sha(str(icon_meta) + ".old") == icon_old, "Art Swap's original in the home screen's copy is back")
+        check(sha(save) == save_sha, "the game's own save is untouched")
+        check(sha(sysave) == sysave_sha, "the system's saved data is untouched")
+        kept = list((base / "data/artswap/saves").glob("PPSA99314-*"))
+        check(len(kept) == 1 and (kept[0] / "folder/userdata/card.gci").exists() and
+              (kept[0] / "home/1000/savedata_prospero/sdimg_SAVE0").exists(), "the saves were copied aside first")
+        check(smp.console.calls.count("/api/v1/scan") >= 1, "ShadowMountPlus was asked to scan")
+        h.rows("REFRESHSTATE", "seen")
+        check(refresh_state()[3] == "0", "REFRESHSTATE seen: shown")
+        check("\t0\t" in (base / "data/artswap/refresh.txt").read_text(), "refresh.txt keeps it as seen")
+
+        # an uninstall that eats a save: it is put back, and the refresh says so
+        smp.console.eat = "userdata/card.gci"
+        time.sleep(1.1)
+        h.rows("REFRESH", "PPSA99314", "0")
+        state = refresh_until_end()
+        smp.console.eat = ""
+        check(state[1] == "failed" and "changed" in state[4], f"a lost save is reported ({state[4]})")
+        check(save.exists() and sha(save) == save_sha, "the lost save is copied back")
+        check(len(list((base / "data/artswap/saves").glob("PPSA99314-*"))) == 2,
+              "a copy that had to be used is kept")
+
         # restore
         report = h.rows("RESTORE", "PPSA99314", "all")
         check(sum(r[0] == "R" for r in report) == 6, f"RESTORE puts six files back ({len(report)})")
         for p in list(base.rglob("PPSA99314/**/*.png")) + list(base.rglob("PPSA99314/**/*.dds")):
             if p in originals:
                 check(sha(p) == originals[p], f"{p.relative_to(base)} is the original again")
-        check(not list(base.rglob("PPSA99314/**/*.old")), "no .old files left")
+        # (/user/app/<id>/sce_sys is the install's copy of the folder's sce_sys: not Art Swap's)
+        check(not [p for p in base.rglob("PPSA99314/**/*.old") if "user/app/" not in str(p)], "no .old files left")
         try:
             h.rows("RESTORE", "PPSA99314", "all")
             check(False, "a second restore says there is nothing")

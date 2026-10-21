@@ -11,6 +11,7 @@
  */
 #include "art.h"
 #include "phone.h"
+#include "smp.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -31,7 +32,7 @@ static app_t *g_apps;
 static int g_count;
 static bool g_scanned;
 
-static pthread_mutex_t g_apply_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t g_apply_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_clients_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_clients;
 static uint64_t g_last_client_ms;
@@ -334,6 +335,43 @@ static bool handle(int fd, char **field, int n)
             refresh_app(app.id, -1, "");
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
+    } else if (strcmp(cmd, "SMP") == 0) {
+        /* SMP id: what ShadowMountPlus knows of the title, and whether its tile can be refreshed */
+        if (!want(fd, n, 2))
+            return true;
+        app_t app;
+        if (!find_app(field[1], &app))
+            return reply_error(fd, "no such title");
+        smp_info_t info;
+        smp_info(&app, &info);
+        buf_printf(&text, "smp\t%s\n", info.answers ? (info.version[0] ? info.version : "?") : "-");
+        if (info.found)
+            buf_printf(&text, "game\t%s\t%d\t%s\n", info.source_type, info.installed, info.path);
+        buf_printf(&text, "can\t%d\t", info.can_refresh);
+        buf_field(&text, info.why);
+        buf_printf(&text, "\n");
+        smp_refresh_line(&text);
+        ok = reply_text(fd, &text);
+    } else if (strcmp(cmd, "REFRESH") == 0) {
+        /* REFRESH id [wait]: take the title off the home screen and have ShadowMountPlus add it back,
+         * asking for up to wait seconds while a game (Art Swap, until it closes) keeps the console busy */
+        if (!want(fd, n, 2))
+            return true;
+        app_t app;
+        if (!find_app(field[1], &app))
+            ok = reply_error(fd, "no such title");
+        else if (!smp_refresh_start(&app, n > 2 ? atoi(field[2]) : 0, err, sizeof(err)))
+            ok = reply_error(fd, err);
+        else {
+            smp_refresh_line(&text);
+            ok = reply_text(fd, &text);
+        }
+    } else if (strcmp(cmd, "REFRESHSTATE") == 0) {
+        /* REFRESHSTATE [seen]: how the refresh goes, or went; seen: the title has shown its end */
+        if (n > 1 && strcmp(field[1], "seen") == 0)
+            smp_refresh_seen();
+        smp_refresh_line(&text);
+        ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "LOG") == 0) {
         char path[512];
         buf_t log = {0};
@@ -344,7 +382,9 @@ static bool handle(int fd, char **field, int n)
         buf_free(&log);
         ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "BYE") == 0) {
-        g_leaving = true;
+        /* not in the middle of a refresh: it leaves when that has finished and nobody is connected */
+        if (!smp_refresh_running())
+            g_leaving = true;
         reply_text(fd, &text);
         ok = false;
     } else {
@@ -412,8 +452,10 @@ static void *serve(void *argument)
 static bool idle(uint64_t started)
 {
     pthread_mutex_lock(&g_clients_lock);
-    const bool quiet = g_clients == 0 && ((g_ever_connected && now_ms() - g_last_client_ms > 90000) ||
-                                          (!g_ever_connected && now_ms() - started > 600000));
+    /* a refresh carries on after the title has closed */
+    const bool quiet = g_clients == 0 && !smp_refresh_running() &&
+                       ((g_ever_connected && now_ms() - g_last_client_ms > 90000) ||
+                        (!g_ever_connected && now_ms() - started > 600000));
     pthread_mutex_unlock(&g_clients_lock);
     return quiet;
 }

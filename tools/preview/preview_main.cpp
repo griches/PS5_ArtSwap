@@ -127,6 +127,7 @@ hui::InputFrame input_for(const std::string &action, int frame)
     static const std::pair<const char *, hui::Action> buttons[] = {
         {"cross", hui::Action::confirm}, {"circle", hui::Action::back},     {"triangle", hui::Action::north},
         {"square", hui::Action::west},   {"l1", hui::Action::page_prev},    {"r1", hui::Action::page_next},
+        {"l2", hui::Action::jump_prev},  {"r2", hui::Action::jump_next},
     };
     for (const auto &[name, which] : buttons)
         if (action == name)

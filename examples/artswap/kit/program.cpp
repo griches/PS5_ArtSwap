@@ -102,6 +102,8 @@ class ArtSwapProgram : public ps5ui::KitExample
         if (!ps5.frameBudget && leaving.update(dt, (ps5_pad().held & PAD_OPTIONS) != 0))
             quit = true;
         app->update(input, dt, feedback);
+        if (app->wants_to_close())
+            quit = true;
         kit.play(feedback, hui::audio::SoundSet::glass, choices.haptics);
         feedback.clear();
         if (choices.light_bar)

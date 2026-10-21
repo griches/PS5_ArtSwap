@@ -19,8 +19,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ARTSWAP_VERSION "0.1.1"
+#define ARTSWAP_VERSION "0.1.2"
 #define ARTSWAP_PORT 9117
+
+/* Held while art is written, and while the refresh works in a game's folder as its owner
+ * (which changes the effective uid of the whole helper) */
+#include <pthread.h>
+extern pthread_mutex_t g_apply_lock;
 
 /* ---- growable byte buffer ---- */
 typedef struct {
