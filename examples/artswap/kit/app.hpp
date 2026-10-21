@@ -104,6 +104,7 @@ class App
 
     // ---- the picker ----
     void open_picker(int title, const std::string &slot);
+    void load_current_art();
     void close_picker();
     void match_and_list();
     void set_tab(int tab);

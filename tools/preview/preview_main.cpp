@@ -57,8 +57,8 @@ const char *kDefaultScript = R"(4 none library
 0.5 right
 1.5 right library-focus
 6 cross picker-icon
-3 r1 picker-covers
-3 triangle picker-covers-fill
+3 r1 picker-background-tab
+3 triangle picker-background-fill
 1 circle
 6 triangle picker-background
 2 rstick+ picker-background-panned

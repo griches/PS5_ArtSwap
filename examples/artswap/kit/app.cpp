@@ -51,7 +51,7 @@ constexpr float kCardGap = 26.0f;
 constexpr float kCardGrow = 1.2f;
 constexpr float kShelfY = 770.0f;
 constexpr float kGridX = 96.0f;
-constexpr float kGridTop = 340.0f;
+constexpr float kGridTop = 378.0f;
 constexpr float kGridWidth = 1104.0f;
 constexpr float kGridBottom = 950.0f;
 constexpr float kGridGap = 24.0f;
@@ -61,19 +61,16 @@ constexpr float kPanelW = 556.0f;
 struct Kind
 {
     const char *tab;   // shown
+    const char *slot;  // the art it changes: icon or pic
     const char *kind;  // the helper's LIST kind
     float cell_w, cell_h;
     bool fit;          // the framing it starts with
 };
 
-const Kind kIconKinds[] = {
-    {"Square", "square", 200, 200, false},
-    {"Covers", "covers", 168, 252, true},
-    {"Icons", "icons", 200, 200, true},
-};
-const Kind kPicKinds[] = {
-    {"Heroes", "heroes", 520, 168, false},
-    {"Wide", "wide", 344, 161, false},
+// the picker's tabs: SteamGridDB's square grids for the tile, its heroes (made for backgrounds) for pic0
+const Kind kKinds[] = {
+    {"Icons", "icon", "square", 200, 200, false},
+    {"Backgrounds", "pic", "heroes", 520, 168, false},
 };
 
 std::string upper(const std::string &text)
@@ -466,21 +463,20 @@ void App::request_background(Title &title)
 
 std::vector<const char *> App::tabs() const
 {
-    std::vector<const char *> out;
-    if (slot_ == "icon")
-        for (const Kind &k : kIconKinds)
-            out.push_back(k.tab);
-    else
-        for (const Kind &k : kPicKinds)
-            out.push_back(k.tab);
+    std::vector<const char *> out{kKinds[0].tab};
+    // Backgrounds only for a title with a pic0 or pic1 to replace
+    if (picker_title_ >= 0)
+    {
+        const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
+        if (!title.pic_desc.empty() && title.pic_desc != "-")
+            out.push_back(kKinds[1].tab);
+    }
     return out;
 }
 
-static const Kind &kind_of(const std::string &slot, int tab)
+static const Kind &kind_of(int tab)
 {
-    if (slot == "icon")
-        return kIconKinds[std::clamp(tab, 0, 2)];
-    return kPicKinds[std::clamp(tab, 0, 1)];
+    return kKinds[std::clamp(tab, 0, 1)];
 }
 
 App::Art *App::focused_art()
@@ -500,33 +496,48 @@ const App::Art *App::focused_art() const
 void App::open_picker(int title, const std::string &slot)
 {
     picker_title_ = title;
-    slot_ = slot;
+    slot_.clear();
     screen_ = Screen::picker;
     age_ = 0.0f;
     list_error_.clear();
+    tab_ = slot == "icon" ? 0 : 1;
+    tab_position_.snap(static_cast<float>(tab_));
+    set_tab(tab_);
+}
+
+void App::load_current_art()
+{
     forget(current_art_);
-    Title &t = *titles_[static_cast<std::size_t>(title)];
-    const int gen = generation_;
+    current_art_ = 0;
+    const int title = picker_title_;
+    const std::string slot = slot_;
     const std::string w = slot == "icon" ? "512" : "960", h = slot == "icon" ? "512" : "540";
-    helper_.ask({"ART", t.id, slot, w, h}, [this, gen](Reply &reply) {
-        if (gen > generation_ || screen_ != Screen::picker || !reply.ok)
-            return;
-        upload(std::move(reply.picture), [this](std::uint32_t texture, const Picture &picture) {
-            forget(current_art_);
-            current_art_ = texture;
-            current_w_ = picture.w;
-            current_h_ = picture.h;
-        });
-    }, true);
-    tab_ = 0;
-    tab_position_.snap(0.0f);
-    set_tab(0);
+    helper_.ask({"ART", titles_[static_cast<std::size_t>(title)]->id, slot, w, h},
+                [this, title, slot](Reply &reply) {
+                    if (screen_ != Screen::picker || picker_title_ != title || slot_ != slot || !reply.ok)
+                        return;
+                    upload(std::move(reply.picture), [this, title, slot](std::uint32_t texture, const Picture &picture) {
+                        if (screen_ != Screen::picker || picker_title_ != title || slot_ != slot)
+                        {
+                            forget(texture);
+                            return;
+                        }
+                        forget(current_art_);
+                        current_art_ = texture;
+                        current_w_ = picture.w;
+                        current_h_ = picture.h;
+                    });
+                },
+                true);
 }
 
 void App::close_picker()
 {
     helper_.drop(generation_);
     generation_++;
+    // the dropped requests never answer, so nothing is still on its way
+    listing_ = false;
+    matching_ = false;
     for (auto &art : arts_)
         forget(art->texture);
     arts_.clear();
@@ -541,18 +552,26 @@ void App::set_tab(int tab)
 {
     helper_.drop(generation_);
     generation_++;
+    // the dropped requests never answer, so nothing is still on its way
+    listing_ = false;
+    matching_ = false;
     for (auto &art : arts_)
         forget(art->texture);
     arts_.clear();
     forget(preview_);
     tab_ = tab;
+    if (slot_ != kind_of(tab).slot)
+    {
+        slot_ = kind_of(tab).slot;
+        load_current_art();
+    }
     art_focus_ = 0;
     page_ = 0;
     total_ = 0;
     hidden_ = 0;
     list_error_.clear();
     grid_scroll_.position.snap(0.0f);
-    fit_ = kind_of(slot_, tab).fit;
+    fit_ = kind_of(tab).fit;
     pan_ = 0.0f;
     preview_due_ = -1.0f;
     preview_serial_++;
@@ -609,7 +628,7 @@ void App::load_page()
     const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
     listing_ = true;
     const int gen = generation_, page = page_;
-    helper_.ask({"LIST", std::to_string(title.sgdb_id), kind_of(slot_, tab_).kind, std::to_string(page)},
+    helper_.ask({"LIST", std::to_string(title.sgdb_id), kind_of(tab_).kind, std::to_string(page)},
                 [this, gen](Reply &reply) {
                     if (gen != generation_)
                         return;
@@ -1302,7 +1321,7 @@ Rect App::card_rect(int index) const
 
 Rect App::cell_size() const
 {
-    const Kind &k = kind_of(slot_, tab_);
+    const Kind &k = kind_of(tab_);
     return {0, 0, k.cell_w, k.cell_h};
 }
 
@@ -1686,11 +1705,10 @@ void App::draw_picker(gfx::DrawList &list) const
         }
         else
         {
-            const std::string what = names[static_cast<std::size_t>(tab_)];
+            const std::string what = tab_ == 0 ? "icons" : "backgrounds";
             ui::paragraph(list, fonts_.regular,
-                          "SteamGridDB has nothing under " + what + " for this game yet" +
-                              (hidden_ ? " (only icons too small to use)" : "") +
-                              ". Try the other tabs, or another game.",
+                          "SteamGridDB has no " + what + " for this game yet. If it is listed under another "
+                              "name, choose Another game.",
                           kGridX, kGridTop + 60, 27, 1050, 40, kWhite.with_alpha(0.85f), 4);
         }
     }
@@ -1820,7 +1838,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
     case Sheet::restore:
         heading("RESTORE", "The original art of " + name + "?");
         ui::paragraph(list, fonts_.regular,
-                      "Art Swap puts back the art this game came with: the icon, the background, or both.",
+                      "Art Swap puts back the icon and background this game came with.",
                       x, y, 26, panel.w - 128, 40, kWhite.with_alpha(0.85f), 4);
         break;
     case Sheet::search:
