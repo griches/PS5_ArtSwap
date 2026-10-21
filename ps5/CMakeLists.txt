@@ -125,10 +125,13 @@ if(PS5_HOST_REFERENCE)
 endif()
 
 # Link, sign and package: the title folder in dist/<TITLE_ID>/
+# The identity and art link-title.sh copies into the title folder: a change repackages it
+file(GLOB title_sce_sys CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/sce_sys/*)
 add_custom_command(
 	OUTPUT ${CMAKE_BINARY_DIR}/eboot.elf
 	COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tools/link-title.sh ${CMAKE_BINARY_DIR} ${PS5_VULKAN_DIR} ${PS5_PAYLOAD_SDK} "$<TARGET_OBJECTS:samples>"
 	DEPENDS samples "$<TARGET_OBJECTS:samples>" ${CMAKE_CURRENT_SOURCE_DIR}/tools/link-title.sh
+		${title_sce_sys}
 	COMMAND_EXPAND_LISTS
 	VERBATIM)
 add_custom_target(title ALL DEPENDS ${CMAKE_BINARY_DIR}/eboot.elf)
