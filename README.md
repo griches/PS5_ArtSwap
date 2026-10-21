@@ -26,7 +26,9 @@ Title `PPSA99318`, version 1.1.0. Tested on a PS5 with firmware 13.60.
 - **Finds the game on SteamGridDB** by its name, and remembers the match. If the
   match is wrong, □ lists other matches or searches for any name you type.
 - **Icons** come from SteamGridDB's square grids, and **Backgrounds** from its
-  heroes (art made for backgrounds).
+  heroes (art made for backgrounds). A PS5 background is 3840×2160, so the
+  3840×1240 heroes are listed first and tagged 4K: a 1920×620 one is enlarged
+  about 3.5 times to fill it, and the frame page says so.
 - **You choose the part kept** (△ in the picker opens the frame page): Fit (all
   of it, on a blurred fill of itself), the left, centre or right of a wide
   picture (top, middle or bottom of a tall one), or a part of your own: the
