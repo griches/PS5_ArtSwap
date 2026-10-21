@@ -1937,7 +1937,13 @@ void App::draw(hui::app::Frame &frame) const
     {
         list.rounded_rect({0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight}, 0, kNight.with_alpha(0.5f * back));
         frame.glass = true;
-        draw_sheet(frame.overlay, frame.glass_texture);
+        // Rename's first steps have no sheet: the screen dims, and the system's keyboard comes up over it
+        const bool bare = sheet_ == Sheet::refresh && renaming_ &&
+                          (refresh_ == Refresh::asking || refresh_ == Refresh::naming);
+        if (!bare)
+            draw_sheet(frame.overlay, frame.glass_texture);
+        else if (refresh_ == Refresh::asking)
+            draw_spinner(frame.overlay, 960, 540, 22);
     }
     draw_hints(back > 0.5f ? frame.overlay : frame.scene);
     draw_toasts(frame.overlay);
@@ -2450,14 +2456,6 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                      kWhite.with_alpha(0.8f));
             break;
         }
-        if (refresh_ == Refresh::naming)
-        {
-            ui::paragraph(list, fonts_.regular,
-                          "Type the new name on the keyboard. It goes into the game's param.json, and the original is "
-                          "kept, so Restore can put it back.",
-                          x, y, 26, width, 40, kWhite.with_alpha(0.85f), 4);
-            break;
-        }
         if (refresh_ == Refresh::unable)
         {
             const std::string why = renaming_ ? "Art Swap renames games that ShadowMountPlus installed from a folder, "
@@ -2609,7 +2607,7 @@ void App::draw_hints(gfx::DrawList &list) const
     {
         if (refresh_ == Refresh::ready)
             hints = {{ui::Button::cross, "Refresh"}, {ui::Button::circle, "Cancel"}};
-        else if (refresh_ != Refresh::starting && refresh_ != Refresh::naming)
+        else if (refresh_ == Refresh::unable || (refresh_ == Refresh::asking && !renaming_))
             hints = {{ui::Button::circle, "Back"}};
     }
     else if (sheet_ == Sheet::working)
