@@ -1175,8 +1175,8 @@ void App::apply()
                             }
                         }
                     toast(std::string(slot == "icon" ? "New icon" : "New background") + " for " + name,
-                          "Your original is kept, so Restore can put it back. Refresh the home screen (R2) to "
-                          "show it there.");
+                          "Your original is kept, so Restore can put it back. Refresh the game (R2) to show it "
+                          "on the home screen.");
                     close_picker();
                 },
                 true);
@@ -1394,9 +1394,9 @@ void App::check_last_refresh()
             if (row.size() < 5 || row[0] != "refresh" || row[3] != "1")
                 continue;
             if (row[1] == "done")
-                toast("Home screen refreshed", row[4] + ". Its saves and files were checked afterwards.");
+                toast("Game refreshed", row[4] + ". Its saves and files were checked afterwards.");
             else if (row[1] == "failed")
-                toast("The home-screen refresh did not finish", row[4], true);
+                toast("The game's refresh did not finish", row[4], true);
             else
                 continue;
             helper_.ask({"REFRESHSTATE", "seen"}, nullptr, true);
@@ -2126,7 +2126,7 @@ void App::draw_library(gfx::DrawList &list) const
     std::vector<Secondary> more;
     if (title->kept || title->name_kept)
         more.push_back({ui::Button::square, "Restore"});
-    more.push_back({ui::Button::r2, "Refresh home screen"});
+    more.push_back({ui::Button::r2, "Refresh game"});
     more.push_back({ui::Button::l2, "Rename"});
     bx = x;
     for (const Secondary &item : more)
@@ -2440,7 +2440,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         break;
     case Sheet::refresh:
     {
-        heading(renaming_ ? "RENAME" : "REFRESH THE HOME SCREEN", name);
+        heading(renaming_ ? "RENAME" : "REFRESH GAME", name);
         const float width = panel.w - 128;
         // a requirement and whether it is met
         auto need = [&](const std::string &label, bool met, const std::string &state) {
@@ -2474,7 +2474,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         y = ui::paragraph(list, fonts_.regular,
                           renamed_to_.empty()
                               ? "The home screen keeps its own copy of each game's art, so new art shows once the game "
-                                "is installed again. Art Swap does that for you:"
+                                "is installed again. Each game is refreshed on its own; Art Swap does it for you:"
                               : "Renamed. The home screen shows a game's name as it was when the game was installed, "
                                 "so the new name shows once it is installed again. Art Swap does that for you:",
                           x, y, 25, width, 38, kWhite.with_alpha(0.85f), 3) +

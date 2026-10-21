@@ -11,10 +11,10 @@ Art Swap lists every title on the console that has home-screen art, finds each
 one on SteamGridDB, shows you that game's art, and writes the one you pick over
 the title's own `icon0` or `pic0`/`pic1`. The original is kept beside it as an
 `.old` file, so Restore can put it back. For homebrew that ShadowMountPlus
-installed from a folder, Art Swap can also refresh the home screen so the new
-art shows straight away.
+installed from a folder, Art Swap can also refresh the game so the new art
+shows on the home screen straight away.
 
-Title `PPSA99318`, version 1.1.0. Tested on a PS5 with firmware 13.60.
+Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
 
 ## What it does
 
@@ -49,8 +49,10 @@ Title `PPSA99318`, version 1.1.0. Tested on a PS5 with firmware 13.60.
   new name goes into the title's `param.json` (every language), and the
   refresh shows it on the home screen. The original is kept as
   `param.json.old`, and Restore puts it back too.
-- **Refreshes the home screen** (R2) for homebrew that ShadowMountPlus installed
-  from a folder: see [Refreshing the home screen](#refreshing-the-home-screen).
+- **Refreshes a game** (R2) for homebrew that ShadowMountPlus installed from a
+  folder, so its new art and name show on the home screen: see
+  [Refreshing a game](#refreshing-a-game). Each game is refreshed on its own,
+  once its changes are done.
   For other titles the new art is written, but the home screen keeps its own
   cached copy and may show the old art until it reloads it (a console restart).
 
@@ -60,7 +62,7 @@ You need the console's homebrew environment running: etaHEN (or kstuff),
 ShadowMountPlus, and an **ELF loader on port 9021**. Art Swap starts its helper
 through that loader.
 
-1. Download `PS5_ArtSwap-v1.1.0.zip` from [Releases](https://github.com/griches/PS5_ArtSwap/releases/latest).
+1. Download `PS5_ArtSwap-v1.2.0.zip` from [Releases](https://github.com/griches/PS5_ArtSwap/releases/latest).
 2. Copy the `PPSA99318` folder inside it to `/data/homebrew/` (FTP is fine).
 3. ShadowMountPlus registers it and Art Swap appears on the home screen.
 4. Start it. The first screen says "Starting the helper" for a moment.
@@ -74,7 +76,7 @@ through that loader.
 | | ✕ | change its icon |
 | | △ | change its background |
 | | □ | restore its original art and name (when Art Swap changed them) |
-| | R2 | refresh the home screen (asks first) |
+| | R2 | refresh the game, so the home screen shows its changes (asks first) |
 | | L2 | rename it, then refresh (homebrew from a folder) |
 | | OPTIONS | settings: API key, look at the console again, helper log |
 | | hold OPTIONS | close Art Swap |
@@ -91,7 +93,7 @@ through that loader.
 | | ✕ | use it (asks first) |
 | | ○ | back to the pictures |
 
-## Refreshing the home screen
+## Refreshing a game
 
 The home screen keeps its own copy of each title's art, so new art shows only
 once the title is installed again. For homebrew, that is what deleting the
