@@ -173,6 +173,8 @@ class App
     void choose_game(int row);
     void open_refresh(bool rename = false);
     void type_name();
+    bool open_keyboard(const std::string &title, const std::string &initial, int max_length,
+                       std::function<void(bool, std::string)> done);
     void rename(const std::string &name);
     void start_refresh();
     void poll_refresh(float dt);
@@ -339,6 +341,8 @@ class App
     std::vector<std::string> pending_; // ids changed since the home screen last restarted (the helper's PENDING)
     bool applying_ = false;            // Apply changes asked the helper; Art Swap closes on its answer
     bool home_checked_ = false;        // the last restart's end, asked for once at the start
+    bool keyboard_up_ = false;         // the console's keyboard is open
+    bool swallow_input_ = false;       // it closed: the pad is ignored until every button is let go
     bool renaming_ = false;     // the sheet was opened by Rename: whether the title can be renamed
     std::string renamed_to_;    // the refresh follows a rename to this name
 };

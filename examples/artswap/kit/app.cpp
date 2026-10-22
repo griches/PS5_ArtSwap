@@ -1352,8 +1352,7 @@ void App::type_name()
     if (title == nullptr)
         return;
     const std::string id = title->id;
-    if (keyboard_ == nullptr ||
-        !keyboard_->open("Name on the home screen", title->name, 127, [this, id](bool ok, std::string text) {
+    if (!open_keyboard("Name on the home screen", title->name, 127, [this, id](bool ok, std::string text) {
             if (sheet_ != Sheet::refresh || refresh_ != Refresh::naming || refresh_id_ != id)
                 return;
             const Title *now = focused_title();
@@ -1528,8 +1527,7 @@ void App::choose_game(int row)
 void App::type_search()
 {
     const Title *title = picker_title_ >= 0 ? titles_[static_cast<std::size_t>(picker_title_)].get() : nullptr;
-    if (keyboard_ == nullptr ||
-        !keyboard_->open("Search SteamGridDB", search_term_.empty() && title ? title->name : search_term_, 80,
+    if (!open_keyboard("Search SteamGridDB", search_term_.empty() && title ? title->name : search_term_, 80,
                          [this](bool ok, std::string text) {
                              if (ok && !text.empty())
                                  open_search(text);
@@ -1539,8 +1537,7 @@ void App::type_search()
 
 void App::type_key()
 {
-    if (keyboard_ == nullptr ||
-        !keyboard_->open("SteamGridDB API key", "", 64, [this](bool ok, std::string text) {
+    if (!open_keyboard("SteamGridDB API key", "", 64, [this](bool ok, std::string text) {
             if (!ok || text.empty())
                 return;
             sheet_ = Sheet::working;
@@ -1560,8 +1557,31 @@ void App::type_key()
 
 // ---------------------------------------------------------------- update
 
-void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
+// The console's keyboard, with the pad kept from Art Swap while it is up and until every button the person
+// pressed there is let go: R2 is the keyboard's Done, and must not then open Apply changes
+bool App::open_keyboard(const std::string &title, const std::string &initial, int max_length,
+                        std::function<void(bool, std::string)> done)
 {
+    if (keyboard_ == nullptr)
+        return false;
+    const bool opened = keyboard_->open(title, initial, max_length, [this, done](bool ok, std::string text) {
+        keyboard_up_ = false;
+        swallow_input_ = true;
+        done(ok, std::move(text));
+    });
+    if (opened)
+        keyboard_up_ = true;
+    return opened;
+}
+
+void App::update(const hui::InputFrame &pad, float dt, ui::Feedback &feedback)
+{
+    // the keyboard's buttons stay the keyboard's
+    if (swallow_input_ && !keyboard_up_ && pad.held == 0 && pad.trigger_l < 0.1f && pad.trigger_r < 0.1f)
+        swallow_input_ = false;
+    hui::InputFrame quiet;
+    quiet.connected = pad.connected;
+    const hui::InputFrame &input = keyboard_up_ || swallow_input_ ? quiet : pad;
     age_ += dt;
     clock_ += dt;
     for (Toast &t : toasts_)
