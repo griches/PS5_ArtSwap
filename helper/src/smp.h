@@ -33,6 +33,10 @@ int smp_folder_titles(char (*ids)[16], int max);
  * for wait_s seconds. False, with a sentence in err, when it cannot start. */
 bool smp_refresh_start(const app_t *app, int wait_s, char *err, size_t errlen);
 
+/* The same refresh, run in the calling thread to its end (Apply changes, after Art Swap has closed): true
+ * when the title is back with its new name and art; message says how it went either way */
+bool smp_refresh_run(const app_t *app, int wait_s, char *message, size_t size);
+
 /* "refresh <phase> <id> <unseen> <message>": phase none, copying, waiting, removing, adding, checking,
  * done or failed. A finished refresh is kept in /data/artswap/refresh.txt, unseen until smp_refresh_seen():
  * the title has closed while it ran, and shows how it went when it next starts. */

@@ -11,13 +11,18 @@
  * The title asks, then closes, so the helper first waits for its process to
  * end: the home screen it restarts is the one the person is looking at.
  *
- * pending.txt keeps the titles changed since the last restart, one id a line,
- * for the title to say what is waiting.
+ * A name is different: the home screen takes it only from an install. So a
+ * renamed title is installed again first, through ShadowMountPlus (smp.c, with
+ * its saved data copied aside and checked), and the restart follows.
+ *
+ * pending.txt keeps the titles changed since the last restart, one a line: the
+ * id, then a tab and "name" for a rename waiting for its install.
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "home.h"
+#include "smp.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -42,94 +47,112 @@ static bool g_loaded; /* the last one read from home.txt */
 
 /* ---- the titles changed since the last restart (g_lock held) ---- */
 
-static void pending_read(buf_t *text)
-{
-    char path[512];
-    file_read(data_path("pending.txt", path, sizeof(path)), text);
-}
-
-static void pending_write(const buf_t *text)
-{
-    char path[512];
-    file_write_replace(data_path("pending.txt", path, sizeof(path)), text->data ? text->data : (uint8_t *)"",
-                       text->len, NULL);
-}
-
-/* Calls each(line, arg) for each id in text */
-static void pending_each(const buf_t *text, void (*each)(const char *id, void *arg), void *arg)
-{
-    size_t at = 0;
-    while (at < text->len) {
-        size_t end = at;
-        while (end < text->len && text->data[end] != '\n')
-            end++;
-        char id[16];
-        const size_t n = end - at < sizeof(id) - 1 ? end - at : sizeof(id) - 1;
-        memcpy(id, text->data + at, n);
-        id[n] = 0;
-        if (id[0])
-            each(id, arg);
-        at = end + 1;
-    }
-}
+#define PENDING_MAX 256
 
 typedef struct {
-    const char *id;
-    bool found;
-    buf_t *kept;
-} pending_scan_t;
+    char id[16];
+    bool name; /* renamed: it needs installing again */
+} pending_t;
 
-static void find_id(const char *id, void *arg)
+static int pending_read(pending_t *list)
 {
-    pending_scan_t *scan = arg;
-    if (strcmp(id, scan->id) == 0)
-        scan->found = true;
-    else if (scan->kept)
-        buf_printf(scan->kept, "%s\n", id);
+    char path[512];
+    buf_t text = {0};
+    int n = 0;
+    if (file_read(data_path("pending.txt", path, sizeof(path)), &text) && text.len > 0 && buf_append(&text, "", 1)) {
+        char *save = NULL;
+        for (char *line = strtok_r((char *)text.data, "\n", &save); line && n < PENDING_MAX;
+             line = strtok_r(NULL, "\n", &save)) {
+            char *tab = strchr(line, '\t');
+            if (tab)
+                *tab = 0;
+            if (line[0] == 0)
+                continue;
+            copy_str(list[n].id, sizeof(list[n].id), line);
+            list[n].name = tab && strcmp(tab + 1, "name") == 0;
+            n++;
+        }
+    }
+    buf_free(&text);
+    return n;
+}
+
+static void pending_write(const pending_t *list, int n)
+{
+    char path[512];
+    buf_t text = {0};
+    for (int i = 0; i < n; i++)
+        buf_printf(&text, "%s%s\n", list[i].id, list[i].name ? "\tname" : "");
+    file_write_replace(data_path("pending.txt", path, sizeof(path)), text.data ? text.data : (uint8_t *)"", text.len,
+                       NULL);
+    buf_free(&text);
+}
+
+static void note(const char *id, bool name)
+{
+    static pending_t list[PENDING_MAX];
+    pthread_mutex_lock(&g_lock);
+    int n = pending_read(list), at = -1;
+    for (int i = 0; i < n && at < 0; i++)
+        if (strcmp(list[i].id, id) == 0)
+            at = i;
+    if (at < 0 && n < PENDING_MAX) {
+        at = n++;
+        copy_str(list[at].id, sizeof(list[at].id), id);
+        list[at].name = false;
+    }
+    if (at >= 0) {
+        list[at].name |= name;
+        pending_write(list, n);
+    }
+    pthread_mutex_unlock(&g_lock);
 }
 
 void home_note(const char *id)
 {
-    pthread_mutex_lock(&g_lock);
-    buf_t text = {0};
-    pending_read(&text);
-    pending_scan_t scan = {id, false, NULL};
-    pending_each(&text, find_id, &scan);
-    if (!scan.found) {
-        buf_printf(&text, "%s\n", id);
-        pending_write(&text);
-    }
-    buf_free(&text);
-    pthread_mutex_unlock(&g_lock);
+    note(id, false);
+}
+
+void home_note_name(const char *id)
+{
+    note(id, true);
 }
 
 void home_forget(const char *id)
 {
+    static pending_t list[PENDING_MAX];
     pthread_mutex_lock(&g_lock);
-    buf_t text = {0}, kept = {0};
-    pending_read(&text);
-    pending_scan_t scan = {id, false, &kept};
-    pending_each(&text, find_id, &scan);
-    if (scan.found)
-        pending_write(&kept);
-    buf_free(&text);
-    buf_free(&kept);
+    const int n = pending_read(list);
+    int kept = 0;
+    for (int i = 0; i < n; i++)
+        if (strcmp(list[i].id, id) != 0)
+            list[kept++] = list[i];
+    if (kept != n)
+        pending_write(list, kept);
     pthread_mutex_unlock(&g_lock);
-}
-
-static void print_id(const char *id, void *arg)
-{
-    buf_printf(arg, "P\t%s\n", id);
 }
 
 void home_pending(buf_t *out)
 {
+    static pending_t list[PENDING_MAX];
     pthread_mutex_lock(&g_lock);
-    buf_t text = {0};
-    pending_read(&text);
-    pending_each(&text, print_id, out);
-    buf_free(&text);
+    const int n = pending_read(list);
+    for (int i = 0; i < n; i++)
+        buf_printf(out, "P\t%s\t%s\n", list[i].id, list[i].name ? "name" : "art");
     pthread_mutex_unlock(&g_lock);
+}
+
+int home_renamed(char (*ids)[16], int max)
+{
+    static pending_t list[PENDING_MAX];
+    pthread_mutex_lock(&g_lock);
+    const int n = pending_read(list);
+    int found = 0;
+    for (int i = 0; i < n && found < max; i++)
+        if (list[i].name)
+            copy_str(ids[found++], sizeof(ids[0]), list[i].id);
+    pthread_mutex_unlock(&g_lock);
+    return found;
 }
 
 /* ---- how the last restart went ---- */
@@ -217,15 +240,41 @@ static bool alive(pid_t pid)
     return pid > 0 && (kill(pid, 0) == 0 || errno == EPERM);
 }
 
+typedef struct {
+    pid_t title;
+    app_t *renamed; /* installed again before the restart */
+    int nrenamed;
+} restart_t;
+
 static void *restart_job(void *argument)
 {
-    const pid_t title = (pid_t)(intptr_t)argument;
+    restart_t *job = argument;
+    const pid_t title = job->title;
     /* Art Swap closes first, so the restart happens on the home screen it goes back to */
     for (int i = 0; i < 300 && alive(title); i++)
         usleep(100000);
     if (alive(title))
         log_line("home: Art Swap (pid %d) is still open after 30 s; restarting the home screen anyway", (int)title);
     usleep(1500000);
+
+    /* renamed titles: installed again, so the home screen takes their new names */
+    char failed_names[300] = "", why[480] = "";
+    int failures = 0;
+    for (int i = 0; i < job->nrenamed; i++) {
+        const app_t *app = &job->renamed[i];
+        set_phase("installing", "Installing %s again for its new name", app->name);
+        char message[480];
+        if (!smp_refresh_run(app, 60, message, sizeof(message))) {
+            failures++;
+            if (failures == 1)
+                copy_str(why, sizeof(why), message);
+            size_t used = strlen(failed_names);
+            snprintf(failed_names + used, sizeof(failed_names) - used, "%s%s", used ? ", " : "", app->name);
+        }
+    }
+    free(job->renamed);
+    free(job);
+
     set_phase("restarting", "Restarting the home screen");
 #ifdef ARTSWAP_HOST
     /* the tests' console has no home screen: a file says it would have restarted */
@@ -255,15 +304,27 @@ static void *restart_job(void *argument)
     }
     log_line("home: SceShellUI %d ended, %d started", (int)before, (int)after);
 #endif
+    /* what is left waiting: the renames whose install did not finish */
     pthread_mutex_lock(&g_lock);
-    const buf_t none = {0};
-    pending_write(&none);
+    static pending_t list[PENDING_MAX];
+    const int n = pending_read(list);
+    int kept = 0;
+    for (int i = 0; i < n; i++)
+        if (list[i].name) {
+            list[kept] = list[i];
+            list[kept++].name = true;
+        }
+    pending_write(list, kept);
     pthread_mutex_unlock(&g_lock);
-    set_phase("done", ok ? "The home screen restarted with every change" : "");
+    if (failures > 0)
+        set_phase("failed", "The home screen restarted, but %s %s not installed again, so %s new name does not show yet. %s",
+                  failed_names, failures == 1 ? "was" : "were", failures == 1 ? "its" : "their", why);
+    else
+        set_phase("done", ok ? "The home screen restarted with every change" : "");
     return NULL;
 }
 
-bool home_restart_start(pid_t title_pid, char *err, size_t errlen)
+bool home_restart_start(pid_t title_pid, const app_t *renamed, int nrenamed, char *err, size_t errlen)
 {
     pthread_mutex_lock(&g_lock);
     load_result();
@@ -283,9 +344,21 @@ bool home_restart_start(pid_t title_pid, char *err, size_t errlen)
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    const int rc = pthread_create(&thread, &attr, restart_job, (void *)(intptr_t)title_pid);
+    restart_t *job = calloc(1, sizeof(*job));
+    app_t *copies = nrenamed > 0 ? calloc((size_t)nrenamed, sizeof(app_t)) : NULL;
+    int rc = job == NULL || (nrenamed > 0 && copies == NULL) ? ENOMEM : 0;
+    if (rc == 0) {
+        job->title = title_pid;
+        job->renamed = copies;
+        job->nrenamed = nrenamed;
+        if (nrenamed > 0)
+            memcpy(copies, renamed, (size_t)nrenamed * sizeof(app_t));
+        rc = pthread_create(&thread, &attr, restart_job, job);
+    }
     pthread_attr_destroy(&attr);
     if (rc != 0) {
+        free(job);
+        free(copies);
         pthread_mutex_lock(&g_lock);
         g_running = false;
         copy_str(g_phase, sizeof(g_phase), "none");

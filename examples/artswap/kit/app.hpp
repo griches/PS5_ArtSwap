@@ -164,7 +164,7 @@ class App
     std::string shows_after(const std::string &before, const char *what) const;
     // Apply changes: the titles changed since the home screen last restarted, and the restart itself
     void load_pending();
-    void note_pending(const std::string &id);
+    void note_pending(const std::string &id, bool name = false);
     bool is_pending(const std::string &id) const;
     void open_apply();
     void start_apply();
@@ -339,6 +339,7 @@ class App
     bool refresh_checked_ = false; // the last refresh's end, asked for once at the start
     bool close_ = false;
     std::vector<std::string> pending_; // ids changed since the home screen last restarted (the helper's PENDING)
+    std::vector<std::string> renamed_; // of those, renamed: Apply changes installs them again first
     bool applying_ = false;            // Apply changes asked the helper; Art Swap closes on its answer
     bool home_checked_ = false;        // the last restart's end, asked for once at the start
     bool keyboard_up_ = false;         // the console's keyboard is open

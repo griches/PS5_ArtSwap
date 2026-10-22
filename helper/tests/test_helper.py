@@ -168,7 +168,7 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.3.1", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.3.2", f"HELLO names the version ({hello})")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
 
@@ -405,12 +405,22 @@ def main() -> int:
                 check(False, f"RENAME refuses {why}")
             except HelperError as e:
                 check(why in str(e), f"RENAME refuses: {e}")
-        # the refresh installs it again under the new name; the home screen's original comes back
-        h.rows("REFRESH", "PPSA99314", "0")
-        state = refresh_until_end()
-        check(state[1] == "done", f"the refresh after a rename is done ({state[4]})")
+        # Apply changes installs the renamed title again first, then restarts the home screen
+        pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
+        check(pend.get("PPSA99314") == "name", f"PENDING: the rename waits for an install ({pend})")
+        marker.unlink(missing_ok=True)
+        title = subprocess.Popen(["sleep", "1"])  # Art Swap, closing
+        h.rows("HOME", str(title.pid))
+        title.wait()
+        end = time.time() + 90
+        while time.time() < end and next(r for r in h.rows("HOMESTATE") if r[0] == "home")[1] not in ("done", "failed"):
+            time.sleep(0.3)
+        home = next(r for r in h.rows("HOMESTATE") if r[0] == "home")
+        check(home[1] == "done" and marker.exists(), f"Apply changes after a rename is done ({home})")
         check(names(meta_param) == {"Eternal Darkness é"}, "the install took the new name")
-        check(Path(str(meta_param) + ".old").exists(), "the home screen's original name is kept across the refresh")
+        check(Path(str(meta_param) + ".old").exists(), "the home screen's original name is kept across the install")
+        check(not [r for r in h.rows("PENDING") if r[0] == "P"], "nothing is waiting after Apply changes")
+        h.rows("HOMESTATE", "seen")
 
         # restore; a copy without its .old takes the folder's original
         Path(str(base / "user/appmeta/PPSA99314/pic0.dds") + ".old").unlink()

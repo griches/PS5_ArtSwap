@@ -353,13 +353,15 @@ static bool handle(int fd, char **field, int n)
             refresh_app(app.id, -1, "", NULL);
             if (name)
                 rescan(); /* the name, read again */
-            if (done)
+            if (done && name)
+                home_note_name(app.id); /* the original name shows after an install, as a new one does */
+            else if (done)
                 home_note(app.id);
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
     } else if (strcmp(cmd, "RENAME") == 0) {
         /* RENAME id name: the title's name, for a title ShadowMountPlus installed from a folder; the home
-         * screen shows it after a refresh */
+         * screen shows it once Apply changes has had ShadowMountPlus install it again */
         if (!want(fd, n, 3))
             return true;
         app_t app;
@@ -373,8 +375,10 @@ static bool handle(int fd, char **field, int n)
             pthread_mutex_lock(&g_apply_lock);
             const bool done = name_change(&app, field[2], &text, err, sizeof(err));
             pthread_mutex_unlock(&g_apply_lock);
-            if (done)
+            if (done) {
                 refresh_app(app.id, -1, "", field[2]);
+                home_note_name(app.id);
+            }
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
     } else if (strcmp(cmd, "SMP") == 0) {
@@ -415,11 +419,20 @@ static bool handle(int fd, char **field, int n)
         smp_refresh_line(&text);
         ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "HOME") == 0) {
-        /* HOME pid: Apply changes. Once the process pid (Art Swap, closing) has ended, the home screen
-         * restarts and shows every change (home.c) */
+        /* HOME pid: Apply changes. Once the process pid (Art Swap, closing) has ended, the renamed titles are
+         * installed again and the home screen restarts, showing every change (home.c) */
         if (!want(fd, n, 2))
             return true;
-        if (!home_restart_start((pid_t)atoi(field[1]), err, sizeof(err)))
+        char ids[32][16];
+        const int nids = home_renamed(ids, 32);
+        app_t *renamed = nids > 0 ? calloc((size_t)nids, sizeof(app_t)) : NULL;
+        int nrenamed = 0;
+        for (int i = 0; i < nids && renamed != NULL; i++)
+            if (find_app(ids[i], &renamed[nrenamed]))
+                nrenamed++;
+        const bool started = home_restart_start((pid_t)atoi(field[1]), renamed, nrenamed, err, sizeof(err));
+        free(renamed);
+        if (!started)
             ok = reply_error(fd, err);
         else {
             home_line(&text);

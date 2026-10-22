@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ARTSWAP_VERSION "0.3.1"
+#define ARTSWAP_VERSION "0.3.2"
 #define ARTSWAP_PORT 9117
 
 /* Held while art is written, and while the refresh works in a game's folder as its owner

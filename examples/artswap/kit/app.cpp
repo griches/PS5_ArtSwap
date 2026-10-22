@@ -1201,16 +1201,19 @@ void App::load_pending()
         if (!reply.ok)
             return;
         pending_.clear();
+        renamed_.clear();
         for (const auto &row : reply.rows())
             if (row.size() >= 2 && row[0] == "P")
-                pending_.push_back(row[1]);
+                note_pending(row[1], row.size() >= 3 && row[2] == "name");
     }, true);
 }
 
-void App::note_pending(const std::string &id)
+void App::note_pending(const std::string &id, bool name)
 {
     if (!is_pending(id))
         pending_.push_back(id);
+    if (name && std::find(renamed_.begin(), renamed_.end(), id) == renamed_.end())
+        renamed_.push_back(id);
 }
 
 bool App::is_pending(const std::string &id) const
@@ -1288,7 +1291,7 @@ void App::restore()
             }
         toast(named ? name + "'s originals are back" : "The original art of " + name + " is back",
               shows_after("", "them"));
-        note_pending(id);
+        note_pending(id, named);
         if (named)
             load_titles(false); // its name, as the helper reads it again
     }, true);
@@ -1394,13 +1397,10 @@ void App::rename(const std::string &name)
                 t->name = name;
                 t->name_kept = true;
             }
-        // the same sheet goes on to the refresh, which ShadowMountPlus has already said it can do
         if (here)
-        {
-            renaming_ = false;
-            renamed_to_ = name;
-            refresh_ = Refresh::ready;
-        }
+            sheet_ = Sheet::none;
+        note_pending(id, true);
+        toast("Renamed " + name, shows_after("Your original is kept, so Restore can put it back. ", "it"));
     }, true);
 }
 
@@ -2600,8 +2600,17 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                           "every change shows at once, whatever installed the game.",
                           x, y, 25, width, 38, kWhite.with_alpha(0.85f), 3) +
             16;
-        const std::string steps[] = {"Art Swap closes.", "The home screen goes dark for a few seconds.",
-                                     "It comes back with your new art."};
+        std::string renamed;
+        for (const auto &id : renamed_)
+            for (const auto &t : titles_)
+                if (t && t->id == id)
+                    renamed += (renamed.empty() ? "" : ", ") + t->name;
+        const std::string steps[] = {
+            "Art Swap closes.",
+            renamed.empty() ? std::string("The home screen goes dark for a few seconds.")
+                            : "ShadowMountPlus installs " + renamed + " again, for the new name.",
+            renamed.empty() ? std::string("It comes back with your new art.")
+                            : std::string("The home screen restarts with your new art and names.")};
         for (int i = 0; i < 3; ++i)
         {
             list.bordered_rect({x, y - 27, 36, 36}, 18, tint.with_alpha(0.16f), 1.5f, tint.with_alpha(0.8f));
@@ -2610,13 +2619,18 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
             y += 52;
         }
         y += 14;
-        const std::string kept = "Nothing else restarts: a game open in the background, your saved data and tools "
-                                 "such as ShadowMountPlus carry on. Names change only with Rename (L2).";
+        const std::string kept =
+            renamed_.empty()
+                ? "Nothing else restarts: a game open in the background, your saved data and tools such as "
+                  "ShadowMountPlus carry on."
+                : "Nothing else restarts, and nothing is deleted: a renamed game's folder, with its saves, stays "
+                  "where it is, and Art Swap checks every file of it afterwards.";
         const float kept_lines =
             static_cast<float>(std::min<std::size_t>(fonts_.regular.font->wrap(kept, 22, width - 40).size(), 3));
         const Rect safe{x - 4, y - 8, width + 8, 78 + 32 * (kept_lines - 1) + 38};
         list.bordered_rect(safe, 18, Color::rgb(0x3ddc84, 0.08f), 1.5f, Color::rgb(0x3ddc84, 0.45f));
-        ui::text(list, fonts_.semibold, "ONLY THE HOME SCREEN RESTARTS", safe.x + 24, safe.y + 40, 17,
+        ui::text(list, fonts_.semibold, renamed_.empty() ? "ONLY THE HOME SCREEN RESTARTS" : "YOUR SAVED DATA STAYS",
+                 safe.x + 24, safe.y + 40, 17,
                  Color::rgb(0x3ddc84), gfx::Align::left, 3.0f);
         ui::paragraph(list, fonts_.regular, kept, safe.x + 24, safe.y + 78, 22, safe.w - 48, 32,
                       kWhite.with_alpha(0.85f), 3);

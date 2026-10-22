@@ -942,6 +942,52 @@ bool smp_refresh_start(const app_t *app, int wait_s, char *err, size_t errlen)
     return true;
 }
 
+bool smp_refresh_run(const app_t *app, int wait_s, char *message, size_t size)
+{
+    smp_info_t info;
+    smp_info(app, &info);
+    if (!info.can_refresh) {
+        snprintf(message, size, "%s", info.why);
+        return false;
+    }
+    pthread_mutex_lock(&g_lock);
+    const bool busy = g_running;
+    if (!busy) {
+        g_running = true;
+        g_loaded = true;
+        g_unseen = false;
+        copy_str(g_id, sizeof(g_id), app->id);
+        copy_str(g_phase, sizeof(g_phase), "copying");
+        snprintf(g_message, sizeof(g_message), "Checking %s's files", app->name);
+    }
+    pthread_mutex_unlock(&g_lock);
+    job_t *job = busy ? NULL : calloc(1, sizeof(*job));
+    if (job == NULL) {
+        if (!busy) {
+            pthread_mutex_lock(&g_lock);
+            g_running = false;
+            pthread_mutex_unlock(&g_lock);
+        }
+        snprintf(message, size, busy ? "Art Swap is already installing a game again" : "out of memory");
+        return false;
+    }
+    copy_str(job->id, sizeof(job->id), app->id);
+    copy_str(job->name, sizeof(job->name), app->name);
+    copy_str(job->path, sizeof(job->path), info.path);
+    job->installed = info.installed;
+    job->wait_s = wait_s < 0 ? 0 : wait_s > 600 ? 600 : wait_s;
+    log_line("refresh %s: for Apply changes (ShadowMountPlus %s, %s)", app->id, info.version, info.path);
+    refresh_job(job); /* frees the job */
+    pthread_mutex_lock(&g_lock);
+    const bool done = strcmp(g_phase, "done") == 0;
+    snprintf(message, size, "%s", g_message);
+    /* Apply changes says how it went; this is not a refresh of its own to report */
+    g_unseen = false;
+    save_result();
+    pthread_mutex_unlock(&g_lock);
+    return done;
+}
+
 void smp_refresh_line(buf_t *out)
 {
     pthread_mutex_lock(&g_lock);
