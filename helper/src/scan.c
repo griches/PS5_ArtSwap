@@ -2,9 +2,10 @@
  * Art Swap helper - the titles on the console and where their art is (scan.h).
  *
  * The home screen draws a title's tile and background from its folder in
- * /user/appmeta (icon0, pic0, pic1). A homebrew title has a second copy in its
- * own folder (sce_sys/), which ShadowMountPlus copies in when it registers the
- * title, so both are changed together. Names come from the param.json or
+ * /user/appmeta (icon0, pic0, pic1), or, for one ShadowMountPlus installed,
+ * from /user/app/<id>/sce_sys, the copy it made at install. A homebrew title
+ * has one more in its own folder (sce_sys/), which ShadowMountPlus copies in
+ * when it installs the title again, so all of them are changed together. Names come from the param.json or
  * param.sfo beside the art, then the homebrew folder's param.json, then the
  * system's app.db (a copy, read only), then the title id. Every scan is
  * written to /data/artswap/scan.txt, to read over FTP.
@@ -421,6 +422,31 @@ static void write_report(const app_t *apps, int count)
     buf_free(&text);
 }
 
+/* The copy of a title's sce_sys that ShadowMountPlus made in /user/app/<id> when it installed it: the
+ * home screen's tile reads it, and nothing copies it again until the title is installed again (a
+ * restart only mounts the game), so a restart shows what is written there. A package's /user/app/<id>
+ * has none. Skipped when it is a folder the title's files are in already. */
+static void add_installed_copy(app_t *app)
+{
+    char folder[400], real[512];
+    struct stat st;
+    snprintf(folder, sizeof(folder), "/user/app/%s/sce_sys", app->id);
+    if (stat(cpath(folder, real, sizeof(real)), &st) != 0 || !S_ISDIR(st.st_mode))
+        return;
+    for (int i = 0; i < app->nfiles; i++) {
+        char dir[400], real_dir[512];
+        struct stat other;
+        copy_str(dir, sizeof(dir), app->files[i].path);
+        char *slash = strrchr(dir, '/');
+        if (slash)
+            *slash = 0;
+        if (stat(cpath(dir, real_dir, sizeof(real_dir)), &other) == 0 && other.st_dev == st.st_dev &&
+            other.st_ino == st.st_ino)
+            return;
+    }
+    add_art(app, folder);
+}
+
 bool scan_apps(app_t **apps_out, int *count_out)
 {
     const uint64_t start = now_ms();
@@ -433,6 +459,8 @@ bool scan_apps(app_t **apps_out, int *count_out)
                        g_listing.data ? g_listing.data : (uint8_t *)"", g_listing.len, NULL);
     for (size_t i = 0; i < sizeof(kHomebrewRoots) / sizeof(kHomebrewRoots[0]); i++)
         scan_homebrew(&apps, &count, &cap, kHomebrewRoots[i]);
+    for (int i = 0; i < count; i++)
+        add_installed_copy(&apps[i]);
 
     /* only titles with art to change */
     int kept = 0;

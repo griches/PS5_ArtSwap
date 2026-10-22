@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
 
 namespace artswap
 {
@@ -207,6 +208,7 @@ struct App::Title
     std::string id, name, kind, icon_desc, pic_desc, sgdb_name;
     bool kept = false;      // an original of its art is kept
     bool name_kept = false; // its original name is kept (renamed)
+    bool refresh = true;    // ShadowMountPlus can install it again (R2); otherwise only a restart shows new art
     long sgdb_id = 0;
     std::uint32_t icon = 0;
     bool icon_asked = false, icon_failed = false;
@@ -346,6 +348,7 @@ void App::load_titles(bool rescan)
             title->pic_desc = row[5];
             title->kept = row[6] == "1";
             title->name_kept = row.size() > 9 && row[9] == "1";
+            title->refresh = row.size() <= 10 || row[10] == "1";
             title->sgdb_id = std::strtol(row[7].c_str(), nullptr, 10);
             title->sgdb_name = row[8];
             // keep the pictures already loaded, unless this is a fresh look
@@ -378,6 +381,7 @@ void App::load_titles(bool rescan)
             if (titles_[static_cast<std::size_t>(i)]->id == keep_focus)
                 focus_ = i;
         shown_ = -1;
+        load_pending();
         if (screen_ == Screen::starting)
         {
             screen_ = Screen::library;
@@ -1175,11 +1179,85 @@ void App::apply()
                             }
                         }
                     toast(std::string(slot == "icon" ? "New icon" : "New background") + " for " + name,
-                          "Your original is kept, so Restore can put it back. Refresh the game (R2) to show it "
-                          "on the home screen.");
+                          shows_after("Your original is kept, so Restore can put it back. ", "it"));
+                    note_pending(id);
                     close_picker();
                 },
                 true);
+}
+
+// The end of a notice: how the home screen comes to show what changed (what: "it" or "them")
+std::string App::shows_after(const std::string &before, const char *what) const
+{
+    return before + "Apply changes (R2) to show " + what + " on the home screen.";
+}
+
+// ---------------------------------------------------------------- Apply changes
+
+// The titles changed since the home screen last restarted, as the helper keeps them (pending.txt)
+void App::load_pending()
+{
+    helper_.ask({"PENDING"}, [this](Reply &reply) {
+        if (!reply.ok)
+            return;
+        pending_.clear();
+        for (const auto &row : reply.rows())
+            if (row.size() >= 2 && row[0] == "P")
+                pending_.push_back(row[1]);
+    }, true);
+}
+
+void App::note_pending(const std::string &id)
+{
+    if (!is_pending(id))
+        pending_.push_back(id);
+}
+
+bool App::is_pending(const std::string &id) const
+{
+    return std::find(pending_.begin(), pending_.end(), id) != pending_.end();
+}
+
+void App::open_apply()
+{
+    sheet_ = Sheet::apply;
+    applying_ = false;
+}
+
+// The helper restarts the home screen once Art Swap has closed, so the person sees it come back (home.c)
+void App::start_apply()
+{
+    applying_ = true;
+    helper_.ask({"HOME", std::to_string(static_cast<long>(getpid()))}, [this](Reply &reply) {
+        if (sheet_ != Sheet::apply || !applying_)
+            return;
+        if (!reply.ok)
+        {
+            applying_ = false;
+            sheet_ = Sheet::none;
+            toast("The home screen was not restarted", reply.error, true);
+            return;
+        }
+        close_ = true;
+    }, true);
+}
+
+// How the last restart ended: Art Swap had closed while it ran. Only a failure needs saying
+void App::check_last_home()
+{
+    if (home_checked_ || helper_.state() != Helper::State::ready)
+        return;
+    home_checked_ = true;
+    helper_.ask({"HOMESTATE"}, [this](Reply &reply) {
+        for (const auto &row : reply.rows())
+        {
+            if (row.size() < 5 || row[0] != "home" || row[2] != "1")
+                continue;
+            if (row[1] == "failed")
+                toast("The home screen did not restart", row[4], true);
+            helper_.ask({"HOMESTATE", "seen"}, nullptr, true);
+        }
+    }, true);
 }
 
 void App::restore()
@@ -1209,7 +1287,8 @@ void App::restore()
                 request_background(*t);
             }
         toast(named ? name + "'s originals are back" : "The original art of " + name + " is back",
-              "The home screen shows them once the game is refreshed (R2), or after a restart.");
+              shows_after("", "them"));
+        note_pending(id);
         if (named)
             load_titles(false); // its name, as the helper reads it again
     }, true);
@@ -1495,6 +1574,7 @@ void App::update(const hui::InputFrame &input, float dt, ui::Feedback &feedback)
         key_hint_ = helper_.key_hint();
     }
     check_last_refresh();
+    check_last_home();
     poll_refresh(dt);
 
     // OPTIONS: a short press is the settings; the program leaves on a hold
@@ -1650,6 +1730,11 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
     {
         if (input.is_pressed(Action::confirm) && !titles_loading_)
             load_titles(true);
+        else if (input.is_pressed(Action::jump_next))
+        {
+            feedback.play(Cue::modal_open);
+            open_apply();
+        }
         return;
     }
     if (input.is_pressed(Action::confirm))
@@ -1677,12 +1762,21 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
     else if (input.is_pressed(Action::jump_next))
     {
         feedback.play(Cue::modal_open);
-        open_refresh();
+        open_apply();
     }
     else if (input.is_pressed(Action::jump_prev))
     {
-        feedback.play(Cue::modal_open);
-        open_refresh(true);
+        if (title->refresh)
+        {
+            feedback.play(Cue::modal_open);
+            open_refresh(true);
+        }
+        else
+        {
+            feedback.play(Cue::error);
+            toast(title->name + " cannot be renamed",
+                  "Art Swap renames homebrew that ShadowMountPlus installed from a folder.", true);
+        }
     }
     (void)dt;
 }
@@ -1820,6 +1914,20 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
         if (input.is_pressed(Action::back) || input.is_pressed(Action::confirm))
         {
             feedback.play(Cue::back);
+            sheet_ = Sheet::none;
+        }
+        return;
+    case Sheet::apply:
+        if (applying_)
+            return;
+        if (input.is_pressed(Action::confirm))
+        {
+            feedback.play(Cue::launch);
+            start_apply();
+        }
+        else if (input.is_pressed(Action::back))
+        {
+            feedback.play(Cue::modal_close);
             sheet_ = Sheet::none;
         }
         return;
@@ -2031,6 +2139,17 @@ void App::draw_top_bar(gfx::DrawList &list) const
         right = std::string("SteamGridDB") + (key_state_ == "user" ? " \xC2\xB7 your key" : "");
     const float tw = ui::text(list, fonts_.regular, right, 1824, 92, 24, kWhite.with_alpha(0.75f), gfx::Align::right);
     list.circle(1824 - tw - 20, 84, 7, dot);
+    // changes the home screen does not show yet: R2 applies them
+    if (!pending_.empty() && screen_ == Screen::library)
+    {
+        const int n = static_cast<int>(pending_.size());
+        const std::string label = "Apply changes  \xC2\xB7  " + std::to_string(n) + (n == 1 ? " game" : " games");
+        const float cw = fonts_.semibold.measure(label, 22) + 96;
+        const Rect chip{1824 - tw - 60 - cw, 60, cw, 48};
+        list.bordered_rect(chip, 24, kAmber.with_alpha(0.14f), 1.5f, kAmber.with_alpha(0.75f));
+        ui::draw_button(list, fonts_, ui::GlyphStyle::dark(), ui::Button::r2, chip.x + 16, chip.cy(), 26);
+        ui::text(list, fonts_.semibold, label, chip.x + 76, chip.cy() + 8, 22, kWhite);
+    }
     list.pop_opacity();
 }
 
@@ -2126,8 +2245,8 @@ void App::draw_library(gfx::DrawList &list) const
     std::vector<Secondary> more;
     if (title->kept || title->name_kept)
         more.push_back({ui::Button::square, "Restore"});
-    more.push_back({ui::Button::r2, "Refresh game"});
-    more.push_back({ui::Button::l2, "Rename"});
+    if (title->refresh)
+        more.push_back({ui::Button::l2, "Rename"});
     bx = x;
     for (const Secondary &item : more)
     {
@@ -2139,6 +2258,16 @@ void App::draw_library(gfx::DrawList &list) const
         ui::text(list, fonts_.semibold, item.label, pill.x + (face ? 56 : 68), pill.cy() + 8, 22,
                  kWhite.with_alpha(0.9f));
         bx += w + 14;
+    }
+    // a change of this game the home screen does not show yet
+    if (is_pending(title->id))
+    {
+        const float left = more.empty() ? x : bx + 10;
+        const float ny = by + 82 + 26;
+        list.circle(left + 8, ny, 6, kAmber);
+        ui::text(list, fonts_.regular,
+                 fonts_.regular.font->fit("Not on the home screen yet: Apply changes (R2)", 22, 1340 - left - 26),
+                 left + 26, ny + 8, 22, kWhite.with_alpha(0.75f));
     }
 
     // the icon, large, floating
@@ -2371,7 +2500,7 @@ void App::draw_new_art(gfx::DrawList &list, const Rect &r, float radius) const
 void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
 {
     const float t = sheet_open_.value;
-    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::log ||
+    const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::log || sheet_ == Sheet::apply ||
                       (sheet_ == Sheet::refresh && (refresh_ == Refresh::ready || refresh_ == Refresh::starting));
     const float h = tall ? 760.0f : 470.0f;
     const Rect panel{360, (1080 - h) * 0.5f + 40.0f * (1.0f - t), 1200, h};
@@ -2438,6 +2567,47 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                                                 : "Art Swap puts back the icon and background this game came with.",
                       x, y, 26, panel.w - 128, 40, kWhite.with_alpha(0.85f), 4);
         break;
+    case Sheet::apply:
+    {
+        const int changed = static_cast<int>(pending_.size());
+        heading("APPLY CHANGES", changed == 0   ? std::string("Show your changes")
+                                 : changed == 1 ? std::string("1 game changed")
+                                                : std::to_string(changed) + " games changed");
+        const float width = panel.w - 128;
+        const Color tint = Color::rgb(0x9fd8ff);
+        y = ui::paragraph(list, fonts_.regular,
+                          "The home screen keeps its own copy of each game's art, so it restarts to show new art: "
+                          "every change shows at once, whatever installed the game.",
+                          x, y, 25, width, 38, kWhite.with_alpha(0.85f), 3) +
+            16;
+        const std::string steps[] = {"Art Swap closes.", "The home screen goes dark for a few seconds.",
+                                     "It comes back with your new art."};
+        for (int i = 0; i < 3; ++i)
+        {
+            list.bordered_rect({x, y - 27, 36, 36}, 18, tint.with_alpha(0.16f), 1.5f, tint.with_alpha(0.8f));
+            ui::text(list, fonts_.semibold, std::to_string(i + 1), x + 18, y - 2, 20, kWhite, gfx::Align::center);
+            ui::text(list, fonts_.regular, fonts_.regular.font->fit(steps[i], 25, width - 56), x + 56, y, 25, kWhite);
+            y += 52;
+        }
+        y += 14;
+        const std::string kept = "Nothing else restarts: a game open in the background, your saved data and tools "
+                                 "such as ShadowMountPlus carry on. Names change only with Rename (L2).";
+        const float kept_lines =
+            static_cast<float>(std::min<std::size_t>(fonts_.regular.font->wrap(kept, 22, width - 40).size(), 3));
+        const Rect safe{x - 4, y - 8, width + 8, 78 + 32 * (kept_lines - 1) + 38};
+        list.bordered_rect(safe, 18, Color::rgb(0x3ddc84, 0.08f), 1.5f, Color::rgb(0x3ddc84, 0.45f));
+        ui::text(list, fonts_.semibold, "ONLY THE HOME SCREEN RESTARTS", safe.x + 24, safe.y + 40, 17,
+                 Color::rgb(0x3ddc84), gfx::Align::left, 3.0f);
+        ui::paragraph(list, fonts_.regular, kept, safe.x + 24, safe.y + 78, 22, safe.w - 48, 32,
+                      kWhite.with_alpha(0.85f), 3);
+        y = safe.y + safe.h + 48;
+        if (applying_)
+        {
+            draw_spinner(list, x + 18, y - 9, 16);
+            ui::text(list, fonts_.semibold, "Closing Art Swap\xE2\x80\xA6", x + 50, y, 25, kWhite);
+        }
+        break;
+    }
     case Sheet::refresh:
     {
         heading(renaming_ ? "RENAME" : "REFRESH GAME", name);
@@ -2603,6 +2773,11 @@ void App::draw_hints(gfx::DrawList &list) const
         hints = {{ui::Button::cross, "Choose"}, {ui::Button::circle, "Back"}};
     else if (sheet_ == Sheet::log)
         hints = {{ui::Button::circle, "Back"}};
+    else if (sheet_ == Sheet::apply)
+    {
+        if (!applying_)
+            hints = {{ui::Button::cross, "Apply changes"}, {ui::Button::circle, "Cancel"}};
+    }
     else if (sheet_ == Sheet::refresh)
     {
         if (refresh_ == Refresh::ready)
@@ -2637,9 +2812,10 @@ void App::draw_hints(gfx::DrawList &list) const
                 hints.push_back({ui::Button::triangle, "Background"});
             if (title->kept || title->name_kept)
                 hints.push_back({ui::Button::square, "Restore"});
-            hints.push_back({ui::Button::r2, "Refresh"});
-            hints.push_back({ui::Button::l2, "Rename"});
+            if (title->refresh)
+                hints.push_back({ui::Button::l2, "Rename"});
         }
+        hints.push_back({ui::Button::r2, "Apply changes"});
         hints.push_back({ui::Button::options, "Settings"});
     }
     else if (screen_ == Screen::frame)

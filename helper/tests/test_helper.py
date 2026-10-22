@@ -114,6 +114,11 @@ def make_console(base: Path):
     hb.mkdir(parents=True)
     Image.new("RGB", (512, 512), (250, 120, 0)).save(hb / "icon0.png")
     (hb / "param.json").write_text(param_json("PPSA99316", "Burnout 3"))
+    # a game ShadowMountPlus installed from a disk image: the home screen's copy in /user/app/<id>/sce_sys
+    for folder in (meta / "PPSA26525", base / "user/app/PPSA26525/sce_sys"):
+        folder.mkdir(parents=True)
+        Image.new("RGB", (512, 512), (90, 40, 20)).save(folder / "icon0.png")
+        (folder / "param.json").write_text(param_json("PPSA26525", "Heretic + Hexen"))
     (base / "data/artswap").mkdir(parents=True)
 
 
@@ -163,13 +168,14 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.2.1", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.3.1", f"HELLO names the version ({hello})")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
 
         apps = {r[1]: r for r in h.rows("APPS")}
         print("     " + "\n     ".join("\t".join(r) for r in apps.values()))
-        check(set(apps) == {"PPSA99314", "CUSA00001", "PPSA05678", "PPSA99316"}, "APPS lists the four titles, not the system app")
+        check(set(apps) == {"PPSA99314", "CUSA00001", "PPSA05678", "PPSA99316", "PPSA26525"},
+              "APPS lists the five titles, not the system app")
         ed = apps["PPSA99314"]
         check(ed[2] == "Eternal Darkness", "the name from param.json, trademark sign dropped")
         check(ed[3] == "homebrew", "a title with a homebrew folder is homebrew")
@@ -178,6 +184,12 @@ def main() -> int:
         check(apps["CUSA00001"][2] == "Bloodborne" and apps["CUSA00001"][3] == "ps4", "a PS4 title named from param.sfo")
         check(apps["PPSA05678"][2] == "Astro Bot", "a name from app.db")
         check(apps["PPSA99316"][2] == "Burnout 3", "an unregistered homebrew title by its param.json")
+        check(ed[10] == "1", "APPS: a folder ShadowMountPlus installed can be refreshed")
+        check(apps["CUSA00001"][10] == "0" and apps["PPSA26525"][10] == "0",
+              "APPS: a package and an image cannot be installed again (no rename)")
+        check(apps["PPSA26525"][4] == "png 512x512 x2", f"an image's icon: appmeta and /user/app/<id>/sce_sys ({apps['PPSA26525'][4]})")
+        info = {r[0]: r for r in h.rows("SMP", "PPSA26525")}
+        check(info["can"][1] == "0" and "disk image" in info["can"][2], f"SMP: an image cannot be renamed ({info['can']})")
 
         w, hh, rgba = h.ask("ART", "PPSA99314", "icon", 256, 256)
         check((w, hh) == (256, 256), "ART icon at 256")
@@ -273,6 +285,26 @@ def main() -> int:
 
         apps = {r[1]: r for r in h.rows("APPS")}
         check(apps["PPSA99314"][6] == "1", "APPS says the originals are kept")
+
+        # Apply changes: the titles changed are waiting; HOME restarts the home screen once Art Swap has closed
+        pending = {r[1] for r in h.rows("PENDING") if r[0] == "P"}
+        check({"PPSA99314", "CUSA00001"} <= pending, f"PENDING lists the titles changed ({pending})")
+        marker = base / "data/artswap/home-restarted"
+        title = subprocess.Popen(["sleep", "2"])  # Art Swap, closing
+        home = next(r for r in h.rows("HOME", str(title.pid)) if r[0] == "home")
+        check(home[1] == "waiting", f"HOME waits for Art Swap to close ({home})")
+        time.sleep(1.0)
+        check(not marker.exists(), "nothing restarts while Art Swap is open")
+        title.wait()
+        end = time.time() + 10
+        while time.time() < end and next(r for r in h.rows("HOMESTATE") if r[0] == "home")[1] != "done":
+            time.sleep(0.2)
+        home = next(r for r in h.rows("HOMESTATE") if r[0] == "home")
+        check(home[1] == "done" and home[2] == "1" and marker.exists(), f"the home screen restarts once it has closed ({home})")
+        check(not [r for r in h.rows("PENDING") if r[0] == "P"], "nothing is waiting after the restart")
+        h.rows("HOMESTATE", "seen")
+        check(next(r for r in h.rows("HOMESTATE") if r[0] == "home")[2] == "0", "HOMESTATE seen: shown")
+        check("done\t0\t" in (base / "data/artswap/home.txt").read_text(), "home.txt keeps it as seen")
 
         # the home-screen refresh, through ShadowMountPlus (fake_smp.py)
         def refresh_state():
@@ -382,8 +414,14 @@ def main() -> int:
 
         # restore; a copy without its .old takes the folder's original
         Path(str(base / "user/appmeta/PPSA99314/pic0.dds") + ".old").unlink()
+        # the install copied the folder's sce_sys, its .old files too, into the home screen's copy; a scan
+        # finds that copy, and Restore puts its originals back as well, for a restart to show them
+        h.rows("APPS", "rescan")
+        installed_olds = len(list((base / "user/app/PPSA99314/sce_sys").glob("*.old")))
+        check(installed_olds == 4, f"the installed copy has the folder's originals ({installed_olds})")
         report = h.rows("RESTORE", "PPSA99314", "all")
-        check(sum(r[0] == "R" for r in report) == 8, f"RESTORE puts six art files and two names back ({len(report)})")
+        check(sum(r[0] == "R" for r in report) == 8 + installed_olds,
+              f"RESTORE puts six art files, two names and the installed copy back ({len(report)})")
         check(folder_param.read_text() == original_param and names(meta_param) == {"Eternal Darkness™"},
               "the original name is back")
         check({r[1]: r for r in h.rows("APPS")}["PPSA99314"][2] == "Eternal Darkness",
@@ -391,8 +429,7 @@ def main() -> int:
         for p in list(base.rglob("PPSA99314/**/*.png")) + list(base.rglob("PPSA99314/**/*.dds")):
             if p in originals:
                 check(sha(p) == originals[p], f"{p.relative_to(base)} is the original again")
-        # (/user/app/<id>/sce_sys is the install's copy of the folder's sce_sys: not Art Swap's)
-        check(not [p for p in base.rglob("PPSA99314/**/*.old") if "user/app/" not in str(p)], "no .old files left")
+        check(not list(base.rglob("PPSA99314/**/*.old")), "no .old files left")
         try:
             h.rows("RESTORE", "PPSA99314", "all")
             check(False, "a second restore says there is nothing")
@@ -464,7 +501,8 @@ def main() -> int:
         except (urllib.error.URLError, ConnectionError, OSError):
             check(True, "PHONE alone closes the page")
 
-        check("apply" in h.ask("LOG"), "LOG gives the helper's log")
+        log_tail = (base / "data/artswap/helper.log").read_bytes()[-8192:].decode(errors="replace")
+        check(log_tail and h.ask("LOG").strip() == log_tail.strip(), "LOG gives the last 8 KiB of the helper's log")
         h.ask("BYE")
         proc.wait(timeout=10)
         check(proc.returncode == 0, "BYE ends the helper")

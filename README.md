@@ -10,9 +10,9 @@ from [SteamGridDB](https://www.steamgriddb.com).**
 Art Swap lists every title on the console that has home-screen art, finds each
 one on SteamGridDB, shows you that game's art, and writes the one you pick over
 the title's own `icon0` or `pic0`/`pic1`. The original is kept beside it as an
-`.old` file, so Restore can put it back. For homebrew that ShadowMountPlus
-installed from a folder, Art Swap can also refresh the game so the new art
-shows on the home screen straight away.
+`.old` file, so Restore can put it back. **Apply changes** (R2) then restarts
+the home screen, and every change shows at once, whatever installed the game:
+a folder, a disk image or a package.
 
 Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
 
@@ -45,16 +45,16 @@ Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
   copies it beside itself as `<name>.old` (`icon0.png.old`, `pic0.dds.old`). Later
   changes never touch an `.old` file, so it is always the art the title came
   with. Restore moves every `.old` file back over its original.
+- **Applies changes** (R2): the home screen keeps its own copy of each game's
+  art, so it restarts to show new art, every game's at once. Only the home
+  screen restarts: see [Apply changes](#apply-changes). The top of the screen
+  says how many games are waiting, and a changed game's page says it is not
+  on the home screen yet.
 - **Renames homebrew** (L2) that ShadowMountPlus installed from a folder: the
-  new name goes into the title's `param.json` (every language), and the
-  refresh shows it on the home screen. The original is kept as
-  `param.json.old`, and Restore puts it back too.
-- **Refreshes a game** (R2) for homebrew that ShadowMountPlus installed from a
-  folder, so its new art and name show on the home screen: see
-  [Refreshing a game](#refreshing-a-game). Each game is refreshed on its own,
-  once its changes are done.
-  For other titles the new art is written, but the home screen keeps its own
-  cached copy and may show the old art until it reloads it (a console restart).
+  new name goes into the title's `param.json` (every language), and Art Swap
+  has ShadowMountPlus install the game again, since the home screen takes a
+  name only from an install: see [Renaming](#renaming). The original is kept
+  as `param.json.old`, and Restore puts it back too.
 
 ## Installing
 
@@ -76,8 +76,8 @@ through that loader.
 | | ✕ | change its icon |
 | | △ | change its background |
 | | □ | restore its original art and name (when Art Swap changed them) |
-| | R2 | refresh the game, so the home screen shows its changes (asks first) |
-| | L2 | rename it, then refresh (homebrew from a folder) |
+| | L2 | rename it (homebrew ShadowMountPlus installed from a folder; asks first) |
+| | R2 | apply changes: restart the home screen so it shows them all (asks first) |
 | | OPTIONS | settings: API key, look at the console again, helper log |
 | | hold OPTIONS | close Art Swap |
 | Art | L1 R1 | the Icons and Backgrounds tabs |
@@ -93,13 +93,34 @@ through that loader.
 | | ✕ | use it (asks first) |
 | | ○ | back to the pictures |
 
-## Refreshing a game
+## Apply changes
 
-The home screen keeps its own copy of each title's art, so new art shows only
-once the title is installed again. For homebrew, that is what deleting the
-title and letting ShadowMountPlus add it back does, and Art Swap does it for
-you: R2 on a title opens a pop-up that says what will happen, and ✕ starts it.
-After a rename (L2) the same pop-up follows, since a name shows the same way.
+The home screen draws each game's tile and background from its own copies of
+the art (`/user/appmeta/<id>`, and `/user/app/<id>/sce_sys` for a game
+ShadowMountPlus installed), and it keeps what it has drawn. Art Swap writes all
+of those copies, as well as a homebrew folder's own `sce_sys`. To show them,
+the home screen restarts: R2 opens a pop-up that says what will happen, and ✕
+starts it.
+
+1. Art Swap tells the helper, then closes.
+2. Once Art Swap's process has ended, the helper ends the home screen's
+   process (`SceShellUI`). The system starts it again within a few seconds.
+3. The new home screen reads every game's art again, so every change shows,
+   whatever installed the game.
+
+Nothing else restarts: a game open in the background carries on, saved data is
+not touched, and payloads such as ShadowMountPlus keep running (there is no
+loader to run again). The helper keeps the titles changed since the last
+restart in `/data/artswap/pending.txt`. A console restart is not needed.
+
+A name is different: the home screen takes it only from an install, so a
+restart of either kind does not show it. That is what Rename does.
+
+## Renaming
+
+L2 on homebrew that ShadowMountPlus installed from a folder asks for the new
+name, writes it, and has ShadowMountPlus install the game again, which deleting
+the title and letting ShadowMountPlus add it back would also do:
 
 1. Art Swap notes every file in the game's folder (each one's path and size)
    and copies aside the console's saved data of the title (every user's
@@ -114,17 +135,17 @@ After a rename (L2) the same pop-up follows, since a name shows the same way.
    back with its new art, and the helper waits until the install has finished.
 4. The helper checks every file of the folder against its notes, and puts back
    any saved data or original that went missing. The next time Art Swap starts
-   it says how the refresh went.
+   it says how the rename's install went.
 
-Nothing is deleted. If the game's folder had changed, the refresh says so
+Nothing is deleted. If the game's folder had changed, the rename says so
 rather than calling itself done (the folder itself is not copied: the
-uninstall never touches it). The copy from the last refresh that went well is
+uninstall never touches it). The copy from the last install that went well is
 kept for each title, and the copy from any that did not.
 
-A refresh needs **ShadowMountPlus 1.7 or later**, running, and a title it
-installed **from a folder**. Art Swap never refreshes a title installed from a
-package (taking its tile away would delete the game) or from an image (its art
-is inside the image, which Art Swap does not change); the pop-up says why.
+A rename needs **ShadowMountPlus 1.7 or later**, running, and a title it
+installed **from a folder**. Art Swap never installs again a title installed
+from a package (taking its tile away would delete the game) or from an image
+(that would copy the image's own name and art back); the pop-up says why.
 
 ## The SteamGridDB API key
 
@@ -178,8 +199,10 @@ On the console the helper keeps its files in `/data/artswap/`:
 | `scan.txt` | every title found, and each art file with its format and size |
 | `appmeta-files.txt` | every file in each title's `/user/appmeta` folder |
 | `matches.tsv` | the SteamGridDB game chosen for each title |
-| `refresh.txt` | how the last home-screen refresh ended |
-| `saves/` | what each refresh copied aside (see above) |
+| `pending.txt` | the titles changed since the home screen last restarted |
+| `home.txt` | how the last Apply changes ended |
+| `refresh.txt` | how the last rename's install ended |
+| `saves/` | what each rename's install copied aside (see above) |
 | `apikey.txt` | your SteamGridDB API key |
 | `cache/` | downloaded pictures (trimmed to 192 MB when over 256 MB) |
 | `no-appdb` | if present, names are never read from the system's `app.db` |
@@ -194,9 +217,12 @@ helper on 127.0.0.1 and starts it through the ELF loader; the scan (20 titles
 in 40-240 ms; `/user/appmeta/<id>/` holds `icon0.png`, `pic0.dds`, `pic1.dds`,
 `param.json` for a homebrew title); HTTPS to SteamGridDB's API and CDN
 (helper/tests/nettest.c); the key page from another machine on the network;
-changing and restoring icons and backgrounds; and the home-screen refresh (new
-art on the tile within seconds, the game's saves identical afterwards, file
-for file).
+changing and restoring icons and backgrounds; the install again that a rename
+uses (new art on the tile within seconds, the game's saves identical
+afterwards, file for file); and, with ShadowMountPlus 1.7beta7, Apply changes:
+new and restored art shown for a folder game, a disk image game (`.ffpfsc`)
+and a package game, the home screen back within about three seconds of Art
+Swap closing, and a game open in the background carrying on.
 
 What the console taught (helper/tests/tlstest.c, procs.c):
 
@@ -212,7 +238,8 @@ What the console taught (helper/tests/tlstest.c, procs.c):
   for HELLO with a three-second limit, and starts the helper again when it has
   gone.
 - ShadowMountPlus refuses to uninstall (`EBUSY`) while any game is in the
-  foreground, Art Swap included, so the refresh finishes from the home screen.
+  foreground, Art Swap included, so a rename's install finishes from the home
+  screen.
   Its game list says `installed` before the install has copied anything; the
   helper waits for the copies' change times instead.
 - Folders a game writes (its saves, mode 0700) can be read only as the game's

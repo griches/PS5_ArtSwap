@@ -20,7 +20,7 @@ connection carries any number of requests, one at a time.
 | Request | Answer |
 | --- | --- |
 | `HELLO` | text: `lan <address>` (when the console has one), `artswapd <version>`, `key user <last four characters>` or `key none`, `http <http2\|http1\|curl\|unavailable> <why>` |
-| `APPS [rescan]` | text, one line a title: `A id name kind icon pic kept sgdb_id sgdb_name name_kept`. kind is `ps5`, `ps4` or `homebrew`; icon and pic describe the slot (`png 512x512 x2`: format, size, number of files) or are `-`; kept is 1 when an `.old` original of its art exists, name_kept when a `param.json.old` does. The first APPS scans; `rescan` scans again. |
+| `APPS [rescan]` | text, one line a title: `A id name kind icon pic kept sgdb_id sgdb_name name_kept refresh`. kind is `ps5`, `ps4` or `homebrew`; icon and pic describe the slot (`png 512x512 x2`: format, size, number of files) or are `-`; kept is 1 when an `.old` original of its art exists, name_kept when a `param.json.old` does; refresh is 1 when ShadowMountPlus lists the title as installed from a folder it can reach (REFRESH and RENAME), 0 when only a restart shows new art. The first APPS scans; `rescan` scans again. |
 | `ART id slot [w h]` | the slot's art now (`icon`, or `pic`: pic0 before pic1, the `/user/appmeta` copy first), scaled down to fit w × h |
 | `KEY [key]` | checks the key with SteamGridDB, then keeps it in `/data/artswap/apikey.txt`; no key removes it. Text: the `key` line, as HELLO's |
 | `KEYSTATE` | text: the `key` line, as HELLO's |
@@ -36,13 +36,17 @@ connection carries any number of requests, one at a time.
 | `SMP id` | text: `smp <version>` (`-` when ShadowMountPlus's API does not answer), `game <source_type> <installed> <path>` when it lists the title, `can <1\|0> <why not>`, and the `refresh` line, as REFRESHSTATE's |
 | `REFRESH id [wait]` | starts the home-screen refresh of a title ShadowMountPlus installed from a folder (smp.c), asking for up to wait seconds while a game keeps the console busy. Text: the `refresh` line |
 | `REFRESHSTATE [seen]` | text: `refresh phase id unseen message`; phase `none`, `copying`, `waiting`, `removing`, `adding`, `checking`, `done` or `failed`. A finished refresh is unseen (1) until `REFRESHSTATE seen` |
+| `PENDING` | text: `P id`, each title whose art or name changed since the home screen last restarted (`/data/artswap/pending.txt`; APPLY and RESTORE add to it) |
+| `HOME pid` | Apply changes: once the process pid (Art Swap, closing) has ended, the helper ends `SceShellUI` and the system starts the home screen again, which reads every game's art afresh (home.c). Clears PENDING when it is back. Text: the `home` line, as HOMESTATE's |
+| `HOMESTATE [seen]` | text: `home phase unseen message`; phase `none`, `waiting`, `restarting`, `done` or `failed`. A finished restart is unseen (1) until `HOMESTATE seen` (`/data/artswap/home.txt`) |
 | `LOG` | the last 8 KiB of `/data/artswap/helper.log` |
-| `BYE` | the helper leaves (after a refresh that is running) |
+| `BYE` | the helper leaves (after a refresh or a home-screen restart that is running) |
 
 ## Rules the helper keeps
 
 - It changes only the art files the scan found (`icon0`, `pic0`, `pic1`, as PNG,
-  JPEG or DDS) of the title named, and the `param.json` beside them for a name,
+  JPEG or DDS, in `/user/appmeta/<id>`, `/user/app/<id>/sce_sys` and the
+  homebrew folder's `sce_sys`) of the title named, and the `param.json` beside them for a name,
   never a path from a request.
 - It keeps each original once, as `<file>.old`, before the first change, and
   never writes an `.old` that exists. Files are written whole beside the target
@@ -56,4 +60,4 @@ connection carries any number of requests, one at a time.
   or an image, and removes nothing until the game's folder has been read whole
   and the title's saved data copied aside.
 - It leaves 90 seconds after its last connection closes, or 10 minutes after
-  starting if nobody connects, but never during a refresh.
+  starting if nobody connects, but never during a refresh or a home-screen restart.

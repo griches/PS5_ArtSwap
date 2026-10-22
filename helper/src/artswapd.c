@@ -10,6 +10,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "art.h"
+#include "home.h"
 #include "name.h"
 #include "phone.h"
 #include "smp.h"
@@ -165,6 +166,8 @@ static void describe_slot(buf_t *out, const app_t *app, const char *slot)
 
 static void list_apps(buf_t *out)
 {
+    char folders[256][16];
+    const int nfolders = smp_folder_titles(folders, 256);
     pthread_mutex_lock(&g_apps_lock);
     for (int i = 0; i < g_count; i++) {
         const app_t *app = &g_apps[i];
@@ -179,7 +182,10 @@ static void list_apps(buf_t *out)
         describe_slot(out, app, "pic");
         buf_printf(out, "\t%d\t%ld\t", kept, app->sgdb_id);
         buf_field(out, app->sgdb_name);
-        buf_printf(out, "\t%d\n", name_kept(app));
+        bool refresh = false;
+        for (int j = 0; j < nfolders && !refresh; j++)
+            refresh = strcmp(folders[j], app->id) == 0;
+        buf_printf(out, "\t%d\t%d\n", name_kept(app), refresh);
     }
     pthread_mutex_unlock(&g_apps_lock);
 }
@@ -319,6 +325,8 @@ static bool handle(int fd, char **field, int n)
                                         n > 7 ? (float)atof(field[7]) : 1.0f, &text, err, sizeof(err));
             pthread_mutex_unlock(&g_apply_lock);
             refresh_app(app.id, -1, "", NULL);
+            if (done)
+                home_note(app.id);
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
     } else if (strcmp(cmd, "RESTORE") == 0) {
@@ -345,6 +353,8 @@ static bool handle(int fd, char **field, int n)
             refresh_app(app.id, -1, "", NULL);
             if (name)
                 rescan(); /* the name, read again */
+            if (done)
+                home_note(app.id);
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
     } else if (strcmp(cmd, "RENAME") == 0) {
@@ -404,6 +414,26 @@ static bool handle(int fd, char **field, int n)
             smp_refresh_seen();
         smp_refresh_line(&text);
         ok = reply_text(fd, &text);
+    } else if (strcmp(cmd, "HOME") == 0) {
+        /* HOME pid: Apply changes. Once the process pid (Art Swap, closing) has ended, the home screen
+         * restarts and shows every change (home.c) */
+        if (!want(fd, n, 2))
+            return true;
+        if (!home_restart_start((pid_t)atoi(field[1]), err, sizeof(err)))
+            ok = reply_error(fd, err);
+        else {
+            home_line(&text);
+            ok = reply_text(fd, &text);
+        }
+    } else if (strcmp(cmd, "HOMESTATE") == 0) {
+        /* HOMESTATE [seen]: how the last restart went; seen: the title has shown its end */
+        if (n > 1 && strcmp(field[1], "seen") == 0)
+            home_seen();
+        home_line(&text);
+        ok = reply_text(fd, &text);
+    } else if (strcmp(cmd, "PENDING") == 0) {
+        home_pending(&text);
+        ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "LOG") == 0) {
         char path[512];
         buf_t log = {0};
@@ -414,8 +444,8 @@ static bool handle(int fd, char **field, int n)
         buf_free(&log);
         ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "BYE") == 0) {
-        /* not in the middle of a refresh: it leaves when that has finished and nobody is connected */
-        if (!smp_refresh_running())
+        /* not in the middle of a refresh or a restart: it leaves when that has finished and nobody is connected */
+        if (!smp_refresh_running() && !home_running())
             g_leaving = true;
         reply_text(fd, &text);
         ok = false;
@@ -485,7 +515,7 @@ static bool idle(uint64_t started)
 {
     pthread_mutex_lock(&g_clients_lock);
     /* a refresh carries on after the title has closed */
-    const bool quiet = g_clients == 0 && !smp_refresh_running() &&
+    const bool quiet = g_clients == 0 && !smp_refresh_running() && !home_running() &&
                        ((g_ever_connected && now_ms() - g_last_client_ms > 90000) ||
                         (!g_ever_connected && now_ms() - started > 600000));
     pthread_mutex_unlock(&g_clients_lock);

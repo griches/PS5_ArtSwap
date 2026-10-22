@@ -8,7 +8,7 @@
 
 #include "image.h"
 
-#define APP_MAX_FILES 16
+#define APP_MAX_FILES 24 /* /user/appmeta, the installed copy and the homebrew folder: up to 6 each */
 
 typedef struct {
     char path[400]; /* as the console names it (cpath() before opening) */

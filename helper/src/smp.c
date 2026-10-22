@@ -11,7 +11,9 @@
  * install, so it stays, as when a game is deleted from the home screen.
  *
  * Only such titles are refreshed: uninstalling a package deletes the game, and
- * an image's art is inside the image, which Art Swap does not change.
+ * installing an image again copies the image's own art back. For those a
+ * restart shows the new art: the home screen reads its copies again, and
+ * ShadowMountPlus only mounts the game, copying nothing.
  *
  * Saved data must survive, so the refresh does not take that on trust: before
  * anything is removed it copies the system's saved data of the title (every
@@ -24,6 +26,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "smp.h"
+#include "home.h"
 
 #include "../third_party/cJSON.h"
 
@@ -187,6 +190,26 @@ static const cJSON *game_in(const cJSON *games, const char *id)
     return NULL;
 }
 
+int smp_folder_titles(char (*ids)[16], int max)
+{
+    char err[200];
+    cJSON *games = smp_post("/api/v1/games", "{\"include_size\":false}", 3, err, sizeof(err));
+    int n = 0;
+    if (status_of(games) != 0) {
+        log_line("ShadowMountPlus games: %s", err[0] ? err : "no answer");
+    } else {
+        const cJSON *game;
+        cJSON_ArrayForEach(game, cJSON_GetObjectItem(games, "games"))
+        {
+            if (n < max && strcmp(text_of(game, "source_type"), "folder") == 0 && !flag_of(game, "installed_pkg") &&
+                flag_of(game, "managed") && flag_of(game, "source_available"))
+                copy_str(ids[n++], sizeof(ids[0]), text_of(game, "title_id"));
+        }
+    }
+    cJSON_Delete(games);
+    return n;
+}
+
 /* 1 installed, 0 not, -1 unknown (ShadowMountPlus did not answer) */
 static int installed_now(const char *id)
 {
@@ -270,7 +293,8 @@ void smp_info(const app_t *app, smp_info_t *out)
         snprintf(out->why, sizeof(out->why), "ShadowMountPlus did not list its games. Try again in a moment.");
     } else if (game == NULL) {
         snprintf(out->why, sizeof(out->why),
-                 "ShadowMountPlus did not install %s, so it cannot put it back on the home screen.", app->name);
+                 "ShadowMountPlus did not install %s, so it cannot install it again under a new name.",
+                 app->name);
     } else {
         out->found = true;
         out->installed = flag_of(game, "installed");
@@ -284,13 +308,13 @@ void smp_info(const app_t *app, smp_info_t *out)
                 art_inside = true;
         if (flag_of(game, "installed_pkg") || strcmp(out->source_type, "pkg") == 0)
             snprintf(out->why, sizeof(out->why),
-                     "%s is installed from a package. Taking its tile away would delete the game, so Art Swap does "
-                     "not refresh it.",
+                     "%s is installed from a package. Taking its tile away would delete the game, so Art Swap "
+                     "cannot install it again under a new name.",
                      app->name);
         else if (strcmp(out->source_type, "folder") != 0)
             snprintf(out->why, sizeof(out->why),
-                     "%s runs from a disk image. Its art is inside the image, which Art Swap does not change, so a "
-                     "refresh would bring the old art back.",
+                     "%s runs from a disk image. Installing it again would bring the image's own name and art back, "
+                     "so Art Swap does not rename it.",
                      app->name);
         else if (!flag_of(game, "managed") || !flag_of(game, "source_available") ||
                  !dir_exists(cpath(out->path, folder, sizeof(folder))))
@@ -843,7 +867,8 @@ static void *refresh_job(void *argument)
         else if (!removed)
             remove_tree(backup, 0); /* nothing was touched */
         else if (ok) {
-            set_phase("done", "%s is back on the home screen with its new art", job->name);
+            set_phase("done", "%s is back on the home screen with its new name and art", job->name);
+            home_forget(job->id); /* installed again: its changes show already */
             /* all well: this copy is the one kept, older ones of the title go */
             DIR *d = opendir(saves);
             struct dirent *entry;

@@ -98,7 +98,8 @@ class App
         search,
         log,
         restore,
-        refresh, // the home-screen refresh: what happens, then handing it to the helper
+        refresh, // Rename: the new name, then installing the game again so the home screen shows it
+        apply,   // Apply changes: the home screen restarts to show every change
     };
     enum class Refresh
     {
@@ -160,6 +161,14 @@ class App
     // ---- actions ----
     void apply();
     void restore();
+    std::string shows_after(const std::string &before, const char *what) const;
+    // Apply changes: the titles changed since the home screen last restarted, and the restart itself
+    void load_pending();
+    void note_pending(const std::string &id);
+    bool is_pending(const std::string &id) const;
+    void open_apply();
+    void start_apply();
+    void check_last_home();
     void open_search(const std::string &term);
     void choose_game(int row);
     void open_refresh(bool rename = false);
@@ -327,6 +336,9 @@ class App
     bool refresh_polling_ = false;
     bool refresh_checked_ = false; // the last refresh's end, asked for once at the start
     bool close_ = false;
+    std::vector<std::string> pending_; // ids changed since the home screen last restarted (the helper's PENDING)
+    bool applying_ = false;            // Apply changes asked the helper; Art Swap closes on its answer
+    bool home_checked_ = false;        // the last restart's end, asked for once at the start
     bool renaming_ = false;     // the sheet was opened by Rename: whether the title can be renamed
     std::string renamed_to_;    // the refresh follows a rename to this name
 };

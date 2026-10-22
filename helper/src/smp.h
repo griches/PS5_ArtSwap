@@ -22,6 +22,10 @@ typedef struct {
 
 void smp_info(const app_t *app, smp_info_t *out);
 
+/* The titles ShadowMountPlus installed from a folder it can reach, the ones a refresh can show: up to
+ * max ids, how many. None when its API does not answer within a few seconds. */
+int smp_folder_titles(char (*ids)[16], int max);
+
 /* Starts the refresh of one title in the background: ShadowMountPlus uninstalls
  * the title (its folder and saved data stay) and a scan installs it again, with
  * the art now in its folder. While the console is busy with a game (Art Swap
