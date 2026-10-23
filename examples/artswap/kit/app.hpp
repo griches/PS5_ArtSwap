@@ -434,7 +434,8 @@ class App
     double clip_lufs_ = 0.0;
     bool music_applying_ = false;
     float songs_poll_ = 0.0f;        // the phone sheet: the list asked for again
-    std::vector<std::string> songs_seen_; // names before the phone sheet opened
+    std::vector<std::string> songs_seen_;    // names before the phone sheet opened
+    std::vector<std::string> songs_arrived_; // what the phone has sent since
 
     bool renaming_ = false;     // the sheet was opened by Rename: whether the title can be renamed
     std::string renamed_to_;    // the refresh follows a rename to this name

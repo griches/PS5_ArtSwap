@@ -150,8 +150,8 @@ void App::load_songs()
                 if (std::find(songs_seen_.begin(), songs_seen_.end(), song.name) == songs_seen_.end())
                 {
                     songs_seen_.push_back(song.name);
+                    songs_arrived_.push_back(song.name);
                     arrived = song.name;
-                    toast("Your phone sent " + song.name, "It is in your music: choose the clip to keep.");
                 }
         songs_ = std::move(list);
         const std::string want = arrived.empty() ? focus : arrived;
@@ -294,6 +294,7 @@ void App::open_music_phone()
     phone_address_.clear();
     phone_error_.clear();
     songs_seen_.clear();
+    songs_arrived_.clear();
     for (const Song &song : songs_)
         songs_seen_.push_back(song.name);
     songs_poll_ = 1.5f;
@@ -631,7 +632,25 @@ void App::draw_music_sheet(gfx::DrawList &list, const Rect &panel, float x, floa
     ui::text(list, fonts_.semibold, "AND ENTER THE CODE", info_x, ty + 96, 15, kWhite.with_alpha(0.5f),
              gfx::Align::left, 3.0f);
     ui::text(list, fonts_.mono, pairing_code_, info_x, ty + 150, 46, kWhite, gfx::Align::left, 12.0f);
-    if (phone_error_.empty())
+    // what has come: each song ticked off, the newest chosen behind this sheet
+    if (!songs_arrived_.empty())
+    {
+        const Color good = Color::rgb(0x3ddc84);
+        float ay = plate.y + plate.h + 58;
+        const int shown = std::min<int>(3, static_cast<int>(songs_arrived_.size()));
+        for (int i = static_cast<int>(songs_arrived_.size()) - shown; i < static_cast<int>(songs_arrived_.size()); ++i)
+        {
+            list.circle(x + 12, ay - 8, 11, good.with_alpha(0.2f));
+            list.line(x + 6, ay - 8, x + 10, ay - 4, 2.5f, good);
+            list.line(x + 10, ay - 4, x + 18, ay - 13, 2.5f, good);
+            ui::text(list, fonts_.regular,
+                     fonts_.regular.font->fit(songs_arrived_[static_cast<std::size_t>(i)] + " is here", 23,
+                                              panel.x + panel.w - 64 - (x + 40)),
+                     x + 40, ay, 23, kWhite);
+            ay += 36;
+        }
+    }
+    else if (phone_error_.empty())
     {
         draw_spinner(list, x + 14, plate.y + plate.h + 50, 13);
         ui::text(list, fonts_.regular, "Waiting for your phone\xE2\x80\xA6", x + 40, plate.y + plate.h + 58, 23,

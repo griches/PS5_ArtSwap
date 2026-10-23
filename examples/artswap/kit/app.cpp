@@ -3253,7 +3253,7 @@ void App::draw_hints(gfx::DrawList &list) const
     else if (sheet_ == Sheet::menu)
         hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Select"}, {ui::Button::circle, "Close"}};
     else if (sheet_ == Sheet::music_phone)
-        hints = {{ui::Button::circle, "Done"}};
+        hints = {{ui::Button::circle, songs_arrived_.empty() ? "Done" : "Choose its clip"}};
     else if (sheet_ == Sheet::music_confirm)
     {
         if (!music_applying_)
