@@ -93,7 +93,7 @@ L1 R1 L2 R2, OPTIONS, then ○.
 | | ✕ | change its icon |
 | | △ | change its background, or add one to homebrew ShadowMountPlus installed from a folder |
 | | □ | change the logo on its page (a game the home screen lists) |
-| | L2 | the order of the games: A to Z, the home screen's own order (most recently used first), or the games Art Swap changed first; kept for next time |
+| | L2 | the order of the games: the home screen's own (most recently used first, to begin with), A to Z, or the games Art Swap changed first; kept for next time, and the shelf starts again at its first game |
 | | R2 | apply changes: restart the home screen so it shows them all (asks first) |
 | | OPTIONS | Rename (homebrew ShadowMountPlus installed from a folder), Restore originals, Settings, Close Art Swap |
 | | hold OPTIONS | close Art Swap |

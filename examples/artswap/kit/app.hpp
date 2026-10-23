@@ -105,8 +105,8 @@ class App
     // The order of the games on the shelf (L2)
     enum class Sort
     {
+        home,    // the home screen's own order: the most recently used first (the first choice)
         name,    // A to Z
-        home,    // the home screen's own order: the most recently used first
         changed, // those Art Swap changed first, then A to Z
     };
     enum class Refresh
@@ -133,7 +133,7 @@ class App
     // ---- the titles ----
     void load_titles(bool rescan);
     void order_titles();                      // titles_ in sort_'s order
-    void set_sort(Sort sort, bool keep);      // the shelf in another order, the focus on the same game; keep: remember it
+    void set_sort(Sort sort, bool keep);      // the shelf in another order, from its first game; keep: remember it
     static const char *sort_label(Sort sort);
     void request_icon(Title &title);
     void request_background(Title &title);
@@ -272,7 +272,7 @@ class App
     // the titles
     std::vector<std::unique_ptr<Title>> titles_;
     bool titles_loading_ = false;
-    Sort sort_ = Sort::name;
+    Sort sort_ = Sort::home;
     bool sort_loaded_ = false; // the order chosen last time, asked of the helper once
     std::string titles_error_;
     int focus_ = 0;

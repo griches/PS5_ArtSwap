@@ -372,13 +372,11 @@ void App::order_titles()
 
 void App::set_sort(Sort sort, bool keep)
 {
-    const std::string id = focused_title() ? focused_title()->id : "";
     sort_ = sort;
     order_titles();
+    // a new order starts at its beginning: the first game, the shelf back at the left
     focus_ = 0;
-    for (int i = 0; i < static_cast<int>(titles_.size()); ++i)
-        if (titles_[static_cast<std::size_t>(i)]->id == id)
-            focus_ = i;
+    focus_rest_ = 0.0f;
     grow_.assign(titles_.size(), tween::Spring{});
     if (!grow_.empty())
         grow_[static_cast<std::size_t>(focus_)].snap(1.0f);
@@ -462,7 +460,7 @@ void App::load_titles(bool rescan)
             helper_.ask({"PREF", "sort"}, [this](Reply &answer) {
                 for (const auto &r : answer.rows())
                     if (r.size() >= 3 && r[0] == "pref")
-                        for (Sort s : {Sort::name, Sort::home, Sort::changed})
+                        for (Sort s : {Sort::home, Sort::name, Sort::changed})
                             if (r[2] == sort_label(s) && s != sort_)
                                 set_sort(s, false);
             }, true);
@@ -2060,9 +2058,9 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
     }
     else if (input.is_pressed(Action::jump_prev))
     {
-        // the next order: name, the home screen's, changed first
+        // the next order: the home screen's, A to Z, changed first
         feedback.play(Cue::tab);
-        set_sort(sort_ == Sort::name ? Sort::home : sort_ == Sort::home ? Sort::changed : Sort::name, true);
+        set_sort(sort_ == Sort::home ? Sort::name : sort_ == Sort::name ? Sort::changed : Sort::home, true);
         hero_.start(0.35f);
     }
     else if (input.is_pressed(Action::jump_next))
