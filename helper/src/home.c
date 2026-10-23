@@ -13,7 +13,8 @@
  *
  * A name is different: the home screen takes it only from an install. So a
  * renamed title is installed again first, through ShadowMountPlus (smp.c, with
- * its saved data copied aside and checked), and the restart follows.
+ * its saved data copied aside and checked), and the restart follows. The
+ * install takes a logo of Art Swap's away; it is put back (logo.c).
  *
  * pending.txt keeps the titles changed since the last restart, one a line: the
  * id, then a tab and "name" for a rename waiting for its install.
@@ -22,6 +23,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "home.h"
+#include "logo.h"
 #include "smp.h"
 
 #include <errno.h>
@@ -304,6 +306,9 @@ static void *restart_job(void *argument)
     }
     log_line("home: SceShellUI %d ended, %d started", (int)before, (int)after);
 #endif
+    /* a logo of Art Swap's the restart or an install took from the home screen's database: put back */
+    if (logo_keep(NULL, 0) > 0)
+        log_line("home: logos put back after the restart");
     /* what is left waiting: the renames whose install did not finish */
     pthread_mutex_lock(&g_lock);
     static pending_t list[PENDING_MAX];

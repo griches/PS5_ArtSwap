@@ -203,7 +203,7 @@ void draw_row(gfx::DrawList &list, const ui::Fonts &fonts, const Rect &r, const 
 
 int App::settings_rows(int category) const
 {
-    return category == 0 ? 3 : 1;
+    return category == 0 ? 3 : category == 1 ? 2 : 1;
 }
 
 Rect App::settings_rail_rect(int category) const
@@ -341,11 +341,25 @@ void App::settings_select(ui::Feedback &feedback)
             }, true);
         }
     }
-    else if (settings_category_ == 1)
+    else if (settings_category_ == 1 && row == 0)
     {
         feedback.play(Cue::select);
         load_titles(true);
         toast("Refreshing the game list", "");
+    }
+    else if (settings_category_ == 1)
+    {
+        // PlayStation Store logos: asked of Sony only once the person has turned them on
+        feedback.play(Cue::toggle);
+        const bool on = !store_logos_;
+        helper_.ask({"STORE", on ? "on" : "off"}, [this, on](Reply &reply) {
+            if (!reply.ok)
+            {
+                toast("The setting was not changed", reply.error, true);
+                return;
+            }
+            store_logos_ = on;
+        }, true);
     }
     else
     {
@@ -457,8 +471,12 @@ void App::draw_settings(gfx::DrawList &list) const
             draw_tile(list, fonts_, tile_rect(1, 140), "ART CHANGED", std::to_string(kept),
                       kept ? (kept == 1 ? "Game with new art" : "Games with new art") : "Nothing changed yet");
         });
-        rows = {{"Refresh game list", std::to_string(titles_.size()) + (titles_.size() == 1 ? " game" : " games")}};
-        description = settings_in_rows_ ? "Finds games, apps and homebrew installed since Art Swap opened."
+        rows = {{"Refresh game list", std::to_string(titles_.size()) + (titles_.size() == 1 ? " game" : " games")},
+                {"PlayStation Store logos", store_logos_ ? "On" : "Off"}};
+        static const char *notes[] = {
+            "Finds games, apps and homebrew installed since Art Swap opened.",
+            "Store games' own logos, from Sony's catalog: no account or console details, but Sony sees your IP."};
+        description = settings_in_rows_ ? notes[settings_row_[1]]
                                         : "The titles on this console that have home-screen art.";
     }
     else

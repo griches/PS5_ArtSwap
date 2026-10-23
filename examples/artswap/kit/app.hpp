@@ -139,6 +139,7 @@ class App
     void load_page();
     void request_thumbs();
     void request_preview();
+    std::vector<int> tab_kinds() const; // the picker's tabs, as kinds of art: Icons, Backgrounds, Logos
     std::vector<const char *> tabs() const;
     void draw_new_art(hui::gfx::DrawList &list, const hui::gfx::Rect &r, float radius) const;
     Art *focused_art();
@@ -157,6 +158,10 @@ class App
     void move_frame(float du, float dv, float zoom);
     void reframed(float delay);                // framing_ changed: a new preview after delay
     void reset_framing();
+
+    // a logo as the home screen's page shows it: over the game's background, where its name would be
+    void draw_logo_page(hui::gfx::DrawList &list, const hui::gfx::Rect &r, std::uint32_t logo, int lw, int lh,
+                        float radius) const;
 
     // ---- actions ----
     void apply();
@@ -269,6 +274,8 @@ class App
     int art_focus_ = 0;
     int page_ = 0;
     int total_ = 0;
+    int store_arts_ = 0;        // the store's own logo, first among the logos (not SteamGridDB's)
+    bool store_asked_ = false;  // asked for it since the tab opened
     int hidden_ = 0;
     bool listing_ = false;
     bool matching_ = false;
@@ -323,6 +330,7 @@ class App
     float remove_armed_ = 0.0f;      // Remove the key: a second ✕ within this many seconds removes it
     std::string key_state_; // user or none: the helper's answer, then each change
     std::string key_hint_;  // the key's last four characters
+    bool store_logos_ = false;   // PlayStation Store logos, for store games (the helper's STORE)
     bool key_explained_ = false; // the explanation has shown once this run
     std::string pending_slot_;  // the picker to open once a key is in
     std::vector<Toast> toasts_;

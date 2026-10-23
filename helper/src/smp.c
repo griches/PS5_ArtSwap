@@ -26,6 +26,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "smp.h"
+#include "logo.h"
 #include "home.h"
 
 #include "../third_party/cJSON.h"
@@ -830,6 +831,9 @@ static void *refresh_job(void *argument)
         else
             set_phase("checking", "Checking %s's files", job->name);
         ok = back;
+        /* the install wrote the title's entry afresh, without the logo Art Swap gave it */
+        if (back)
+            logo_keep(job->id, 30);
     }
 
     /* 3. everything still in place; anything missing is copied back */

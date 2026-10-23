@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ARTSWAP_VERSION "0.3.2"
+#define ARTSWAP_VERSION "0.4.0"
 #define ARTSWAP_PORT 9117
 
 /* Held while art is written, and while the refresh works in a game's folder as its owner
@@ -77,6 +77,9 @@ const char *http_backend(void);
  * Returns false on a transport error (err says why); status holds the HTTP
  * status otherwise, and out the body. */
 bool http_get(const char *url, const char *bearer, buf_t *out, int *status, char *err, size_t errlen);
+/* GET as a web browser would, with nothing that says Art Swap or PS5 and no cookies: for PlayStation Store's
+ * public catalog, which needs no account */
+bool http_get_plain(const char *url, buf_t *out, int *status, char *err, size_t errlen);
 
 /* ---- configuration: the API key ---- */
 void config_load(void);
@@ -86,12 +89,16 @@ const char *config_key_source(void); /* "user" or "none" */
 /* The key's last four characters, to tell one key from another on screen */
 bool config_key_hint(char *out, size_t size);
 bool config_set_key(const char *key);
+/* PlayStation Store logos: off unless the person turns them on (/data/artswap/store-logos) */
+bool config_store_logos(void);
+bool config_set_store_logos(bool on);
 
 /* ---- SteamGridDB (sgdb.c) ---- */
 /* Each writes TSV lines into out (protocol.md) */
 bool sgdb_search(const char *term, buf_t *out, char *err, size_t errlen);
 bool sgdb_list(long game, const char *kind, int page, buf_t *out, char *err, size_t errlen);
 bool sgdb_check_key(const char *key, char *err, size_t errlen);
-/* A picture from SteamGridDB's servers, through the download cache */
+/* A picture from SteamGridDB's servers (or, with PlayStation Store logos on, Sony's image server), through the
+ * download cache */
 bool sgdb_fetch(const char *url, buf_t *out, char *err, size_t errlen);
 void sgdb_cache_trim(void);

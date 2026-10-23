@@ -7,8 +7,10 @@
  * has one more in its own folder (sce_sys/), which ShadowMountPlus copies in
  * when it installs the title again, so all of them are changed together. Names come from the param.json or
  * param.sfo beside the art, then the homebrew folder's param.json, then the
- * system's app.db (a copy, read only), then the title id. Every scan is
- * written to /data/artswap/scan.txt, to read over FTP.
+ * system's app.db (a copy, read only), then the title id. The same copy says
+ * which titles the home screen lists, which are PlayStation Store games, and
+ * which show a logo. Every scan is written to /data/artswap/scan.txt, to read
+ * over FTP.
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -165,15 +167,48 @@ static bool name_from_param_sfo(const char *path, char *name, size_t size)
     return found;
 }
 
-/* Names from a copy of the system's app.db: any table with a title id and a title name column */
-static void names_from_app_db(app_t *apps, int count)
+/* What the home screen knows of each title (tbl_contentinfo, tbl_conceptmetadata): whether it has an
+ * entry, its store concept, and whether a logo shows on its page. A homebrew title's concept is its own
+ * number (PPSA99921, 99921): only a different one is a PlayStation Store game's. */
+static void home_entries(sqlite3 *db, app_t *apps, int count)
+{
+    sqlite3_stmt *rows = NULL;
+    if (sqlite3_prepare_v2(db,
+                           "SELECT c.titleId, c.conceptId, m.logoImageInfo FROM tbl_contentinfo c "
+                           "LEFT JOIN tbl_conceptmetadata m ON m.localConceptId = c.localConceptId",
+                           -1, &rows, NULL) != SQLITE_OK) {
+        log_line("app.db: no home-screen entries (%s)", sqlite3_errmsg(db));
+        sqlite3_finalize(rows);
+        return;
+    }
+    int listed = 0, store = 0, logos = 0;
+    while (sqlite3_step(rows) == SQLITE_ROW) {
+        const char *id = (const char *)sqlite3_column_text(rows, 0);
+        const long concept = (long)sqlite3_column_int64(rows, 1);
+        const char *logo = (const char *)sqlite3_column_text(rows, 2);
+        for (int i = 0; id != NULL && i < count; i++)
+            if (strcmp(apps[i].id, id) == 0) {
+                apps[i].listed = true;
+                apps[i].concept = concept > 0 && concept != strtol(id + 4, NULL, 10) ? concept : 0;
+                apps[i].logo = logo != NULL && logo[0] != 0;
+                listed++;
+                store += apps[i].concept > 0;
+                logos += apps[i].logo;
+            }
+    }
+    sqlite3_finalize(rows);
+    log_line("app.db: %d titles on the home screen, %d from PlayStation Store, %d with a logo", listed, store, logos);
+}
+
+/* A copy of the system's app.db, read: the home screen's entries, and names from any table with a title id and
+ * a title name column for the titles param files did not name */
+static void read_app_db(app_t *apps, int count, bool names)
 {
     char from[512], to[512], off[512];
     if (file_exists(data_path("no-appdb", off, sizeof(off)))) {
         log_line("app.db: skipped (/data/artswap/no-appdb)");
         return;
     }
-    log_line("app.db: reading a copy for the names param files did not give");
     cpath("/system_data/priv/mms/app.db", from, sizeof(from));
     data_path("app.db.copy", to, sizeof(to));
     if (!file_copy(from, to)) {
@@ -187,10 +222,11 @@ static void names_from_app_db(app_t *apps, int count)
         unlink(to);
         return;
     }
+    home_entries(db, apps, count);
     sqlite3_stmt *tables = NULL;
     int named = 0;
-    if (sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table'", -1, &tables, NULL) ==
-        SQLITE_OK) {
+    if (names && sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table'", -1, &tables, NULL) ==
+                     SQLITE_OK) {
         while (sqlite3_step(tables) == SQLITE_ROW) {
             char table[128];
             copy_str(table, sizeof(table), (const char *)sqlite3_column_text(tables, 0));
@@ -233,7 +269,8 @@ static void names_from_app_db(app_t *apps, int count)
     sqlite3_finalize(tables);
     sqlite3_close(db);
     unlink(to);
-    log_line("app.db: %d names", named);
+    if (names)
+        log_line("app.db: %d names", named);
 }
 
 /* ---- files ---- */
@@ -409,7 +446,9 @@ static void write_report(const app_t *apps, int count)
 {
     buf_t text = {0};
     for (int i = 0; i < count; i++) {
-        buf_printf(&text, "%s\t%s\t%s\n", apps[i].id, apps[i].kind, apps[i].name);
+        buf_printf(&text, "%s\t%s\t%s\t%s, concept %ld%s\n", apps[i].id, apps[i].kind, apps[i].name,
+                   apps[i].listed ? "on the home screen" : "not on the home screen", apps[i].concept,
+                   apps[i].logo ? ", logo" : "");
         for (int j = 0; j < apps[i].nfiles; j++) {
             const art_file_t *f = &apps[i].files[j];
             buf_printf(&text, "\t%s\t%s %dx%d mips %d\t%s%s\n", f->slot, format_name(&f->fmt), f->fmt.w,
@@ -472,8 +511,7 @@ bool scan_apps(app_t **apps_out, int *count_out)
     bool unnamed = false;
     for (int i = 0; i < count; i++)
         unnamed |= apps[i].name[0] == 0;
-    if (unnamed)
-        names_from_app_db(apps, count);
+    read_app_db(apps, count, unnamed);
     for (int i = 0; i < count; i++) {
         if (!apps[i].name[0])
             copy_str(apps[i].name, sizeof(apps[i].name), apps[i].id);

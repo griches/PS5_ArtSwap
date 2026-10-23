@@ -4,15 +4,16 @@
 [![release](https://img.shields.io/github/v/release/griches/PS5_ArtSwap)](https://github.com/griches/PS5_ArtSwap/releases/latest)
 [![licence](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](LICENSE)
 
-**Change the icon and background of any title on your PS5's home screen, with art
-from [SteamGridDB](https://www.steamgriddb.com).**
+**Change the icon, background and logo of any title on your PS5's home screen, with
+art from [SteamGridDB](https://www.steamgriddb.com).**
 
 Art Swap lists every title on the console that has home-screen art, finds each
 one on SteamGridDB, shows you that game's art, and writes the one you pick over
 the title's own `icon0` or `pic0`/`pic1`. The original is kept beside it as an
 `.old` file, so Restore can put it back. **Apply changes** (R2) then restarts
 the home screen, and every change shows at once, whatever installed the game:
-a folder, a disk image or a package.
+a folder, a disk image or a package. A **logo** (R1) goes on the game's page in
+place of its name in plain text, and shows straight away.
 
 Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
 
@@ -50,6 +51,11 @@ Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
   screen restarts: see [Apply changes](#apply-changes). The top of the screen
   says how many games are waiting, and a changed game's page says it is not
   on the home screen yet.
+- **Logos** (R1): a game's page on the home screen shows its logo where it has
+  one and its name in plain text where it has not, as with homebrew and
+  installed backups. Art Swap puts a logo from SteamGridDB there, and it shows
+  at once: see [Logos](#logos). Store games can also be offered their own
+  logo from PlayStation Store, when you turn that on in Settings.
 - **Renames homebrew** (L2) that ShadowMountPlus installed from a folder: the
   new name goes into the title's `param.json` (every language), and Art Swap
   has ShadowMountPlus install the game again, since the home screen takes a
@@ -72,17 +78,18 @@ through that loader.
 
 | Where | Button | What it does |
 | --- | --- | --- |
-| Titles | ← → (L1 R1 by six) | choose a title |
+| Titles | ← → | choose a title |
 | | ✕ | change its icon |
 | | △ | change its background |
-| | □ | restore its original art and name (when Art Swap changed them) |
+| | R1 | change the logo on its page (a title the home screen lists) |
+| | □ | restore its original art and name, and take its logo off (when Art Swap changed them) |
 | | L2 | rename it (homebrew ShadowMountPlus installed from a folder; asks first) |
 | | R2 | apply changes: restart the home screen so it shows them all (asks first) |
-| | OPTIONS | settings: API key, look at the console again, helper log |
+| | OPTIONS | settings: API key, look at the console again, PlayStation Store logos, helper log |
 | | hold OPTIONS | close Art Swap |
-| Art | L1 R1 | the Icons and Backgrounds tabs |
+| Art | L1 R1 | the Icons, Backgrounds and Logos tabs |
 | | D-pad, left stick | choose a picture |
-| | △ | the frame page: which part of the picture is kept |
+| | △ | the frame page: which part of the picture is kept (not for a logo, which is used whole) |
 | | right stick | slide the part kept, when Fill cuts the picture |
 | | ✕ | use it (asks first) |
 | | □ | another game, or search by name with the keyboard |
@@ -147,6 +154,43 @@ installed **from a folder**. Art Swap never installs again a title installed
 from a package (taking its tile away would delete the game) or from an image
 (that would copy the image's own name and art back); the pop-up says why.
 
+## Logos
+
+A game's page on the home screen (the tile selected, with Play Game under it)
+shows the game's logo, or else its name in plain text. The home screen draws
+the picture its database names for the title (`logoImageInfo` in
+`/system_data/priv/mms/app.db`). Store games get theirs from PlayStation
+Network, which a jailbroken console does not reach, and homebrew has none.
+
+R1, or the Logos tab of the picker, lists SteamGridDB's logos for the game
+(transparent PNGs, mostly white lettering), each on a dark plate, with the
+page as it will look beside the logo there now. ✕ puts it on:
+
+1. The helper writes the PNG as `logo.png` beside the title's art in
+   `/user/appmeta/<id>` (the home screen cannot read the homebrew folders), and
+   keeps its own copy in `/data/artswap/logos/`.
+2. It points the title's `logoImageInfo` at it, editing the database in place
+   with SQLite, which waits for the home screen's own locks. It is the only
+   thing Art Swap changes there. Before its first change the database is
+   copied to `/data/artswap/app.db.first`, and before each run's first change
+   to `app.db.backup`.
+3. The page shows it straight away: Apply changes is not needed.
+
+A logo stays through a console restart. An install writes the title's entry
+afresh and takes the logo away, so after a rename's install (Apply changes)
+the helper waits for the entry to come back and puts the logo back, and each
+time Art Swap starts it puts back any of its logos that went missing. Restore
+takes the logo off and puts back what the page had before (most often
+nothing). A title the home screen does not list has no page, so no logo.
+
+**PlayStation Store logos** (Settings, Games; off until you turn them on): for
+a store game (one whose store concept is not just its own number, as
+homebrew's is), the Logos tab starts with the game's own logo from
+PlayStation Store's public catalog. The helper asks it as a web browser would,
+with no account, key, cookie or anything that says Art Swap or PS5, but Sony
+still sees the console's address and which game, so it is your choice. Each
+game is asked about once; the answer is kept in `/data/artswap/store/`.
+
 ## The SteamGridDB API key
 
 SteamGridDB's API needs a key, and each person registers their own: it is free,
@@ -205,10 +249,15 @@ On the console the helper keeps its files in `/data/artswap/`:
 | `saves/` | what each rename's install copied aside (see above) |
 | `apikey.txt` | your SteamGridDB API key |
 | `cache/` | downloaded pictures (trimmed to 192 MB when over 256 MB) |
-| `no-appdb` | if present, names are never read from the system's `app.db` |
+| `logos/` | the logo Art Swap put on each title's page (`<id>.png`), and what it replaced (`<id>.orig`) |
+| `app.db.first`, `app.db.backup` | the home screen's database before Art Swap first changed it, and before its last run's first change |
+| `store-logos` | if present, PlayStation Store logos are on |
+| `store/` | what PlayStation Store's catalog said about each store game's logo |
+| `no-appdb` | if present, the system's `app.db` is never read (no names from it, no logos) |
 
 Names come from the title's `param.json` or `param.sfo`, then from a read-only
-copy of the system's `app.db`, and otherwise the title id is shown.
+copy of the system's `app.db`, and otherwise the title id is shown. The same
+copy says which titles the home screen lists and which are store games.
 
 ## Tested on the console
 
@@ -222,7 +271,11 @@ uses (new art on the tile within seconds, the game's saves identical
 afterwards, file for file); and, with ShadowMountPlus 1.7beta7, Apply changes:
 new and restored art shown for a folder game, a disk image game (`.ffpfsc`)
 and a package game, the home screen back within about three seconds of Art
-Swap closing, and a game open in the background carrying on.
+Swap closing, and a game open in the background carrying on. Logos: one from
+SteamGridDB on a homebrew game's page at once, with no restart; a store
+logo on a disk image game kept through a console restart; and a logo put back
+17 seconds into a rename's install, when the game's entry came back. The
+PlayStation Store lookup was tested from a Mac only.
 
 What the console taught (helper/tests/tlstest.c, procs.c):
 
@@ -245,6 +298,13 @@ What the console taught (helper/tests/tlstest.c, procs.c):
 - Folders a game writes (its saves, mode 0700) can be read only as the game's
   user, not even as root: the helper switches to the folder's owner to read
   them.
+- An install writes the title's entry in `app.db` some seconds after
+  ShadowMountPlus lists it as installed (17 s once), so the helper waits for
+  the entry before it puts a logo back.
+- OnionHEN keeps its toolbox inside the home screen's process. After Apply
+  changes restarts it, OnionHEN takes it for coming out of rest mode, tries to
+  load the toolbox again, can time out, and the console may then show "System
+  Software Error" (CE-108262-9); OK dismisses it.
 
 ## Building
 
@@ -289,6 +349,9 @@ at `b577e950`, with its UI module. Art Swap's code is in `examples/artswap/kit/`
 - **The art Art Swap offers** is SteamGridDB's, made and uploaded by its
   community; each picture shows its author. Art Swap is not affiliated with
   SteamGridDB, Valve or Sony.
+- The way to set a logo (the PNG beside the art, `logoImageInfo` in `app.db`)
+  was found by ensamvarg360's [Spela](https://github.com/ensamvarg360/spela)
+  (GPL-3.0).
 - Art Swap's own icon and background were generated for this project
   (sources in `ps5/art/`).
 

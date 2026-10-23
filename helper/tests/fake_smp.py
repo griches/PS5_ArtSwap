@@ -7,7 +7,8 @@
 # home screen's copies away (/user/app/<id>, /user/appmeta/<id>) and keeps the
 # folder, and a scan installs the title again from its folder: the game list
 # says "installed" at once, and the copies follow a second later, as
-# ShadowMountPlus 1.7beta3 did on the console. Switches, for tests (POST
+# ShadowMountPlus 1.7beta3 did on the console; the title's entry in the home
+# screen's database loses its logo, as an install writes it afresh. Switches, for tests (POST
 # /fake {"busy": true, "eat": "relative/path"}): busy refuses uninstalls as
 # while a game is open; eat deletes that file of the folder on uninstall, as a
 # broken uninstall would.
@@ -16,6 +17,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -38,6 +40,20 @@ class Console:
         self.busy = False
         self.eat = ""
         self.calls = []
+
+    def forget_logo(self, title):
+        # the install writes the title's entry in the home screen's database afresh: no logo
+        db_path = self.root / "system_data/priv/mms/app.db"
+        if not db_path.exists():
+            return
+        db = sqlite3.connect(db_path)
+        try:
+            db.execute("UPDATE tbl_conceptmetadata SET logoImageInfo = NULL WHERE localConceptId = "
+                       "(SELECT localConceptId FROM tbl_contentinfo WHERE titleId = ?)", (title,))
+            db.commit()
+        except sqlite3.OperationalError:
+            pass
+        db.close()
 
     def install(self, title):
         game = GAMES[title]
@@ -91,6 +107,7 @@ def make_handler(console: Console):
                     return self.answer(409, {"status": 16, "error": "Device busy", "error_reason": "game_active"})
                 shutil.rmtree(console.root / "user/app" / title, ignore_errors=True)
                 shutil.rmtree(console.root / "user/appmeta" / title, ignore_errors=True)
+                console.forget_logo(title)
                 if console.eat:
                     (console.root / GAMES[title]["path"].lstrip("/") / console.eat).unlink(missing_ok=True)
                 console.installed[title] = False

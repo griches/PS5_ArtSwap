@@ -1,5 +1,5 @@
 /*
- * Art Swap helper - the SteamGridDB API key.
+ * Art Swap helper - the SteamGridDB API key, and whether PlayStation Store logos are on.
  *
  * Every person registers a key of their own (SteamGridDB's terms do not
  * cover sharing one): from their phone (phone.c), with the console's
@@ -98,4 +98,23 @@ bool config_key_hint(char *out, size_t size)
     const size_t len = strlen(key);
     copy_str(out, size, key + (len > 4 ? len - 4 : 0));
     return true;
+}
+
+/* ---- PlayStation Store logos ----
+ * Off unless the person turns them on: Sony's public catalog needs no account and is asked as a web
+ * browser would ask it (http_get_plain), but it still sees the console's address and which game. */
+
+bool config_store_logos(void)
+{
+    char path[512];
+    return file_exists(data_path("store-logos", path, sizeof(path)));
+}
+
+bool config_set_store_logos(bool on)
+{
+    char path[512];
+    data_path("store-logos", path, sizeof(path));
+    if (!on)
+        return remove(path) == 0 || !file_exists(path);
+    return file_write_replace(path, "on\n", 3, NULL);
 }

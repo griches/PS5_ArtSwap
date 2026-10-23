@@ -3,12 +3,14 @@
  *
  * The API's answers are turned into the TSV lines of protocol.md here, so the
  * title never parses JSON. Pictures are only ever fetched from SteamGridDB's
- * own hosts, and kept in /data/artswap/cache (trimmed at start-up).
+ * own hosts (and Sony's image server, for PlayStation Store logos, when they
+ * are on: store.c), and kept in /data/artswap/cache (trimmed at start-up).
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "artswap.h"
+#include "store.h"
 
 #include "../third_party/cJSON.h"
 
@@ -214,8 +216,10 @@ static bool allowed(const char *url)
 bool sgdb_fetch(const char *url, buf_t *out, char *err, size_t errlen)
 {
     out->len = 0;
-    if (!allowed(url)) {
-        snprintf(err, errlen, "only SteamGridDB's pictures are fetched");
+    const bool store = store_picture(url);
+    if (!allowed(url) && !(store && config_store_logos())) {
+        snprintf(err, errlen, store ? "PlayStation Store logos are off: turn them on in Settings, Games"
+                                    : "only SteamGridDB's pictures are fetched");
         return false;
     }
     char name[64], path[512];
@@ -224,7 +228,7 @@ bool sgdb_fetch(const char *url, buf_t *out, char *err, size_t errlen)
     if (file_read(path, out) && out->len > 0)
         return true;
     int status = 0;
-    if (!http_get(url, NULL, out, &status, err, errlen))
+    if (!(store ? http_get_plain(url, out, &status, err, errlen) : http_get(url, NULL, out, &status, err, errlen)))
         return false;
     if (status != 200 || out->len == 0) {
         snprintf(err, errlen, "the picture did not download (%d)", status);

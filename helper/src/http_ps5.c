@@ -27,6 +27,7 @@
 #include <string.h>
 
 #define USER_AGENT "ArtSwap/" ARTSWAP_VERSION " (PS5 homebrew)"
+#define PLAIN_AGENT "Mozilla/5.0"
 /* the callback's verify error that means "the root is not in the list this process has" */
 #define VERIFY_UNKNOWN_CA 0x20u
 
@@ -48,9 +49,11 @@ static struct {
     int (*SetRecvTimeOut)(int, uint32_t);
     int (*SetSslCallback)(int, int (*)(int, unsigned int, void *const *, int, void *), void *);
     int (*GetSslError)(int, int *, uint32_t *);
+    int (*SetCookieEnabled)(int, int);
 } f;
 
 static int g_template = -1;
+static int g_plain = -1; /* a browser's user agent, no cookies: for PlayStation Store's public catalog */
 static const char *g_backend = "none";
 static pthread_mutex_t g_once = PTHREAD_MUTEX_INITIALIZER;
 static bool g_told; /* the log says once that the callback is accepting */
@@ -115,6 +118,7 @@ bool http_init(char *err, size_t errlen)
     FIND(http, SetRecvTimeOut, "sceHttpSetRecvTimeOut");
     FIND(http, SetSslCallback, "sceHttpsSetSslCallback");
     FIND(http, GetSslError, "sceHttpsGetSslError");
+    FIND(http, SetCookieEnabled, "sceHttpSetCookieEnabled");
     if (!f.NetInit || !f.NetPoolCreate || !f.SslInit || !f.Init || !f.CreateTemplate || !f.CreateConnectionWithURL ||
         !f.CreateRequestWithURL || !f.SendRequest || !f.GetStatusCode || !f.ReadData || !f.DeleteRequest ||
         !f.DeleteConnection || !f.SetSslCallback) {
@@ -131,6 +135,16 @@ bool http_init(char *err, size_t errlen)
         f.SetConnectTimeOut(g_template, 10u * 1000000u);
     if (g_template >= 0 && f.SetRecvTimeOut)
         f.SetRecvTimeOut(g_template, 30u * 1000000u);
+    /* the second: nothing in it says Art Swap or PS5, and it keeps no cookies */
+    g_plain = http_ctx >= 0 ? f.CreateTemplate(http_ctx, PLAIN_AGENT, 2, 1) : -1;
+    if (g_plain >= 0 && f.SetSslCallback(g_plain, check_certificate, NULL) < 0)
+        g_plain = -1;
+    if (g_plain >= 0 && f.SetCookieEnabled)
+        f.SetCookieEnabled(g_plain, 0);
+    if (g_plain >= 0 && f.SetConnectTimeOut)
+        f.SetConnectTimeOut(g_plain, 10u * 1000000u);
+    if (g_plain >= 0 && f.SetRecvTimeOut)
+        f.SetRecvTimeOut(g_plain, 30u * 1000000u);
     log_line("sceNetInit 0x%08x, pool %d, TLS %d, HTTP %d, template %d, certificate callback 0x%08x",
              (unsigned)net_init, pool, ssl_ctx, http_ctx, g_template, (unsigned)callback);
     if (g_template < 0 || callback < 0) {
@@ -147,12 +161,17 @@ const char *http_backend(void)
     return g_backend;
 }
 
-bool http_get(const char *url, const char *bearer, buf_t *out, int *status, char *err, size_t errlen)
+static bool get_with(int template, const char *url, const char *bearer, buf_t *out, int *status, char *err,
+                     size_t errlen)
 {
     const uint64_t start = now_ms();
     out->len = 0;
     *status = 0;
-    const int conn = f.CreateConnectionWithURL(g_template, url, 1);
+    if (template < 0) {
+        snprintf(err, errlen, "the network is not set up");
+        return false;
+    }
+    const int conn = f.CreateConnectionWithURL(template, url, 1);
     if (conn < 0) {
         snprintf(err, errlen, "sceHttpCreateConnectionWithURL 0x%08x", (unsigned)conn);
         log_line("GET %s: %s", url, err);
@@ -210,4 +229,14 @@ bool http_get(const char *url, const char *bearer, buf_t *out, int *status, char
     log_line("GET %s -> %s %d, %zu bytes, %llu ms%s%s", url, ok ? "status" : "failed", *status, out->len,
              (unsigned long long)(now_ms() - start), ok ? "" : ": ", ok ? "" : err);
     return ok;
+}
+
+bool http_get(const char *url, const char *bearer, buf_t *out, int *status, char *err, size_t errlen)
+{
+    return get_with(g_template, url, bearer, out, status, err, errlen);
+}
+
+bool http_get_plain(const char *url, buf_t *out, int *status, char *err, size_t errlen)
+{
+    return get_with(g_plain, url, NULL, out, status, err, errlen);
 }

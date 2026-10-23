@@ -25,6 +25,10 @@ typedef struct {
     int nfiles;
     long sgdb_id; /* the SteamGridDB game chosen for it, 0 for none yet */
     char sgdb_name[200];
+    /* from the home screen's database (app.db): */
+    bool listed;  /* it has an entry there, so a logo can be set */
+    long concept; /* its PlayStation Store concept; 0 for homebrew, whose concept is its own number */
+    bool logo;    /* a logo shows on its page (logoImageInfo), Art Swap's or not */
 } app_t;
 
 /* Every title with art; the list is sorted by name. Free with free(). */

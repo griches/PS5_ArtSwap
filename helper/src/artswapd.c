@@ -11,9 +11,11 @@
  */
 #include "art.h"
 #include "home.h"
+#include "logo.h"
 #include "name.h"
 #include "phone.h"
 #include "smp.h"
+#include "store.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -102,6 +104,8 @@ static void rescan(void)
 {
     app_t *apps = NULL;
     int count = 0;
+    /* first, Art Swap's logos the home screen has lost (an install since), so the scan sees them shown */
+    logo_keep(NULL, 0);
     scan_apps(&apps, &count);
     pthread_mutex_lock(&g_apps_lock);
     free(g_apps);
@@ -123,6 +127,16 @@ static bool find_app(const char *id, app_t *out)
         }
     pthread_mutex_unlock(&g_apps_lock);
     return found;
+}
+
+/* After LOGO or RESTORE: whether a logo shows on the title's page */
+static void set_logo_shown(const char *id, bool shown)
+{
+    pthread_mutex_lock(&g_apps_lock);
+    for (int i = 0; i < g_count; i++)
+        if (strcmp(g_apps[i].id, id) == 0)
+            g_apps[i].logo = shown;
+    pthread_mutex_unlock(&g_apps_lock);
 }
 
 /* After APPLY, RESTORE or RENAME: which files now have an original kept, the match, the name */
@@ -185,7 +199,9 @@ static void list_apps(buf_t *out)
         bool refresh = false;
         for (int j = 0; j < nfolders && !refresh; j++)
             refresh = strcmp(folders[j], app->id) == 0;
-        buf_printf(out, "\t%d\t%d\n", name_kept(app), refresh);
+        /* the home screen's entry: the store concept, and the logo (art: Art Swap's, other: one of its own) */
+        buf_printf(out, "\t%d\t%d\t%ld\t%s\t%d\n", name_kept(app), refresh, app->concept,
+                   logo_kept(app->id) ? "art" : app->logo ? "other" : "-", app->listed);
     }
     pthread_mutex_unlock(&g_apps_lock);
 }
@@ -220,6 +236,7 @@ static bool handle(int fd, char **field, int n)
             buf_printf(&text, "lan\t%s\n", lan);
         buf_printf(&text, "artswapd\t%s\n", ARTSWAP_VERSION);
         key_line(&text);
+        buf_printf(&text, "store\t%s\n", config_store_logos() ? "on" : "off");
         buf_printf(&text, "http\t%s\t", g_http_ok ? http_backend() : "unavailable");
         buf_field(&text, g_http_ok ? "" : g_http_error);
         buf_printf(&text, "\n");
@@ -234,10 +251,11 @@ static bool handle(int fd, char **field, int n)
             return true;
         app_t app;
         image_t img = {0};
+        const int w = clamp_size(n > 3 ? field[3] : NULL, 512), h = clamp_size(n > 4 ? field[4] : NULL, 512);
         if (!find_app(field[1], &app))
             ok = reply_error(fd, "no such title");
-        else if (!art_current(&app, field[2], clamp_size(n > 3 ? field[3] : NULL, 512),
-                              clamp_size(n > 4 ? field[4] : NULL, 512), &img, err, sizeof(err)))
+        else if (strcmp(field[2], "logo") == 0 ? !logo_current(&app, w, h, &img, err, sizeof(err))
+                                               : !art_current(&app, field[2], w, h, &img, err, sizeof(err)))
             ok = reply_error(fd, err);
         else
             ok = reply_image(fd, &img);
@@ -337,26 +355,35 @@ static bool handle(int fd, char **field, int n)
             ok = reply_error(fd, "no such title");
         } else {
             pthread_mutex_lock(&g_apply_lock);
-            /* all: the name too */
+            /* all: the name and the logo too; logo: only that */
             const char *slot = n > 2 ? field[2] : "all";
-            const bool all = strcmp(slot, "all") == 0;
+            const bool all = strcmp(slot, "all") == 0, logo_only = strcmp(slot, "logo") == 0;
             const bool name = all && name_kept(&app);
-            bool art = !name;
-            for (int i = 0; i < app.nfiles && !art; i++)
-                art = app.files[i].has_old;
-            bool done = !art || art_restore(&app, slot, &text, err, sizeof(err));
+            const bool logo = (all || logo_only) && logo_kept(app.id);
+            bool art = false;
+            for (int i = 0; i < app.nfiles && !logo_only; i++)
+                art |= app.files[i].has_old && (all || slot_matches(&app.files[i], slot));
+            bool done = art || name || logo;
+            if (!done)
+                snprintf(err, sizeof(err), "%s has no original art kept", app.name);
+            if (done && art)
+                done = art_restore(&app, slot, &text, err, sizeof(err));
             if (done && name && name_restore(&app, &text) < 0) {
                 snprintf(err, sizeof(err), "The original name could not be put back");
                 done = false;
             }
+            if (done && logo)
+                done = logo_restore(&app, &text, err, sizeof(err));
             pthread_mutex_unlock(&g_apply_lock);
             refresh_app(app.id, -1, "", NULL);
+            if (logo)
+                set_logo_shown(app.id, false);
             if (name)
                 rescan(); /* the name, read again */
             if (done && name)
                 home_note_name(app.id); /* the original name shows after an install, as a new one does */
-            else if (done)
-                home_note(app.id);
+            else if (done && art)
+                home_note(app.id); /* a logo goes from the page at once */
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
     } else if (strcmp(cmd, "RENAME") == 0) {
@@ -380,6 +407,38 @@ static bool handle(int fd, char **field, int n)
                 home_note_name(app.id);
             }
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
+        }
+    } else if (strcmp(cmd, "LOGO") == 0) {
+        /* LOGO id url: the picture as the logo on the title's home-screen page, which shows it at once */
+        if (!want(fd, n, 3))
+            return true;
+        app_t app;
+        if (!find_app(field[1], &app)) {
+            ok = reply_error(fd, "no such title");
+        } else {
+            pthread_mutex_lock(&g_apply_lock);
+            const bool done = logo_set(&app, field[2], &text, err, sizeof(err));
+            pthread_mutex_unlock(&g_apply_lock);
+            if (done)
+                set_logo_shown(app.id, true);
+            ok = done ? reply_text(fd, &text) : reply_error(fd, err);
+        }
+    } else if (strcmp(cmd, "STORELOGO") == 0) {
+        /* STORELOGO id: a store game's own logo from PlayStation Store, when the person has turned that on */
+        if (!want(fd, n, 2))
+            return true;
+        app_t app;
+        if (!find_app(field[1], &app))
+            ok = reply_error(fd, "no such title");
+        else
+            ok = store_logo(&app, &text, err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
+    } else if (strcmp(cmd, "STORE") == 0) {
+        /* STORE [on|off]: PlayStation Store logos */
+        if (n > 1 && !config_set_store_logos(strcmp(field[1], "on") == 0))
+            ok = reply_error(fd, "the setting could not be saved");
+        else {
+            buf_printf(&text, "store\t%s\n", config_store_logos() ? "on" : "off");
+            ok = reply_text(fd, &text);
         }
     } else if (strcmp(cmd, "SMP") == 0) {
         /* SMP id: what ShadowMountPlus knows of the title, and whether its tile can be refreshed */

@@ -103,6 +103,16 @@ def make_console(base: Path):
     db = sqlite3.connect(db_folder / "app.db")
     db.execute("CREATE TABLE tbl_appbrowse_0507646227 (titleId TEXT, titleName TEXT, metaDataPath TEXT)")
     db.execute("INSERT INTO tbl_appbrowse_0507646227 VALUES ('PPSA05678', 'Astro Bot', '/user/appmeta/external/PPSA05678')")
+    # the home screen's entries, as the console's: a homebrew title's concept is its own number, a store game's
+    # is the store's; Burnout 3 is not on the home screen
+    db.execute("CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT, conceptId INT, localConceptId TEXT)")
+    db.execute("CREATE TABLE tbl_conceptmetadata (localConceptId TEXT NOT NULL, conceptId INT, conceptName TEXT, "
+               "logoImageInfo TEXT, PRIMARY KEY(localConceptId))")
+    for title, concept in (("PPSA99314", 99314), ("CUSA00001", 10000176), ("PPSA05678", 10002691),
+                           ("PPSA26525", 10012903)):
+        local = f"cid:scp:{concept:016x}"
+        db.execute("INSERT INTO tbl_contentinfo VALUES (?, '', ?, ?)", (title, concept, local))
+        db.execute("INSERT INTO tbl_conceptmetadata VALUES (?, ?, '', NULL)", (local, concept))
     db.commit()
     db.close()
     # a system app: left out
@@ -131,6 +141,14 @@ def wait_port(port, seconds=10):
         except OSError:
             time.sleep(0.1)
     return False
+
+
+def logo_info(base, title):
+    db = sqlite3.connect(base / "system_data/priv/mms/app.db")
+    row = db.execute("SELECT m.logoImageInfo FROM tbl_contentinfo c JOIN tbl_conceptmetadata m "
+                     "ON m.localConceptId = c.localConceptId WHERE c.titleId = ?", (title,)).fetchone()
+    db.close()
+    return row[0] if row else "no entry"
 
 
 def dds_info(path):
@@ -168,7 +186,8 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.3.2", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.4.0", f"HELLO names the version ({hello})")
+        check(hello.get("store") == "off", "PlayStation Store logos start off")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
 
@@ -188,6 +207,9 @@ def main() -> int:
         check(apps["CUSA00001"][10] == "0" and apps["PPSA26525"][10] == "0",
               "APPS: a package and an image cannot be installed again (no rename)")
         check(apps["PPSA26525"][4] == "png 512x512 x2", f"an image's icon: appmeta and /user/app/<id>/sce_sys ({apps['PPSA26525'][4]})")
+        check(ed[11:14] == ["0", "-", "1"], f"APPS: homebrew on the home screen, no store concept, no logo ({ed[11:14]})")
+        check(apps["PPSA26525"][11] == "10012903", "APPS: a store game's concept")
+        check(apps["PPSA99316"][13] == "0", "APPS: a title the home screen does not list")
         info = {r[0]: r for r in h.rows("SMP", "PPSA26525")}
         check(info["can"][1] == "0" and "disk image" in info["can"][2], f"SMP: an image cannot be renamed ({info['can']})")
 
@@ -238,6 +260,60 @@ def main() -> int:
             check(False, "a picture from elsewhere is refused")
         except HelperError:
             check(True, "a picture from elsewhere is refused")
+
+        # a logo on the game's home-screen page: the PNG beside its art, the database pointed at it
+        logo = lists["logos"][0]
+        report = h.rows("LOGO", "PPSA99314", logo[2])
+        logo_png = base / "user/appmeta/PPSA99314/logo.png"
+        check(any(r[0] == "W" and r[1] == "/user/appmeta/PPSA99314/logo.png" for r in report), f"LOGO writes logo.png ({report})")
+        check(logo_png.exists() and Image.open(logo_png).format == "PNG", "logo.png is a PNG")
+        check(logo_info(base, "PPSA99314").startswith("/user/appmeta/PPSA99314/logo.png?ts="),
+              f"logoImageInfo points at it ({logo_info(base, 'PPSA99314')})")
+        check((base / "data/artswap/logos/PPSA99314.png").exists(), "Art Swap keeps its own copy")
+        check((base / "data/artswap/app.db.first").exists() and (base / "data/artswap/app.db.backup").exists(),
+              "the database is copied aside before it changes")
+        first = sqlite3.connect(base / "data/artswap/app.db.first")
+        check(first.execute("SELECT count(*) FROM tbl_conceptmetadata WHERE logoImageInfo IS NOT NULL").fetchone()[0] == 0,
+              "app.db.first is the database from before")
+        first.close()
+        w, hh, rgba = h.ask("ART", "PPSA99314", "logo", 600, 300)
+        check(w <= 600 and hh <= 300, f"ART logo ({w}x{hh})")
+        check({r[1]: r for r in h.rows("APPS")}["PPSA99314"][12] == "art", "APPS: Art Swap's logo")
+        try:
+            h.rows("LOGO", "PPSA99316", logo[2])
+            check(False, "LOGO refuses a title the home screen does not list")
+        except HelperError as e:
+            check("no entry" in str(e), f"LOGO refuses a title the home screen does not list ({e})")
+
+        # PlayStation Store logos: off until turned on; then the catalog's own, for a store game only
+        try:
+            h.rows("STORELOGO", "PPSA26525")
+            check(False, "STORELOGO is off at first")
+        except HelperError as e:
+            check("off" in str(e), f"STORELOGO is off at first ({e})")
+        check(h.rows("STORE", "on")[0][1] == "on" and (base / "data/artswap/store-logos").exists(), "STORE on")
+        store = [r for r in h.rows("STORELOGO", "PPSA26525") if r[0] == "I"]
+        check(len(store) == 1 and store[0][2].startswith("https://image.api.playstation.com/") and
+              int(store[0][4]) > 0 and store[0][7] == "PlayStation Store", f"STORELOGO: the store's logo ({store})")
+        check((base / "data/artswap/store/10012903.txt").exists(), "the store's answer is kept")
+        try:
+            h.rows("STORELOGO", "PPSA99314")
+            check(False, "STORELOGO refuses homebrew")
+        except HelperError as e:
+            check("not a PlayStation Store game" in str(e), f"STORELOGO refuses homebrew ({e})")
+        w, hh, rgba = h.ask("THUMB", store[0][2], 400, 200)
+        check(w > 0, "THUMB shows the store's logo")
+        h.rows("LOGO", "PPSA26525", store[0][2])
+        check(logo_info(base, "PPSA26525").startswith("/user/appmeta/PPSA26525/logo.png?ts="), "LOGO with the store's logo")
+        report = h.rows("RESTORE", "PPSA26525", "logo")
+        check(logo_info(base, "PPSA26525") is None and not (base / "user/appmeta/PPSA26525/logo.png").exists(),
+              f"RESTORE logo takes it away, the page's own (none) back ({report})")
+        check(h.rows("STORE", "off")[0][1] == "off", "STORE off")
+        try:
+            h.ask("THUMB", store[0][2], 400, 200)
+            check(False, "with store logos off, Sony's pictures are refused")
+        except HelperError as e:
+            check("off" in str(e), f"with store logos off, Sony's pictures are refused ({e})")
 
         # the icon
         icon_meta = base / "user/appmeta/PPSA99314/icon0.png"
@@ -346,6 +422,8 @@ def main() -> int:
         smp.console.busy = False
         state = refresh_until_end()
         check(state[1] == "done", f"the refresh is done ({state})")
+        check(logo_png.exists() and logo_info(base, "PPSA99314").startswith("/user/appmeta/PPSA99314/logo.png?ts="),
+              f"the install took the logo away; it is put back ({logo_info(base, 'PPSA99314')})")
         check(state[3] == "1", "the end is kept for the title's next start")
         check((base / "user/appmeta/PPSA99314/param.json").exists(), "the title is back on the home screen")
         check(sha(str(icon_meta) + ".old") == icon_old, "Art Swap's original in the home screen's copy is back")
@@ -418,6 +496,8 @@ def main() -> int:
         home = next(r for r in h.rows("HOMESTATE") if r[0] == "home")
         check(home[1] == "done" and marker.exists(), f"Apply changes after a rename is done ({home})")
         check(names(meta_param) == {"Eternal Darkness é"}, "the install took the new name")
+        check(logo_png.exists() and logo_info(base, "PPSA99314").startswith("/user/appmeta/PPSA99314/logo.png?ts="),
+              "a renamed title keeps its logo through Apply changes")
         check(Path(str(meta_param) + ".old").exists(), "the home screen's original name is kept across the install")
         check(not [r for r in h.rows("PENDING") if r[0] == "P"], "nothing is waiting after Apply changes")
         h.rows("HOMESTATE", "seen")
@@ -430,8 +510,10 @@ def main() -> int:
         installed_olds = len(list((base / "user/app/PPSA99314/sce_sys").glob("*.old")))
         check(installed_olds == 4, f"the installed copy has the folder's originals ({installed_olds})")
         report = h.rows("RESTORE", "PPSA99314", "all")
-        check(sum(r[0] == "R" for r in report) == 8 + installed_olds,
-              f"RESTORE puts six art files, two names and the installed copy back ({len(report)})")
+        check(sum(r[0] == "R" for r in report) == 8 + installed_olds + 1,
+              f"RESTORE puts six art files, two names, the installed copy and the logo back ({len(report)})")
+        check(not logo_png.exists() and logo_info(base, "PPSA99314") is None and
+              not (base / "data/artswap/logos/PPSA99314.png").exists(), "RESTORE all takes the logo away")
         check(folder_param.read_text() == original_param and names(meta_param) == {"Eternal Darkness™"},
               "the original name is back")
         check({r[1]: r for r in h.rows("APPS")}["PPSA99314"][2] == "Eternal Darkness",

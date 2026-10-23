@@ -29,7 +29,8 @@ static size_t collect(char *data, size_t size, size_t count, void *context)
     return buf_append(context, data, size * count) ? size * count : 0;
 }
 
-bool http_get(const char *url, const char *bearer, buf_t *out, int *status, char *err, size_t errlen)
+static bool get_as(const char *url, const char *bearer, const char *agent, buf_t *out, int *status, char *err,
+                   size_t errlen)
 {
     out->len = 0;
     *status = 0;
@@ -46,7 +47,7 @@ bool http_get(const char *url, const char *bearer, buf_t *out, int *status, char
     }
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "ArtSwap/" ARTSWAP_VERSION " (PS5 homebrew)");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, agent);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
@@ -63,4 +64,14 @@ bool http_get(const char *url, const char *bearer, buf_t *out, int *status, char
     }
     *status = (int)code;
     return true;
+}
+
+bool http_get(const char *url, const char *bearer, buf_t *out, int *status, char *err, size_t errlen)
+{
+    return get_as(url, bearer, "ArtSwap/" ARTSWAP_VERSION " (PS5 homebrew)", out, status, err, errlen);
+}
+
+bool http_get_plain(const char *url, buf_t *out, int *status, char *err, size_t errlen)
+{
+    return get_as(url, NULL, "Mozilla/5.0", out, status, err, errlen);
 }

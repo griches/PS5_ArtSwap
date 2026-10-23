@@ -63,17 +63,32 @@ constexpr float kPanelW = 556.0f;
 struct Kind
 {
     const char *tab;   // shown
-    const char *slot;  // the art it changes: icon or pic
+    const char *slot;  // the art it changes: icon, pic or logo
     const char *kind;  // the helper's LIST kind
     float cell_w, cell_h;
     bool fit;          // the framing it starts with
 };
 
-// the picker's tabs: SteamGridDB's square grids for the tile, its heroes (made for backgrounds) for pic0
+// the picker's tabs: SteamGridDB's square grids for the tile, its heroes (made for backgrounds) for pic0, its
+// logos (transparent, mostly white lettering) for the game's page, where its name would show
 const Kind kKinds[] = {
     {"Icons", "icon", "square", 200, 200, false},
     {"Backgrounds", "pic", "heroes", 520, 168, false},
+    {"Logos", "logo", "logos", 344, 150, false},
 };
+
+const Kind &kind_for(const std::vector<int> &kinds, int tab)
+{
+    if (kinds.empty())
+        return kKinds[0];
+    return kKinds[kinds[static_cast<std::size_t>(std::clamp(tab, 0, static_cast<int>(kinds.size()) - 1))]];
+}
+
+// The logo on a title's page, in words
+std::string logo_label(const std::string &logo)
+{
+    return logo == "art" ? "custom" : logo == "other" ? "its own" : "none";
+}
 
 // The size in a slot's description ("dds-bc7 3840x2160 x4"), 0 when there is none
 void desc_size(const std::string &desc, int &w, int &h)
@@ -209,7 +224,15 @@ struct App::Title
     bool kept = false;      // an original of its art is kept
     bool name_kept = false; // its original name is kept (renamed)
     bool refresh = true;    // ShadowMountPlus can install it again (R2); otherwise only a restart shows new art
+    long store_concept = 0; // its PlayStation Store concept: 0 for homebrew
+    std::string logo = "-"; // the logo on its page: art (Art Swap's), other (its own) or - (none: its name shows)
+    bool listed = true;     // the home screen has an entry for it, so it can have a logo
     long sgdb_id = 0;
+    // changed by Art Swap: art (originals kept), a name or a logo, so Restore has something to put back
+    bool changed() const
+    {
+        return kept || name_kept || logo == "art";
+    }
     std::uint32_t icon = 0;
     bool icon_asked = false, icon_failed = false;
     std::uint32_t background = 0;
@@ -222,6 +245,7 @@ struct App::Title
 struct App::Art
 {
     std::string url, thumb, style, author, mime;
+    bool store = false; // the game's own logo, from PlayStation Store
     int w = 0, h = 0;
     std::uint32_t texture = 0;
     int tw = 0, th = 0;
@@ -304,7 +328,7 @@ int App::kept_count() const
 {
     int kept = 0;
     for (const auto &title : titles_)
-        kept += title->kept;
+        kept += title->kept || title->logo == "art";
     return kept;
 }
 
@@ -349,6 +373,12 @@ void App::load_titles(bool rescan)
             title->kept = row[6] == "1";
             title->name_kept = row.size() > 9 && row[9] == "1";
             title->refresh = row.size() <= 10 || row[10] == "1";
+            if (row.size() > 13)
+            {
+                title->store_concept = std::strtol(row[11].c_str(), nullptr, 10);
+                title->logo = row[12];
+                title->listed = row[13] == "1";
+            }
             title->sgdb_id = std::strtol(row[7].c_str(), nullptr, 10);
             title->sgdb_name = row[8];
             // keep the pictures already loaded, unless this is a fresh look
@@ -382,6 +412,11 @@ void App::load_titles(bool rescan)
                 focus_ = i;
         shown_ = -1;
         load_pending();
+        helper_.ask({"STORE"}, [this](Reply &answer) {
+            for (const auto &r : answer.rows())
+                if (r.size() >= 2 && r[0] == "store")
+                    store_logos_ = r[1] == "on";
+        }, true);
         if (screen_ == Screen::starting)
         {
             screen_ = Screen::library;
@@ -493,22 +528,27 @@ void App::request_background(Title &title)
 
 // ---------------------------------------------------------------- the picker
 
-std::vector<const char *> App::tabs() const
+std::vector<int> App::tab_kinds() const
 {
-    std::vector<const char *> out{kKinds[0].tab};
-    // Backgrounds only for a title with a pic0 or pic1 to replace
+    std::vector<int> out{0};
+    // Backgrounds only for a title with a pic0 or pic1 to replace; Logos for one the home screen lists
     if (picker_title_ >= 0)
     {
         const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
         if (!title.pic_desc.empty() && title.pic_desc != "-")
-            out.push_back(kKinds[1].tab);
+            out.push_back(1);
+        if (title.listed)
+            out.push_back(2);
     }
     return out;
 }
 
-static const Kind &kind_of(int tab)
+std::vector<const char *> App::tabs() const
 {
-    return kKinds[std::clamp(tab, 0, 1)];
+    std::vector<const char *> out;
+    for (int kind : tab_kinds())
+        out.push_back(kKinds[kind].tab);
+    return out;
 }
 
 App::Art *App::focused_art()
@@ -532,7 +572,11 @@ void App::open_picker(int title, const std::string &slot)
     screen_ = Screen::picker;
     age_ = 0.0f;
     list_error_.clear();
-    tab_ = slot == "icon" ? 0 : 1;
+    tab_ = 0;
+    const std::vector<int> kinds = tab_kinds();
+    for (int i = 0; i < static_cast<int>(kinds.size()); ++i)
+        if (slot == kKinds[kinds[static_cast<std::size_t>(i)]].slot)
+            tab_ = i;
     tab_position_.snap(static_cast<float>(tab_));
     set_tab(tab_);
 }
@@ -543,7 +587,8 @@ void App::load_current_art()
     current_art_ = 0;
     const int title = picker_title_;
     const std::string slot = slot_;
-    const std::string w = slot == "icon" ? "512" : "960", h = slot == "icon" ? "512" : "540";
+    const std::string w = slot == "icon" ? "512" : slot == "logo" ? "800" : "960",
+                      h = slot == "icon" ? "512" : slot == "logo" ? "400" : "540";
     helper_.ask({"ART", titles_[static_cast<std::size_t>(title)]->id, slot, w, h},
                 [this, title, slot](Reply &reply) {
                     if (screen_ != Screen::picker || picker_title_ != title || slot_ != slot || !reply.ok)
@@ -594,15 +639,18 @@ void App::set_tab(int tab)
     arts_.clear();
     forget(preview_);
     tab_ = tab;
-    if (slot_ != kind_of(tab).slot)
+    const Kind &kind = kind_for(tab_kinds(), tab);
+    if (slot_ != kind.slot)
     {
-        slot_ = kind_of(tab).slot;
+        slot_ = kind.slot;
         load_current_art();
     }
     art_focus_ = 0;
     page_ = 0;
     total_ = 0;
     hidden_ = 0;
+    store_arts_ = 0;
+    store_asked_ = false;
     list_error_.clear();
     grid_scroll_.position.snap(0.0f);
     reset_framing();
@@ -651,6 +699,10 @@ void App::match_and_list()
             }
         list_error_ = "SteamGridDB has no game called \xE2\x80\x9C" + name +
                       "\xE2\x80\x9D. Choose Another game to look for it under another name.";
+        // a store game's own logo can show all the same
+        for (auto &t : titles_)
+            if (t->id == id && slot_ == "logo" && t->store_concept > 0 && store_logos_)
+                load_page();
     }, true, gen);
 }
 
@@ -661,7 +713,40 @@ void App::load_page()
     const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
     listing_ = true;
     const int gen = generation_, page = page_;
-    helper_.ask({"LIST", std::to_string(title.sgdb_id), kind_of(tab_).kind, std::to_string(page)},
+    // a store game's own logo first, from PlayStation Store, when the person has turned that on
+    if (slot_ == "logo" && page == 0 && title.store_concept > 0 && store_logos_ && !store_asked_)
+    {
+        store_asked_ = true;
+        helper_.ask({"STORELOGO", title.id}, [this, gen](Reply &reply) {
+            if (gen != generation_)
+                return;
+            listing_ = false;
+            if (!reply.ok)
+                toast("PlayStation Store's logo did not load", reply.error, true);
+            for (const auto &row : reply.rows())
+                if (row.size() >= 9 && row[0] == "I")
+                {
+                    auto art = std::make_unique<Art>();
+                    art->url = row[2];
+                    art->thumb = row[3];
+                    art->w = std::atoi(row[4].c_str());
+                    art->h = std::atoi(row[5].c_str());
+                    art->style = row[6];
+                    art->author = row[7];
+                    art->mime = row[8];
+                    art->store = true;
+                    arts_.push_back(std::move(art));
+                    store_arts_++;
+                }
+            request_thumbs();
+            if (!arts_.empty())
+                cell_ring_.snap(cell_rect(art_focus_));
+            if (titles_[static_cast<std::size_t>(picker_title_)]->sgdb_id > 0)
+                load_page();
+        }, true, gen);
+        return;
+    }
+    helper_.ask({"LIST", std::to_string(title.sgdb_id), kind_for(tab_kinds(), tab_).kind, std::to_string(page)},
                 [this, gen](Reply &reply) {
                     if (gen != generation_)
                         return;
@@ -671,7 +756,7 @@ void App::load_page()
                         list_error_ = reply.error;
                         return;
                     }
-                    const bool first = arts_.empty();
+                    const bool first = static_cast<int>(arts_.size()) == store_arts_;
                     for (const auto &row : reply.rows())
                     {
                         if (row.size() >= 4 && row[0] == "P")
@@ -779,7 +864,9 @@ void App::request_thumbs()
 void App::request_preview()
 {
     const Art *art = focused_art();
-    if (art == nullptr || picker_title_ < 0)
+    preview_loading_ = false;
+    // a logo is written as it is: its own thumbnail shows what it makes
+    if (art == nullptr || picker_title_ < 0 || slot_ == "logo")
         return;
     const int serial = ++preview_serial_;
     preview_loading_ = true;
@@ -826,7 +913,7 @@ float App::file_aspect() const
 void App::reset_framing()
 {
     framing_ = Framing{};
-    framing_.fit = kind_of(tab_).fit;
+    framing_.fit = kind_for(tab_kinds(), tab_).fit;
     has_custom_ = false;
 }
 
@@ -1152,6 +1239,28 @@ void App::apply()
         return;
     Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
     sheet_ = Sheet::working;
+    if (slot_ == "logo")
+    {
+        // the page shows it at once: nothing waits for Apply changes
+        working_text_ = "Putting the logo on the game's page";
+        const std::string id = title.id, name = title.name;
+        helper_.ask({"LOGO", id, art->url}, [this, id, name](Reply &reply) {
+            sheet_ = Sheet::none;
+            if (!reply.ok)
+            {
+                toast("The logo was not set", reply.error, true);
+                return;
+            }
+            for (auto &t : titles_)
+                if (t->id == id)
+                    t->logo = "art";
+            toast("New logo for " + name,
+                  "It shows on the game's page on the home screen now, in place of its name. Restore takes it off "
+                  "again.");
+            close_picker();
+        }, true);
+        return;
+    }
     working_text_ = slot_ == "icon" ? "Writing the new icon" : "Writing the new background";
     const std::string id = title.id, name = title.name, slot = slot_;
     helper_.ask({"APPLY", id, slot, art->url, framing_.fit ? "fit" : "cover", number(framing_.pan_x),
@@ -1269,10 +1378,10 @@ void App::restore()
     if (title == nullptr)
         return;
     sheet_ = Sheet::working;
-    working_text_ = title->name_kept ? "Putting the originals back" : "Putting the original art back";
+    working_text_ = title->name_kept || title->logo == "art" ? "Putting the originals back" : "Putting the original art back";
     const std::string id = title->id, name = title->name;
-    const bool named = title->name_kept;
-    helper_.ask({"RESTORE", id, "all"}, [this, id, name, named](Reply &reply) {
+    const bool named = title->name_kept, art = title->kept;
+    helper_.ask({"RESTORE", id, "all"}, [this, id, name, named, art](Reply &reply) {
         sheet_ = Sheet::none;
         if (!reply.ok)
         {
@@ -1284,11 +1393,19 @@ void App::restore()
             {
                 t->kept = false;
                 t->name_kept = false;
+                if (t->logo == "art")
+                    t->logo = "-";
                 t->icon_asked = false;
                 t->background_asked = false;
                 request_icon(*t);
                 request_background(*t);
             }
+        // a logo leaves the page at once; art and names wait for Apply changes
+        if (!art && !named)
+        {
+            toast("The logo is off " + name + "'s page", "Its page shows its name again.");
+            return;
+        }
         toast(named ? name + "'s originals are back" : "The original art of " + name + " is back",
               shows_after("", "them"));
         note_pending(id, named);
@@ -1721,10 +1838,6 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
     int next = focus_;
     if (input.nav == Direction::left || input.nav == Direction::right)
         next += input.nav == Direction::right ? 1 : -1;
-    if (input.is_pressed(Action::page_next))
-        next += 6;
-    if (input.is_pressed(Action::page_prev))
-        next -= 6;
     if (next != focus_ && count > 0)
     {
         const int clamped = std::clamp(next, 0, count - 1);
@@ -1769,9 +1882,20 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
         else
             want_picker("pic", feedback);
     }
+    else if (input.is_pressed(Action::page_next))
+    {
+        if (title->listed)
+            want_picker("logo", feedback);
+        else
+        {
+            feedback.play(Cue::error);
+            toast(title->name + " has no page for a logo",
+                  "The home screen does not list it yet, so there is nowhere to show one.", true);
+        }
+    }
     else if (input.is_pressed(Action::west))
     {
-        if (title->kept || title->name_kept)
+        if (title->changed())
         {
             sheet_ = Sheet::restore;
             feedback.play(Cue::modal_open);
@@ -1868,17 +1992,19 @@ void App::update_picker(const hui::InputFrame &input, float dt, ui::Feedback &fe
                 feedback.play(Cue::error, 1.0f, 0.0f, 0.5f);
         }
         // more from SteamGridDB when the last row is reached
-        if (art_focus_ / cols >= (count - 1) / cols && count < total_ && !listing_)
+        if (art_focus_ / cols >= (count - 1) / cols && count - store_arts_ < total_ && !listing_)
             load_page();
         const Art *art = focused_art();
-        if (input.is_pressed(Action::north) && art)
+        // a logo is written whole: nothing to frame
+        const bool framed = slot_ != "logo";
+        if (input.is_pressed(Action::north) && art && framed)
         {
             feedback.play(Cue::open);
             open_frame();
             return;
         }
         // the right stick slides the part kept, when the frame cuts the picture
-        if (art && !framing_.fit && (std::fabs(input.stick2_x) > 0.05f || std::fabs(input.stick2_y) > 0.05f))
+        if (art && framed && !framing_.fit && (std::fabs(input.stick2_x) > 0.05f || std::fabs(input.stick2_y) > 0.05f))
             move_frame(input.stick2_x * dt, input.stick2_y * dt, 1.0f);
         if (input.is_pressed(Action::confirm) && art)
         {
@@ -2017,7 +2143,7 @@ Rect App::card_rect(int index) const
 
 Rect App::cell_size() const
 {
-    const Kind &k = kind_of(tab_);
+    const Kind &k = kind_for(tab_kinds(), tab_);
     return {0, 0, k.cell_w, k.cell_h};
 }
 
@@ -2209,15 +2335,17 @@ void App::draw_library(gfx::DrawList &list) const
     ui::text(list, fonts_.semibold, kind_label(title->kind) + "  \xC2\xB7  " + title->id, x, 212, 20, title->accent,
              gfx::Align::left, 4.0f);
     ui::text(list, fonts_.display, fonts_.display.font->fit(title->name, 84, 1150), x - 4, 306, 84, kWhite);
-    ui::text(list, fonts_.regular,
-             "Icon  " + describe(title->icon_desc) + "     Background  " + describe(title->pic_desc), x, 362, 25,
-             kWhite.with_alpha(0.78f));
+    std::string facts = "Icon  " + describe(title->icon_desc) + "     Background  " + describe(title->pic_desc);
+    if (title->listed)
+        facts += "     Logo  " + logo_label(title->logo);
+    ui::text(list, fonts_.regular, fonts_.regular.font->fit(facts, 25, 1240), x, 362, 25, kWhite.with_alpha(0.78f));
     float y = 412;
-    if (title->kept || title->name_kept)
+    if (title->changed())
     {
-        const std::string chip = title->kept && title->name_kept ? "Custom art and name  \xC2\xB7  originals kept"
-                                 : title->kept                   ? "Custom art  \xC2\xB7  original kept"
-                                                                 : "New name  \xC2\xB7  original kept";
+        const bool art = title->kept || title->logo == "art";
+        const std::string chip = art && title->name_kept ? "Custom art and name  \xC2\xB7  originals kept"
+                                 : art                   ? "Custom art  \xC2\xB7  original kept"
+                                                         : "New name  \xC2\xB7  original kept";
         const float cw = fonts_.semibold.measure(chip, 21) + 44;
         list.bordered_rect({x, y - 30, cw, 44}, 22, title->accent.with_alpha(0.14f), 1.5f,
                            title->accent.with_alpha(0.7f));
@@ -2256,6 +2384,17 @@ void App::draw_library(gfx::DrawList &list) const
         list.pop_opacity();
         bx += w + 20;
     }
+    if (title->listed)
+    {
+        // the logo on the game's page, where its name shows without one; a shoulder glyph is wider
+        const char *label = "Change logo";
+        const float w = fonts_.semibold.measure(label, 27) + 112;
+        const Rect pill{bx, by, w, 64};
+        list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(0.35f));
+        ui::draw_button(list, fonts_, dark, ui::Button::r1, pill.x + 20, pill.cy(), 34);
+        ui::text(list, fonts_.semibold, label, pill.x + 82, pill.cy() + 10, 27, kWhite);
+        bx += w + 20;
+    }
     // the rest, smaller, on a row of their own; a shoulder button's glyph is wider than a face button's
     struct Secondary
     {
@@ -2263,7 +2402,7 @@ void App::draw_library(gfx::DrawList &list) const
         const char *label;
     };
     std::vector<Secondary> more;
-    if (title->kept || title->name_kept)
+    if (title->changed())
         more.push_back({ui::Button::square, "Restore"});
     if (title->refresh)
         more.push_back({ui::Button::l2, "Rename"});
@@ -2330,7 +2469,7 @@ void App::draw_library(gfx::DrawList &list) const
             ui::text(list, fonts_.semibold, fonts_.semibold.font->fit(t.name, 20, rect.w - 24), rect.x + 12,
                      rect.y + rect.h - 16, 20, kWhite.with_alpha(0.8f));
         }
-        if (t.kept)
+        if (t.kept || t.logo == "art")
             list.circle(rect.x + rect.w - 18, rect.y + 18, 7, t.accent);
     }
     // the selected card, in its own place: lifted, lit and ringed as it grows
@@ -2345,7 +2484,7 @@ void App::draw_library(gfx::DrawList &list) const
     else
         list.rounded_rect(card, 26, title->mid);
     list.bordered_rect(card.inset(-5), 30, Color::rgb(0x000000, 0.0f), 4, kWhite.with_alpha(tween::clamp01(grown * 1.5f)));
-    if (title->kept)
+    if (title->kept || title->logo == "art")
         list.circle(card.x + card.w - 18, card.y + 18, 7, title->accent);
     list.pop_opacity();
 }
@@ -2355,12 +2494,12 @@ void App::draw_picker(gfx::DrawList &list) const
     if (picker_title_ < 0)
         return;
     const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
-    const bool icon = slot_ == "icon";
+    const bool icon = slot_ == "icon", logo = slot_ == "logo";
     const float in = tween::stagger(age_, 1, 0.06f, 0.5f);
     list.push_opacity(in);
 
-    ui::text(list, fonts_.semibold, icon ? "CHANGE THE ICON" : "CHANGE THE BACKGROUND", kMargin, 168, 20,
-             title.accent, gfx::Align::left, 4.0f);
+    ui::text(list, fonts_.semibold, icon ? "CHANGE THE ICON" : logo ? "CHANGE THE LOGO" : "CHANGE THE BACKGROUND",
+             kMargin, 168, 20, title.accent, gfx::Align::left, 4.0f);
     ui::text(list, fonts_.display, fonts_.display.font->fit(title.name, 60, 1100), kMargin - 3, 234, 60, kWhite);
     std::string game;
     if (matching_)
@@ -2401,8 +2540,11 @@ void App::draw_picker(gfx::DrawList &list) const
         const bool focused = i == art_focus_;
         // dimmed, not see-through: a dark card under each picture
         if (art.texture)
-            list.rounded_rect(r, 14, kNight);
-        if (art.texture)
+            list.rounded_rect(r, 14, logo ? gfx::mix(kNight, title.dark, 0.5f) : kNight);
+        if (art.texture && logo)
+            list.image(art.texture, contain(r.inset(18), art.tw, art.th), gfx::kFullUv,
+                       kWhite.with_alpha(focused ? 1.0f : 0.82f), 0);
+        else if (art.texture)
             list.image(art.texture, r, cover_uv(art.tw, art.th, r.w, r.h, 0.0f),
                        kWhite.with_alpha(focused ? 1.0f : 0.82f), 14);
         else
@@ -2413,11 +2555,20 @@ void App::draw_picker(gfx::DrawList &list) const
                          gfx::Align::center);
         }
         // a background big enough for the console's 3840-wide one
-        if (!icon && art.w >= 3840)
+        if (!icon && !logo && art.w >= 3840)
         {
             const Rect tag{r.x + r.w - 54, r.y + 10, 44, 26};
             list.rounded_rect(tag, 13, kNight.with_alpha(0.78f));
             ui::text(list, fonts_.semibold, "4K", tag.cx(), tag.y + 19, 15, kWhite, gfx::Align::center);
+        }
+        // the game's own, from PlayStation Store
+        if (art.store)
+        {
+            const float tw = fonts_.semibold.measure("PLAYSTATION STORE", 14) + 24;
+            const Rect tag{r.x + 10, r.y + 10, tw, 26};
+            list.rounded_rect(tag, 13, Color::rgb(0x0070d1, 0.9f));
+            ui::text(list, fonts_.semibold, "PLAYSTATION STORE", tag.cx(), tag.y + 18, 14, kWhite, gfx::Align::center,
+                     1.0f);
         }
     }
     if (!arts_.empty())
@@ -2441,7 +2592,7 @@ void App::draw_picker(gfx::DrawList &list) const
         }
         else
         {
-            const std::string what = tab_ == 0 ? "icons" : "backgrounds";
+            const std::string what = icon ? "icons" : logo ? "logos" : "backgrounds";
             ui::paragraph(list, fonts_.regular,
                           "SteamGridDB has no " + what + " for this game yet. If it is listed under another "
                               "name, choose Another game.",
@@ -2453,6 +2604,37 @@ void App::draw_picker(gfx::DrawList &list) const
 
     // ---- the preview: what would be written, beside what is there ----
     const Art *art = focused_art();
+    if (logo)
+    {
+        // as the game's page shows it, then what it has now
+        const Rect page{kPanelX, kGridTop, kPanelW, kPanelW * 9 / 16};
+        ui::text(list, fonts_.semibold, "NEW", page.x, page.y - 16, 17, kWhite.with_alpha(0.6f), gfx::Align::left, 3.0f);
+        list.shadow({page.x, page.y + 18, page.w, page.h}, 18, 36, Color::rgb(0x000000, 0.55f));
+        draw_logo_page(list, page, art ? art->texture : 0, art ? art->tw : 0, art ? art->th : 0, 14.0f);
+        list.bordered_rect(page, 14, Color::rgb(0x000000, 0.0f), 2, kWhite.with_alpha(0.2f));
+        float ly = page.y + page.h + 36;
+        if (art)
+        {
+            char line[160];
+            std::snprintf(line, sizeof(line), "%d\xC3\x97%d  \xC2\xB7  %s", art->w, art->h, art->style.c_str());
+            ui::text(list, fonts_.regular, line, page.x, ly, 22, kWhite.with_alpha(0.8f));
+            ui::text(list, fonts_.regular,
+                     art->store ? std::string("PlayStation Store: the game's own")
+                                : "by " + fonts_.regular.font->fit(art->author, 20, kPanelW - 40),
+                     page.x, ly + 28, 20, kWhite.with_alpha(0.55f));
+            ly += 64;
+        }
+        const Rect now{page.x, ly, 192, 108};
+        draw_logo_page(list, now, current_art_, current_w_, current_h_, 8.0f);
+        ui::text(list, fonts_.semibold, "NOW", now.x + now.w + 22, now.y + 28, 17, kWhite.with_alpha(0.6f),
+                 gfx::Align::left, 3.0f);
+        ui::text(list, fonts_.regular,
+                 title.logo == "-" ? std::string("No logo: its name shows")
+                                   : title.logo == "art" ? std::string("A logo from Art Swap") : std::string("Its own logo"),
+                 now.x + now.w + 22, now.y + 58, 20, kWhite.with_alpha(0.7f));
+        list.pop_opacity();
+        return;
+    }
     const Rect fresh = icon ? Rect{kPanelX + 88, kGridTop - 10, 380, 380} : Rect{kPanelX, kGridTop, kPanelW, kPanelW * 9 / 16};
     ui::text(list, fonts_.semibold, "NEW", fresh.x, fresh.y - 16, 17, kWhite.with_alpha(0.6f), gfx::Align::left, 3.0f);
     list.shadow({fresh.x, fresh.y + 18, fresh.w, fresh.h}, icon ? 32 : 18, 36, Color::rgb(0x000000, 0.55f));
@@ -2488,6 +2670,30 @@ void App::draw_picker(gfx::DrawList &list) const
         ui::text(list, fonts_.regular, "original kept", now.x + now.w + 22, now.y + 86, 20,
                  title.accent.with_alpha(0.9f));
     list.pop_opacity();
+}
+
+// The game's page on the home screen, small: its background, darkened on the left as the console darkens it,
+// and the logo where the console puts it, at the left, a little below the middle
+void App::draw_logo_page(gfx::DrawList &list, const Rect &r, std::uint32_t logo, int lw, int lh, float radius) const
+{
+    const Title *title = picker_title_ >= 0 ? titles_[static_cast<std::size_t>(picker_title_)].get() : focused_title();
+    list.rounded_rect(r, radius, kNight);
+    if (title && title->background)
+        list.image(title->background, r, cover_uv(title->background_w, title->background_h, r.w, r.h), kWhite, radius);
+    list.gradient_rect_h(r, radius, kNight.with_alpha(0.75f), kNight.with_alpha(0.0f));
+    const float s = r.w / 1920.0f;
+    const Rect box{r.x + 172 * s, r.y + 590 * s, 620 * s, 200 * s};
+    if (logo)
+    {
+        const Rect fitted = contain(box, lw, lh);
+        list.image(logo, {box.x, fitted.y, fitted.w, fitted.h}, gfx::kFullUv, kWhite, 0);
+    }
+    else if (title && r.w > 300)
+        ui::text(list, fonts_.semibold, fonts_.semibold.font->fit(title->name, 54 * s * 1.6f, box.w), box.x,
+                 box.y + box.h * 0.6f, 54 * s * 1.6f, kWhite);
+    // the console's Play button under it
+    if (r.w > 300)
+        list.rounded_rect({box.x, r.y + 860 * s, 360 * s, 84 * s}, 42 * s, kWhite.with_alpha(0.16f));
 }
 
 // What the chosen picture would make: the helper's preview of it, or, until that arrives, its
@@ -2563,6 +2769,25 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
     case Sheet::working:
     {
         const bool icon = slot_ == "icon";
+        if (slot_ == "logo" && (screen_ == Screen::picker || sheet_ == Sheet::confirm))
+        {
+            heading("NEW LOGO", "For " + name + "?");
+            const Art *art = focused_art();
+            const Rect pic{panel.x + panel.w - 64 - 400, panel.y + 170, 400, 225};
+            draw_logo_page(list, pic, art ? art->texture : 0, art ? art->tw : 0, art ? art->th : 0, 10.0f);
+            ui::paragraph(list, fonts_.regular,
+                          "Art Swap puts it on the game's page on the home screen, where its name shows in plain "
+                          "text now. It shows straight away, and stays when the game is renamed. Restore takes it "
+                          "off again.",
+                          x, y, 25, panel.w - 128 - pic.w - 40, 38, kWhite.with_alpha(0.85f), 7);
+            if (sheet_ == Sheet::working)
+            {
+                draw_spinner(list, x + 22, panel.y + panel.h - 70, 20);
+                ui::text(list, fonts_.semibold, working_text_ + "\xE2\x80\xA6", x + 64, panel.y + panel.h - 60, 26,
+                         kWhite);
+            }
+            break;
+        }
         heading(icon ? "NEW ICON" : "NEW BACKGROUND", "For " + name + "?");
         const Rect pic = icon ? Rect{panel.x + panel.w - 64 - 260, panel.y + 150, 260, 260}
                               : Rect{panel.x + panel.w - 64 - 400, panel.y + 170, 400, 225};
@@ -2581,12 +2806,21 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         break;
     }
     case Sheet::restore:
+    {
         heading("RESTORE", "The original art of " + name + "?");
-        ui::paragraph(list, fonts_.regular,
-                      title && title->name_kept ? "Art Swap puts back the icon, background and name this game came with."
-                                                : "Art Swap puts back the icon and background this game came with.",
-                      x, y, 26, panel.w - 128, 40, kWhite.with_alpha(0.85f), 4);
+        // what goes back: the art, the name, and the logo comes off
+        std::string what;
+        if (title && title->kept)
+            what = title->name_kept ? "the icon, background and name" : "the icon and background";
+        else if (title && title->name_kept)
+            what = "the name";
+        std::string text = what.empty() ? "" : "Art Swap puts back " + what + " this game came with.";
+        if (title && title->logo == "art")
+            text += std::string(text.empty() ? "Art Swap" : " It also") +
+                    " takes its logo off its page, which shows its name again.";
+        ui::paragraph(list, fonts_.regular, text, x, y, 26, panel.w - 128, 40, kWhite.with_alpha(0.85f), 4);
         break;
+    }
     case Sheet::apply:
     {
         const int changed = static_cast<int>(pending_.size());
@@ -2799,7 +3033,9 @@ void App::draw_hints(gfx::DrawList &list) const
     const ui::GlyphStyle style = ui::GlyphStyle::dark();
     std::vector<ui::Hint> hints;
     if (sheet_ == Sheet::confirm)
-        hints = {{ui::Button::cross, slot_ == "icon" ? "Use this icon" : "Use this background"},
+        hints = {{ui::Button::cross, slot_ == "icon"   ? "Use this icon"
+                                     : slot_ == "logo" ? "Use this logo"
+                                                       : "Use this background"},
                  {ui::Button::circle, "Cancel"}};
     else if (sheet_ == Sheet::restore)
         hints = {{ui::Button::cross, "Restore"}, {ui::Button::circle, "Cancel"}};
@@ -2844,7 +3080,9 @@ void App::draw_hints(gfx::DrawList &list) const
             hints.push_back({ui::Button::cross, "Icon"});
             if (!(title->pic_desc == "-" || title->pic_desc.empty()))
                 hints.push_back({ui::Button::triangle, "Background"});
-            if (title->kept || title->name_kept)
+            if (title->listed)
+                hints.push_back({ui::Button::r1, "Logo"});
+            if (title->changed())
                 hints.push_back({ui::Button::square, "Restore"});
             if (title->refresh)
                 hints.push_back({ui::Button::l2, "Rename"});
@@ -2860,7 +3098,8 @@ void App::draw_hints(gfx::DrawList &list) const
         if (focused_art())
         {
             hints.push_back({ui::Button::cross, "Use this"});
-            hints.push_back({ui::Button::triangle, "Frame"});
+            if (slot_ != "logo")
+                hints.push_back({ui::Button::triangle, "Frame"});
         }
         hints.push_back({ui::Button::square, "Another game"});
         hints.push_back({ui::Button::circle, "Back"});
