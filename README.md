@@ -114,11 +114,11 @@ L1 R1 L2 R2, OPTIONS, then ○.
 | | L2 R2 | zoom out, zoom in |
 | | ○ | back to the pictures |
 | Music | ↑ ↓ | choose a song |
-| | ← → | move the clip's start a second |
+| | ← → | move the clip's starting position a second |
 | | ✕ | use the clip as the game's music (asks first) |
 | | △ | play the clip as the home screen will, or stop it |
 | | □ | send songs from your phone (a QR code) |
-| | L1 R1 | move the start ten seconds |
+| | L1 R1 | move the starting position ten seconds |
 | | L2 R2 | make the clip five seconds shorter, longer |
 | | ○ | back to the games |
 | Settings | L1 R1, D-pad | the categories, and the rows in one |

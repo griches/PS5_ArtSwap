@@ -3261,7 +3261,7 @@ void App::draw_hints(gfx::DrawList &list) const
     }
     else if (screen_ == Screen::music)
     {
-        hints.push_back({ui::Button::dpad, "Song, start"});
+        hints.push_back({ui::Button::dpad, "Song, starting position"});
         if (!songs_.empty())
         {
             hints.push_back({ui::Button::cross, "Use this"});
