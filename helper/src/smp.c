@@ -19,8 +19,13 @@
  * anything is removed it copies the system's saved data of the title (every
  * user's savedata_prospero/<id> and savedata/<id>) to /data/artswap/saves/,
  * and stops if it cannot; it takes a fingerprint (every file's path and size)
- * of the title's folder, where homebrew keeps its own saves; and afterwards it
- * checks both, copying back any saved file that went missing.
+ * of the title's folder, where homebrew keeps its own saves; it moves the
+ * title's download data (/user/download/<id>, which the uninstall deletes, and
+ * where some homebrew keeps its saves) aside; and afterwards it puts that back
+ * and checks the rest, copying back any saved file that went missing.
+ *
+ * Apply changes installs a title again only for a background or music Art Swap
+ * added to it: a new name it writes into the home screen's database (appdb.c).
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -648,6 +653,185 @@ static int keep_list(const char *id, const char *backup, keep_t *keep)
     return n;
 }
 
+/* ---- the title's download data ---- */
+
+/* A title's download data, /user/download/<id> (download0.dat, its /download0),
+ * is where some homebrew keeps its saves (mshivam019's Ship of Harkinian when it
+ * cannot write its folder). The console's uninstall deletes it, and the title's
+ * next start makes a new, empty one. So it is moved aside first, beside itself
+ * (/user/download/<id>.artswap: the same disk, so nothing is copied), and moved
+ * back once the title is installed again, before anything can start it.
+ * download-aside.txt names the titles whose data is aside, for smp_recover
+ * when the helper ended in between. */
+
+#define DOWNLOAD_ROOT "/user/download"
+#define ASIDE_MAX 32
+
+static void download_path(const char *id, const char *suffix, char *out, size_t size)
+{
+    char path[160];
+    snprintf(path, sizeof(path), "%s/%s%s", DOWNLOAD_ROOT, id, suffix);
+    cpath(path, out, size);
+}
+
+/* rename, or as the folder's owner when the console refuses root (g_apply_lock held) */
+static int move_dir(const char *from, const char *to)
+{
+    if (rename(from, to) == 0)
+        return 0;
+    const int first = errno;
+    struct stat st;
+    const uid_t self = geteuid();
+    if ((first != EACCES && first != EPERM) || stat(from, &st) != 0 || st.st_uid == self || !act_as(st.st_uid)) {
+        errno = first;
+        return -1;
+    }
+    const int rc = rename(from, to);
+    const int second = errno;
+    act_as(self);
+    errno = second;
+    return rc;
+}
+
+/* The ids in download-aside.txt, one a line */
+static int aside_read(char (*ids)[16], int max)
+{
+    char path[512];
+    buf_t text = {0};
+    int n = 0;
+    if (file_read(data_path("download-aside.txt", path, sizeof(path)), &text) && text.len > 0 &&
+        buf_append(&text, "", 1)) {
+        char *save = NULL;
+        for (char *line = strtok_r((char *)text.data, "\n", &save); line && n < max; line = strtok_r(NULL, "\n", &save))
+            if (line[0] != 0)
+                copy_str(ids[n++], sizeof(ids[0]), line);
+    }
+    buf_free(&text);
+    return n;
+}
+
+static void aside_note(const char *id, bool aside)
+{
+    char ids[ASIDE_MAX][16], path[512];
+    const int n = aside_read(ids, ASIDE_MAX);
+    buf_t text = {0};
+    for (int i = 0; i < n; i++)
+        if (strcmp(ids[i], id) != 0)
+            buf_printf(&text, "%s\n", ids[i]);
+    if (aside)
+        buf_printf(&text, "%s\n", id);
+    file_write_replace(data_path("download-aside.txt", path, sizeof(path)), text.data ? text.data : (uint8_t *)"",
+                       text.len, NULL);
+    buf_free(&text);
+}
+
+/* 1 when the title's download data was moved aside, 0 when it has none, -1 when it could not be (err).
+ * g_apply_lock held. */
+static int download_aside(const char *id, char *err, size_t errlen)
+{
+    char home[512], aside[512];
+    download_path(id, "", home, sizeof(home));
+    download_path(id, ".artswap", aside, sizeof(aside));
+    struct stat st;
+    if (lstat(home, &st) != 0) {
+        if (errno == ENOENT)
+            return 0;
+        snprintf(err, errlen, "%s cannot be looked at (%s)", home, strerror(errno));
+        return -1;
+    }
+    if (lstat(aside, &st) == 0) {
+        snprintf(err, errlen, "an earlier copy of it is still at %s", aside);
+        return -1;
+    }
+    aside_note(id, true); /* first, so a helper ending right after the move still puts it back */
+    if (move_dir(home, aside) != 0) {
+        snprintf(err, errlen, "it could not be moved aside (%s)", strerror(errno));
+        aside_note(id, false);
+        return -1;
+    }
+    log_line("refresh %s: download data moved aside to %s", id, aside);
+    return 1;
+}
+
+/* The download data moved back into its place: false (err) when it is not there (a moment later, after an
+ * uninstall: settle) */
+static bool download_back(const char *id, bool settle, char *err, size_t errlen)
+{
+    char home[512], aside[512], fresh[512];
+    download_path(id, "", home, sizeof(home));
+    download_path(id, ".artswap", aside, sizeof(aside));
+    download_path(id, ".artswap-new", fresh, sizeof(fresh));
+    struct stat kept, st;
+    pthread_mutex_lock(&g_apply_lock);
+    bool ok = lstat(aside, &kept) == 0, made = false;
+    if (!ok)
+        snprintf(err, errlen, "Art Swap's copy at %s is gone", aside);
+    /* one the console made since, new and empty: out of the way, and deleted once the title's own is back */
+    if (ok && lstat(home, &st) == 0) {
+        remove_tree(fresh, 0);
+        made = ok = move_dir(home, fresh) == 0;
+        if (!ok)
+            snprintf(err, errlen, "a new %s is in the way (%s)", home, strerror(errno));
+    }
+    if (ok && move_dir(aside, home) != 0) {
+        snprintf(err, errlen, "it could not be moved back (%s)", strerror(errno));
+        ok = false;
+    }
+    pthread_mutex_unlock(&g_apply_lock);
+    /* the console's uninstall finishes in its own time: is it still there a moment later? */
+    if (ok) {
+        if (settle)
+            usleep(3000000);
+        ok = lstat(home, &st) == 0 && st.st_ino == kept.st_ino;
+        if (!ok)
+            snprintf(err, errlen, "it went missing after it was moved back");
+    }
+    if (!ok && lstat(aside, &st) == 0) {
+        const size_t used = strlen(err);
+        snprintf(err + used, errlen - used, "; Art Swap's copy is at %s", aside);
+    }
+    log_line("refresh %s: download data %s%s%s", id, ok ? "moved back" : "NOT BACK: ", ok ? "" : err,
+             made ? " (the console had made a new one)" : "");
+    if (ok) {
+        aside_note(id, false);
+        if (made) {
+            pthread_mutex_lock(&g_apply_lock);
+            remove_tree(fresh, 0);
+            pthread_mutex_unlock(&g_apply_lock);
+            if (lstat(fresh, &st) == 0)
+                log_line("refresh %s: the console's new download data stays at %s", id, fresh);
+        }
+    }
+    return ok;
+}
+
+void smp_recover(void)
+{
+    char ids[ASIDE_MAX][16];
+    const int n = aside_read(ids, ASIDE_MAX);
+    for (int i = 0; i < n; i++) {
+        char home[512], aside[512];
+        download_path(ids[i], "", home, sizeof(home));
+        download_path(ids[i], ".artswap", aside, sizeof(aside));
+        struct stat st;
+        if (lstat(aside, &st) != 0) {
+            aside_note(ids[i], false);
+            continue;
+        }
+        /* the title has made new download data since: both are kept, and Art Swap's copy is left for a person */
+        if (lstat(home, &st) == 0) {
+            log_line("recover %s: %s and %s are both there; Art Swap's copy stays", ids[i], home, aside);
+            continue;
+        }
+        pthread_mutex_lock(&g_apply_lock);
+        const bool back = move_dir(aside, home) == 0;
+        pthread_mutex_unlock(&g_apply_lock);
+        log_line("recover %s: download data %s", ids[i], back ? "moved back" : "COULD NOT BE MOVED BACK");
+        if (back)
+            aside_note(ids[i], false);
+    }
+}
+
 /* ---- the refresh ---- */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -773,6 +957,18 @@ static void *refresh_job(void *argument)
             set_phase("failed", "Art Swap could not copy %s's saved data aside, so it changed nothing.", job->name);
         ok = false;
     }
+    /* the download data, which the uninstall deletes, moved aside */
+    int aside = 0;
+    if (ok && job->installed) {
+        pthread_mutex_lock(&g_apply_lock);
+        aside = download_aside(job->id, err, sizeof(err));
+        pthread_mutex_unlock(&g_apply_lock);
+        if (aside < 0) {
+            set_phase("failed", "Art Swap could not keep %s's download data safe, so it changed nothing: %s",
+                      job->name, err);
+            ok = false;
+        }
+    }
     bool removed = false;
 
     /* 1. away from the home screen: ShadowMountPlus refuses while a game (Art Swap) is open */
@@ -836,6 +1032,10 @@ static void *refresh_job(void *argument)
             logo_keep(job->id, 30);
     }
 
+    /* 2b. the download data back in its place, before anything can start the title */
+    char download_why[300] = "";
+    const bool download_lost = aside > 0 && !download_back(job->id, removed, download_why, sizeof(download_why));
+
     /* 3. everything still in place; anything missing is copied back */
     if (whole) {
         pthread_mutex_lock(&g_apply_lock);
@@ -860,6 +1060,9 @@ static void *refresh_job(void *argument)
         if (restored < 0)
             set_phase("failed", "Some of %s's saved data went missing and Art Swap could not put it all back. The "
                       "copy is in %s.", job->name, backup);
+        else if (download_lost)
+            set_phase("failed", "%s's download data, where some games keep their saves, is not back in "
+                      "/user/download/%s: %s.", job->name, job->id, download_why);
         else if (!same)
             set_phase("failed", "%s's folder changed during the refresh: it held %llu files (%llu bytes) and now "
                       "holds %llu (%llu bytes). Art Swap keeps no copy of the folder, so check the game's saves.",

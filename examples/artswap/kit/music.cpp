@@ -271,7 +271,7 @@ void App::apply_music()
                         toast("The music was not changed", reply.error, true);
                         return;
                     }
-                    note_pending(id, adding);
+                    note_pending(id, adding ? Pending::install : Pending::art);
                     toast(std::string(adding ? "Music added to " : "New music for ") + name,
                           adding ? "Your game had none, so Restore deletes it. Apply changes (R2) installs the game "
                                    "again, so its tile plays it."

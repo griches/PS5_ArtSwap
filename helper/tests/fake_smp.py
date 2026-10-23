@@ -8,7 +8,9 @@
 # folder, and a scan installs the title again from its folder: the game list
 # says "installed" at once, and the copies follow a second later, as
 # ShadowMountPlus 1.7beta3 did on the console; the title's entry in the home
-# screen's database loses its logo, as an install writes it afresh. Switches, for tests (POST
+# screen's database loses its logo, as an install writes it afresh, and names
+# the background and music the install found. The uninstall deletes the
+# title's download data (/user/download/<id>), as the console's does. Switches, for tests (POST
 # /fake {"busy": true, "eat": "relative/path"}): busy refuses uninstalls as
 # while a game is open; eat deletes that file of the folder on uninstall, as a
 # broken uninstall would.
@@ -68,15 +70,19 @@ class Console:
         for f in (folder / "sce_sys").iterdir():
             if f.is_file() and not f.name.endswith(".old"):
                 shutil.copy(f, meta / f.name)
-        # the home screen's entry takes the name the install read
+        # the home screen's entry takes the name the install read, and the background and music it found
         db_path = self.root / "system_data/priv/mms/app.db"
         param = folder / "sce_sys/param.json"
         if db_path.exists() and param.exists():
             languages = json.loads(param.read_text())["localizedParameters"]
             name = languages[languages["defaultLanguage"]]["titleName"]
+            stamp = int(time.time())
+            pic0 = f"/user/app/{title}/sce_sys/pic0.dds?ts={stamp}" if (folder / "sce_sys/pic0.dds").exists() else ""
+            snd0 = f"/user/app/{title}/sce_sys/snd0.at9?ts={stamp}" if (folder / "sce_sys/snd0.at9").exists() else ""
             db = sqlite3.connect(db_path)
             try:
-                db.execute("UPDATE tbl_contentinfo SET titleName = ? WHERE titleId = ?", (name, title))
+                db.execute("UPDATE tbl_contentinfo SET titleName = ?, pic0Info = ?, snd0Info = ? WHERE titleId = ?",
+                           (name, pic0, snd0, title))
                 db.commit()
             except sqlite3.OperationalError:
                 pass
@@ -121,6 +127,7 @@ def make_handler(console: Console):
                     return self.answer(409, {"status": 16, "error": "Device busy", "error_reason": "game_active"})
                 shutil.rmtree(console.root / "user/app" / title, ignore_errors=True)
                 shutil.rmtree(console.root / "user/appmeta" / title, ignore_errors=True)
+                shutil.rmtree(console.root / "user/download" / title, ignore_errors=True)
                 console.forget_logo(title)
                 if console.eat:
                     (console.root / GAMES[title]["path"].lstrip("/") / console.eat).unlink(missing_ok=True)

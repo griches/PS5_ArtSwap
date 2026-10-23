@@ -1326,7 +1326,7 @@ void App::apply()
                         toast("Background added to " + name,
                               "Your game had none, so Restore deletes it. Apply changes (R2) installs the game again "
                               "to show it on the home screen.");
-                        note_pending(id, true);
+                        note_pending(id, Pending::install);
                         close_picker();
                         load_titles(false);
                         return;
@@ -1370,18 +1370,25 @@ void App::load_pending()
             return;
         pending_.clear();
         renamed_.clear();
+        installs_.clear();
         for (const auto &row : reply.rows())
             if (row.size() >= 2 && row[0] == "P")
-                note_pending(row[1], row.size() >= 3 && row[2] == "name");
+            {
+                const std::string kind = row.size() >= 3 ? row[2] : "art";
+                note_pending(row[1], kind == "install" ? Pending::install
+                                     : kind == "name"  ? Pending::name
+                                                       : Pending::art);
+            }
     }, true);
 }
 
-void App::note_pending(const std::string &id, bool name)
+void App::note_pending(const std::string &id, Pending kind)
 {
     if (!is_pending(id))
         pending_.push_back(id);
-    if (name && std::find(renamed_.begin(), renamed_.end(), id) == renamed_.end())
-        renamed_.push_back(id);
+    auto &list = kind == Pending::install ? installs_ : renamed_;
+    if (kind != Pending::art && std::find(list.begin(), list.end(), id) == list.end())
+        list.push_back(id);
 }
 
 bool App::is_pending(const std::string &id) const
@@ -1393,6 +1400,7 @@ void App::open_apply()
 {
     sheet_ = Sheet::apply;
     applying_ = false;
+    load_pending(); // which games need a new name or an install, as the helper sees them now
 }
 
 // The helper restarts the home screen once Art Swap has closed, so the person sees it come back (home.c)
@@ -1439,8 +1447,8 @@ void App::restore()
     sheet_ = Sheet::working;
     working_text_ = title->name_kept || title->logo == "art" ? "Putting the originals back" : "Putting the original art back";
     const std::string id = title->id, name = title->name;
-    const bool named = title->name_kept || title->added || title->music_added, art = title->kept;
-    helper_.ask({"RESTORE", id, "all"}, [this, id, name, named, art](Reply &reply) {
+    const bool install = title->added || title->music_added, named = title->name_kept || install, art = title->kept;
+    helper_.ask({"RESTORE", id, "all"}, [this, id, name, named, install, art](Reply &reply) {
         sheet_ = Sheet::none;
         if (!reply.ok)
         {
@@ -1469,7 +1477,7 @@ void App::restore()
         }
         toast(named ? name + "'s originals are back" : "The original art of " + name + " is back",
               shows_after("", "them"));
-        note_pending(id, named);
+        note_pending(id, install ? Pending::install : named ? Pending::name : Pending::art);
         if (named)
             load_titles(false); // its name, as the helper reads it again, and its art files
     }, true);
@@ -1552,8 +1560,8 @@ void App::type_name()
     }
 }
 
-// The helper writes the name into the game's param.json; the home screen shows it once the game is
-// installed again, so the refresh follows
+// The helper writes the name into the game's param.json files; Apply changes writes it into the home screen's
+// database, which shows it after the restart
 void App::rename(const std::string &name)
 {
     const Title *title = focused_title();
@@ -1577,7 +1585,7 @@ void App::rename(const std::string &name)
             }
         if (here)
             sheet_ = Sheet::none;
-        note_pending(id, true);
+        note_pending(id, Pending::name);
         toast("Renamed " + name, shows_after("Your original is kept, so Restore can put it back. ", "it"));
     }, true);
 }
@@ -3018,18 +3026,29 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                           "every change shows at once, whatever installed the game.",
                           x, y, 25, width, 38, kWhite.with_alpha(0.85f), 3) +
             16;
-        std::string renamed;
-        for (const auto &id : renamed_)
-            for (const auto &t : titles_)
-                if (t && t->id == id)
-                    renamed += (renamed.empty() ? "" : ", ") + t->name;
-        const std::string steps[] = {
-            "Art Swap closes.",
-            renamed.empty() ? std::string("The home screen goes dark for a few seconds.")
-                            : "ShadowMountPlus installs " + renamed + " again, for its new name or background.",
-            renamed.empty() ? std::string("It comes back with your new art.")
-                            : std::string("The home screen restarts with your new art and names.")};
-        for (int i = 0; i < 3; ++i)
+        // the games' names, as a list ("A, B")
+        auto names_of = [this](const std::vector<std::string> &ids) {
+            std::string names;
+            for (const auto &id : ids)
+                for (const auto &t : titles_)
+                    if (t && t->id == id)
+                        names += (names.empty() ? "" : ", ") + t->name;
+            return names;
+        };
+        const std::string renamed = names_of(renamed_), installed = names_of(installs_);
+        std::vector<std::string> steps = {"Art Swap closes."};
+        if (!renamed.empty())
+            steps.push_back(renamed + (renamed_.size() == 1 ? " gets its new name." : " get their new names."));
+        if (!installed.empty())
+            steps.push_back("ShadowMountPlus installs " + installed + " again, for the background or music added.");
+        if (renamed.empty() && installed.empty())
+        {
+            steps.push_back("The home screen goes dark for a few seconds.");
+            steps.push_back("It comes back with your new art.");
+        }
+        else
+            steps.push_back("The home screen restarts with every change.");
+        for (std::size_t i = 0; i < steps.size(); ++i)
         {
             list.bordered_rect({x, y - 27, 36, 36}, 18, tint.with_alpha(0.16f), 1.5f, tint.with_alpha(0.8f));
             ui::text(list, fonts_.semibold, std::to_string(i + 1), x + 18, y - 2, 20, kWhite, gfx::Align::center);
@@ -3037,17 +3056,20 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
             y += 52;
         }
         y += 14;
+        // a new name goes into the home screen's own list; only added art needs a game installed again
         const std::string kept =
-            renamed_.empty()
-                ? "Nothing else restarts: a game open in the background, your saved data and tools such as "
-                  "ShadowMountPlus carry on."
-                : "Nothing else restarts, and nothing is deleted: a renamed game's folder, with its saves, stays "
-                  "where it is, and Art Swap checks every file of it afterwards.";
+            installs_.empty()
+                ? (renamed_.empty() ? "Nothing else restarts: a game open in the background, your saved data and "
+                                      "tools such as ShadowMountPlus carry on."
+                                    : "No game is installed again: a new name goes straight into the home screen's "
+                                      "list. Your saved data and tools such as ShadowMountPlus carry on.")
+                : "Nothing is deleted: the game's folder and saved data stay where they are, its download data is "
+                  "set aside and put back, and Art Swap checks every file afterwards.";
         const float kept_lines =
             static_cast<float>(std::min<std::size_t>(fonts_.regular.font->wrap(kept, 22, width - 40).size(), 3));
         const Rect safe{x - 4, y - 8, width + 8, 78 + 32 * (kept_lines - 1) + 38};
         list.bordered_rect(safe, 18, Color::rgb(0x3ddc84, 0.08f), 1.5f, Color::rgb(0x3ddc84, 0.45f));
-        ui::text(list, fonts_.semibold, renamed_.empty() ? "ONLY THE HOME SCREEN RESTARTS" : "YOUR SAVED DATA STAYS",
+        ui::text(list, fonts_.semibold, installs_.empty() ? "ONLY THE HOME SCREEN RESTARTS" : "YOUR SAVED DATA STAYS",
                  safe.x + 24, safe.y + 40, 17,
                  Color::rgb(0x3ddc84), gfx::Align::left, 3.0f);
         ui::paragraph(list, fonts_.regular, kept, safe.x + 24, safe.y + 78, 22, safe.w - 48, 32,
@@ -3080,8 +3102,8 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         }
         if (refresh_ == Refresh::unable)
         {
-            const std::string why = renaming_ ? "Art Swap renames games that ShadowMountPlus installed from a folder, "
-                                                "which it can then refresh. " + refresh_why_
+            const std::string why = renaming_ ? "Art Swap renames homebrew that ShadowMountPlus installed from a "
+                                                "folder. " + refresh_why_
                                               : refresh_why_;
             y = ui::paragraph(list, fonts_.regular, why, x, y, 27, width, 42, kWhite, 5) + 24;
             ui::text(list, fonts_.semibold, renaming_ ? "WHAT A RENAME NEEDS" : "WHAT A REFRESH NEEDS", x, y, 17,

@@ -18,3 +18,13 @@ bool name_change(const app_t *app, const char *name, buf_t *report, char *err, s
 int name_restore(const app_t *app, buf_t *report);
 /* An original param.json is kept */
 bool name_kept(const app_t *app);
+
+/* The console's languages, numbered as the home screen's database numbers them (TITLE_01 is US English) */
+#define NAME_LANGUAGES 31
+/* A title's names as its param.json gives them: its default language's, and each language's it names ("" else) */
+typedef struct {
+    char def[256];
+    char lang[NAME_LANGUAGES][256];
+} names_t;
+/* The title's names, read from its param.json beside its art */
+bool name_read(const app_t *app, names_t *out);

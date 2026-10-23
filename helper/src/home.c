@@ -11,18 +11,26 @@
  * The title asks, then closes, so the helper first waits for its process to
  * end: the home screen it restarts is the one the person is looking at.
  *
- * A name is different: the home screen takes it only from an install. So a
- * renamed title is installed again first, through ShadowMountPlus (smp.c, with
- * its saved data copied aside and checked), and the restart follows. The
- * install takes a logo of Art Swap's away; it is put back (logo.c).
+ * A name is different: the home screen shows the name its database holds,
+ * which an install writes. So a renamed title's new name is written into the
+ * database first (appdb.c), and the restart shows it. A background or music
+ * Art Swap added to a title that had none (or took away) shows only after an
+ * install, so such a title is installed again first, through ShadowMountPlus
+ * (smp.c, with its saved data and download data kept and checked). The install
+ * takes a logo of Art Swap's away; it is put back (logo.c). (1.3.0 installed
+ * renamed titles again too, and the console's uninstall deleted their download
+ * data, where some homebrew keeps its saves.)
  *
  * pending.txt keeps the titles changed since the last restart, one a line: the
- * id, then a tab and "name" for a rename waiting for its install.
+ * id, then a tab and "name" for a title waiting for more than a restart (a new
+ * name, or an added background or music).
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "home.h"
+#include "appdb.h"
+#include "art.h"
 #include "logo.h"
 #include "smp.h"
 
@@ -53,7 +61,7 @@ static bool g_loaded; /* the last one read from home.txt */
 
 typedef struct {
     char id[16];
-    bool name; /* renamed: it needs installing again */
+    bool name; /* renamed, or art added: more than a restart */
 } pending_t;
 
 static int pending_read(pending_t *list)
@@ -134,14 +142,49 @@ void home_forget(const char *id)
     pthread_mutex_unlock(&g_lock);
 }
 
+/* A background or music Art Swap added, or took away, that the home screen's entry does not match yet: only an
+ * install takes it in, or out */
+static bool needs_install(const char *id, const appdb_title_t *home)
+{
+    if (!home->art_known)
+        return art_added(id, "pic0") || art_added(id, "snd0");
+    const char *what[] = {"pic0", "snd0"};
+    const char *info[] = {home->pic0, home->snd0};
+    for (int i = 0; i < 2; i++) {
+        const bool added = art_added(id, what[i]);
+        if (added && info[i][0] == 0)
+            return true;
+        if (!added && info[i][0] != 0) {
+            /* one Art Swap added and then deleted: the entry names a file that is gone */
+            char path[400], real[512];
+            copy_str(path, sizeof(path), info[i]);
+            path[strcspn(path, "?")] = 0;
+            if (!file_exists(cpath(path, real, sizeof(real))))
+                return true;
+        }
+    }
+    return false;
+}
+
 void home_pending(buf_t *out)
 {
-    static pending_t list[PENDING_MAX];
+    pending_t *list = malloc(PENDING_MAX * sizeof(*list));
+    if (list == NULL)
+        return;
     pthread_mutex_lock(&g_lock);
     const int n = pending_read(list);
-    for (int i = 0; i < n; i++)
-        buf_printf(out, "P\t%s\t%s\n", list[i].id, list[i].name ? "name" : "art");
     pthread_mutex_unlock(&g_lock);
+    for (int i = 0; i < n; i++) {
+        const char *kind = "art";
+        if (list[i].name) {
+            appdb_title_t home;
+            char err[200];
+            kind = appdb_title(list[i].id, &home, err, sizeof(err)) > 0 && needs_install(list[i].id, &home) ? "install"
+                                                                                                           : "name";
+        }
+        buf_printf(out, "P\t%s\t%s\n", list[i].id, kind);
+    }
+    free(list);
 }
 
 int home_renamed(char (*ids)[16], int max)
@@ -244,7 +287,7 @@ static bool alive(pid_t pid)
 
 typedef struct {
     pid_t title;
-    app_t *renamed; /* installed again before the restart */
+    app_t *renamed; /* renamed, or installed again, before the restart */
     int nrenamed;
 } restart_t;
 
@@ -259,14 +302,36 @@ static void *restart_job(void *argument)
         log_line("home: Art Swap (pid %d) is still open after 30 s; restarting the home screen anyway", (int)title);
     usleep(1500000);
 
-    /* renamed titles: installed again, so the home screen takes their new names */
+    /* titles waiting for more than a restart: a new name written into the home screen's database, and an install
+     * only for added art */
     char failed_names[300] = "", why[480] = "";
     int failures = 0;
+    names_t *names = malloc(sizeof(*names));
     for (int i = 0; i < job->nrenamed; i++) {
         const app_t *app = &job->renamed[i];
-        set_phase("installing", "Installing %s again for its new name or background", app->name);
-        char message[480];
-        if (!smp_refresh_run(app, 60, message, sizeof(message))) {
+        appdb_title_t home;
+        char message[480] = "";
+        bool done = false;
+        const int found = appdb_title(app->id, &home, message, sizeof(message));
+        if (found > 0 && needs_install(app->id, &home)) {
+            set_phase("installing", "Installing %s again for its new background or music", app->name);
+            done = smp_refresh_run(app, 60, message, sizeof(message));
+        } else if (found > 0 && names != NULL && name_read(app, names)) {
+            done = true;
+            if (strcmp(home.name, names->def) != 0) {
+                set_phase("renaming", "Giving %s its new name", app->name);
+                pthread_mutex_lock(&g_apply_lock);
+                done = appdb_rename(app->id, names, message, sizeof(message));
+                pthread_mutex_unlock(&g_apply_lock);
+            }
+            if (done)
+                home_forget(app->id);
+        } else if (found == 0) {
+            snprintf(message, sizeof(message), "%s is not on the home screen.", app->name);
+        } else if (found > 0) {
+            snprintf(message, sizeof(message), "%s's name could not be read.", app->name);
+        }
+        if (!done) {
             failures++;
             if (failures == 1)
                 copy_str(why, sizeof(why), message);
@@ -274,6 +339,7 @@ static void *restart_job(void *argument)
             snprintf(failed_names + used, sizeof(failed_names) - used, "%s%s", used ? ", " : "", app->name);
         }
     }
+    free(names);
     free(job->renamed);
     free(job);
 
@@ -309,7 +375,7 @@ static void *restart_job(void *argument)
     /* a logo of Art Swap's the restart or an install took from the home screen's database: put back */
     if (logo_keep(NULL, 0) > 0)
         log_line("home: logos put back after the restart");
-    /* what is left waiting: the renames whose install did not finish */
+    /* what is left waiting: the renames and installs that did not finish */
     pthread_mutex_lock(&g_lock);
     static pending_t list[PENDING_MAX];
     const int n = pending_read(list);
@@ -322,10 +388,8 @@ static void *restart_job(void *argument)
     pending_write(list, kept);
     pthread_mutex_unlock(&g_lock);
     if (failures > 0)
-        set_phase("failed",
-                  "The home screen restarted, but %s %s not installed again, so %s new name or background does not "
-                  "show yet. %s",
-                  failed_names, failures == 1 ? "was" : "were", failures == 1 ? "its" : "their", why);
+        set_phase("failed", "The home screen restarted, but %s did not get %s new name, background or music. %s",
+                  failed_names, failures == 1 ? "its" : "their", why);
     else
         set_phase("done", ok ? "The home screen restarted with every change" : "");
     return NULL;

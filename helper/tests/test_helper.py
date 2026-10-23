@@ -18,6 +18,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -79,6 +80,65 @@ def param_sfo(title):
     return header + entry + keys + b"\0" * ((-len(keys)) % 4) + value.ljust(128, b"\0")
 
 
+# the console's user, as in the home screen's per-user tables
+USER = "0349465199"
+TITLE_KEY = re.compile(r"TITLE(_\d\d)?")
+
+
+def console_json(fields):
+    """JSON as the console writes it into app.db: keys in order, no spaces, UTF-8 as it is, / escaped"""
+    return json.dumps(fields, separators=(",", ":"), ensure_ascii=False, sort_keys=True).replace("/", "\\/")
+
+
+def app_info(title, name, concept, languages):
+    """A title's AppInfoJson, after the console's (64-bit numbers, a name for each language)"""
+    fields = {"#_access_index": 1499, "#_install_time": "2026-10-22 22:46:15.772", "#_size": 371785728,
+              "CONCEPT_ID": concept, "CONTENT_ID": f"UP9000-{title}_00-ARTSWAP000000000", "DOWNLOAD_DATA_SIZE": 256,
+              "TITLE": name, "TITLE_ID": title, "_install_version": 1396115914549624833,
+              "_metadata_path": f"/user/app/{title}/sce_sys", "_path_icon0_info": -8070450532247928832,
+              "_path_pic0_info": -6917529027641081856, "_primary_title_sort": 197637, "sync_index": 1320}
+    fields.update({f"TITLE_{language}": text for language, text in languages.items()})
+    return console_json(fields)
+
+
+def concept_info(title, name, concept, languages):
+    """A concept's ConceptInfoJson: a list of fields, each string's length in bytes beside it"""
+    def field(key, data, kind):
+        return {"data": data, "key": key, "size": len(data.encode()) if kind == 2 else 8, "type": kind}
+    names = [field("concept_name", name, 2)] + [field(f"concept_name_{language}", text, 2)
+                                                for language, text in languages.items()]
+    fields = [field("concept_id", concept, 0)] + names + [
+        field("metadata_path", f"/user/app/{title}/sce_sys", 2), field("path_pic0_info", -6917529027641081856, 0),
+        field("primary_title_id", title, 2), field("total_size", 371785728, 0)]
+    return console_json({"field_list": fields, "mimeType": 0, "mimeTypeFormatVersion": 0, "parserId": 0,
+                         "promoterFormatVersion": 0})
+
+
+def home_names(base, title):
+    """Every name the home screen's database keeps of a title, whether each concept name's size is right, and the
+    two JSON texts"""
+    db = sqlite3.connect(base / "system_data/priv/mms/app.db")
+    name, info, local = db.execute("SELECT titleName, AppInfoJson, localConceptId FROM tbl_contentinfo "
+                                   "WHERE titleId = ?", (title,)).fetchone()
+    concept_name, concept = db.execute("SELECT conceptName, ConceptInfoJson FROM tbl_conceptmetadata "
+                                       "WHERE localConceptId = ?", (local,)).fetchone()
+    icon = db.execute(f"SELECT titleName FROM tbl_iconinfo_{USER} WHERE titleId = ?", (title,)).fetchone()[0]
+    tile = db.execute(f"SELECT conceptName, primaryTitleName FROM tbl_concepticoninfo_{USER} "
+                      "WHERE primaryTitleId = ?", (title,)).fetchone()
+    db.close()
+    fields = [f for f in json.loads(concept)["field_list"] if f["key"].startswith("concept_name")]
+    names = {name, concept_name, icon, *tile} | {v for k, v in json.loads(info).items() if TITLE_KEY.fullmatch(k)} | \
+        {f["data"] for f in fields}
+    return names, all(f["size"] == len(f["data"].encode()) for f in fields), info, concept
+
+
+def without_names(info, concept):
+    """The two JSON texts' contents, names left out: what a rename must not change"""
+    a = {k: v for k, v in json.loads(info).items() if not TITLE_KEY.fullmatch(k)}
+    b = [f for f in json.loads(concept)["field_list"] if not f["key"].startswith("concept_name")]
+    return a, b
+
+
 def make_console(base: Path):
     meta = base / "user/appmeta"
     # a PS5 title of ours: art in appmeta and in its homebrew folder
@@ -105,16 +165,28 @@ def make_console(base: Path):
     db.execute("INSERT INTO tbl_appbrowse_0507646227 VALUES ('PPSA05678', 'Astro Bot', '/user/appmeta/external/PPSA05678')")
     # the home screen's entries, as the console's: a homebrew title's concept is its own number, a store game's
     # is the store's; Burnout 3 is not on the home screen
-    db.execute("CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT, conceptId INT, localConceptId TEXT, "
-               "lastAccessIndex INT)")
+    # with the console's columns for names, the background and music (pic0Info, snd0Info), and the per-user tables
+    db.execute("CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT COLLATE NOCASE, conceptId INT, "
+               "localConceptId TEXT, lastAccessIndex INT, AppInfoJson TEXT, pic0Info TEXT, snd0Info TEXT)")
     db.execute("CREATE TABLE tbl_conceptmetadata (localConceptId TEXT NOT NULL, conceptId INT, conceptName TEXT, "
-               "logoImageInfo TEXT, PRIMARY KEY(localConceptId))")
-    for title, name, concept in (("PPSA99314", "Eternal Darkness™", 99314), ("CUSA00001", "Bloodborne", 10000176),
-                                 ("PPSA05678", "Astro Bot", 10002691), ("PPSA26525", "Heretic + Hexen", 10012903),
-                                 ("PPSA99131", "PSP5", 99131)):
+               "logoImageInfo TEXT, ConceptInfoJson TEXT, PRIMARY KEY(localConceptId))")
+    db.execute(f"CREATE TABLE tbl_iconinfo_{USER} (titleId TEXT, titleName TEXT COLLATE NOCASE, localConceptId TEXT, "
+               "conceptId INT)")
+    db.execute(f"CREATE TABLE tbl_concepticoninfo_{USER} (localConceptId TEXT, conceptId INT, conceptName TEXT, "
+               "primaryTitleId TEXT, primaryTitleName TEXT)")
+    for title, name, concept, pic0 in (("PPSA99314", "Eternal Darkness™", 99314, "/user/appmeta/PPSA99314/pic0.dds"),
+                                       ("CUSA00001", "Bloodborne", 10000176, ""), ("PPSA05678", "Astro Bot", 10002691, ""),
+                                       ("PPSA26525", "Heretic + Hexen", 10012903, ""), ("PPSA99131", "PSP5", 99131, "")):
         local = f"cid:scp:{concept:016x}"
-        db.execute("INSERT INTO tbl_contentinfo VALUES (?, ?, ?, ?, ?)", (title, name, concept, local, concept % 1000))
-        db.execute("INSERT INTO tbl_conceptmetadata VALUES (?, ?, '', NULL)", (local, concept))
+        # Eternal Darkness has a Chinese name too, as Astro's Playroom has on the console
+        languages = {"01": name, "11": "永恒的黑暗"} if title == "PPSA99314" else {"01": name}
+        db.execute("INSERT INTO tbl_contentinfo VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                   (title, name, concept, local, concept % 1000, app_info(title, name, concept, languages),
+                    pic0 + "?ts=1792709174" if pic0 else "", ""))
+        db.execute("INSERT INTO tbl_conceptmetadata VALUES (?, ?, ?, NULL, ?)",
+                   (local, concept, name, concept_info(title, name, concept, languages)))
+        db.execute(f"INSERT INTO tbl_iconinfo_{USER} VALUES (?, ?, ?, ?)", (title, name, local, concept))
+        db.execute(f"INSERT INTO tbl_concepticoninfo_{USER} VALUES (?, ?, ?, ?, ?)", (local, concept, name, title, name))
     db.commit()
     db.close()
     # a system app: left out
@@ -215,6 +287,13 @@ def main() -> int:
     sysave = base / "user/home/1000/savedata_prospero/PPSA99314/sdimg_SAVE0"
     sysave.parent.mkdir(parents=True)
     sysave.write_bytes(os.urandom(65536))
+    # the titles' download data (/download0), where some homebrew keeps its saves; the uninstall deletes it
+    download = base / "user/download/PPSA99314/download0.dat"
+    psp_download = base / "user/download/PPSA99131/download0.dat"
+    for path in (download, psp_download):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(os.urandom(1 << 20))
+    download_sha, psp_download_sha = sha(download), sha(psp_download)
     helper_bin = ROOT / "build/helper-host/artswapd"
     log = open(work / "helper.out", "w")
     proc = subprocess.Popen([str(helper_bin)], env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -223,7 +302,7 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.5.0", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.5.1", f"HELLO names the version ({hello})")
         check(hello.get("store") == "off", "PlayStation Store logos start off")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
@@ -480,9 +559,25 @@ def main() -> int:
               "the system's saved data was copied aside first")
         check(not (kept[0] / "folder").exists(), "the game's folder is not copied")
         check(smp.console.calls.count("/api/v1/scan") >= 1, "ShadowMountPlus was asked to scan")
+        check(sha(download) == download_sha and not (base / "user/download/PPSA99314.artswap").exists(),
+              "the download data the uninstall deletes is back in its place, as it was")
+        check((base / "data/artswap/download-aside.txt").read_text() == "", "download-aside.txt is empty again")
         h.rows("REFRESHSTATE", "seen")
         check(refresh_state()[3] == "0", "REFRESHSTATE seen: shown")
         check("\t0\t" in (base / "data/artswap/refresh.txt").read_text(), "refresh.txt keeps it as seen")
+
+        # download data left aside by an earlier run: the refresh changes nothing
+        stale = base / "user/download/PPSA99314.artswap"
+        stale.mkdir()
+        uninstalls = smp.console.calls.count("/api/v1/games/uninstall")
+        time.sleep(1.1)
+        h.rows("REFRESH", "PPSA99314", "0")
+        state = refresh_until_end()
+        check(state[1] == "failed" and "download data safe" in state[4] and
+              smp.console.calls.count("/api/v1/games/uninstall") == uninstalls and sha(download) == download_sha,
+              f"an earlier copy of the download data stops the refresh before the uninstall ({state[4]})")
+        stale.rmdir()
+        h.rows("REFRESHSTATE", "seen")
 
         # an uninstall that eats a save of the folder: the refresh says so (there is no copy to put back)
         smp.console.eat = "userdata/card.gci"
@@ -514,14 +609,19 @@ def main() -> int:
             return {v["titleName"] for v in json.loads(path.read_text())["localizedParameters"].values()
                     if isinstance(v, dict)}
 
+        installed_param = base / "user/app/PPSA99314/sce_sys/param.json"  # the refreshes' install made it
         report = h.rows("RENAME", "PPSA99314", "Eternal Darkness: Sanity's Requiem")
-        check(sum(r[0] == "W" for r in report) == 2 and sum(r[0] == "O" for r in report) == 2,
-              f"RENAME writes both param.json files and keeps both originals ({report})")
-        check(names(folder_param) == names(meta_param) == {"Eternal Darkness: Sanity's Requiem"}, "the new name is in both")
-        h.rows("RENAME", "PPSA99314", "Eternal Darkness é")
+        check(sum(r[0] == "W" for r in report) == 3 and sum(r[0] == "O" for r in report) == 3,
+              f"RENAME writes every param.json (the folder's, the home screen's, the install's) and keeps each "
+              f"original ({report})")
+        check(names(folder_param) == names(meta_param) == names(installed_param) == {"Eternal Darkness: Sanity's Requiem"},
+              "the new name is in all three")
+        # quotes, a slash and an accent: escaped in the database's JSON as the console escapes them
+        new_name = 'Eternal Darkness é / "Requiem"'
+        h.rows("RENAME", "PPSA99314", new_name)
         check(Path(str(folder_param) + ".old").read_text() == original_param, "a second rename keeps the first original")
         apps = {r[1]: r for r in h.rows("APPS")}
-        check(apps["PPSA99314"][2] == "Eternal Darkness é" and apps["PPSA99314"][9] == "1",
+        check(apps["PPSA99314"][2] == new_name and apps["PPSA99314"][9] == "1",
               f"APPS: the new name, its original kept ({apps['PPSA99314']})")
         for title, name, why in (("CUSA00001", "Bloodborne 2", "package"), ("PPSA99314", "a\x01b", "character")):
             try:
@@ -529,15 +629,17 @@ def main() -> int:
                 check(False, f"RENAME refuses {why}")
             except HelperError as e:
                 check(why in str(e), f"RENAME refuses: {e}")
-        # Apply changes installs the renamed title again first, then restarts the home screen
+        # Apply changes writes the new name into the home screen's database, with no install, then restarts it
         pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
-        check(pend.get("PPSA99314") == "name", f"PENDING: the rename waits for an install ({pend})")
+        check(pend.get("PPSA99314") == "name", f"PENDING: the rename waits for Apply changes ({pend})")
+        _, _, info_before, concept_before = home_names(base, "PPSA99314")
         # a rename the list lost (made before renames waited for Apply changes): found again by its name
         (base / "data/artswap/pending.txt").write_text("")
         h.rows("APPS", "rescan")
         pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
         check(pend.get("PPSA99314") == "name", f"a rename the home screen does not show yet waits again ({pend})")
         marker.unlink(missing_ok=True)
+        uninstalls = smp.console.calls.count("/api/v1/games/uninstall")
         title = subprocess.Popen(["sleep", "1"])  # Art Swap, closing
         h.rows("HOME", str(title.pid))
         title.wait()
@@ -546,10 +648,21 @@ def main() -> int:
             time.sleep(0.3)
         home = next(r for r in h.rows("HOMESTATE") if r[0] == "home")
         check(home[1] == "done" and marker.exists(), f"Apply changes after a rename is done ({home})")
-        check(names(meta_param) == {"Eternal Darkness é"}, "the install took the new name")
+        check(smp.console.calls.count("/api/v1/games/uninstall") == uninstalls,
+              "a rename installs nothing again: ShadowMountPlus is not asked to uninstall")
+        check(sha(download) == download_sha, "the renamed game's download data is untouched")
+        held, sizes, info_after, concept_after = home_names(base, "PPSA99314")
+        check(held == {new_name}, f"the home screen's database has the new name in every place ({held})")
+        check(sizes, "each concept name's length in bytes is the new name's")
+        check(without_names(info_after, concept_after) == without_names(info_before, concept_before),
+              "nothing else in the entry's JSON changed (its 64-bit numbers neither)")
+        check("1396115914549624833" in info_after and "\\/user\\/app" in info_after and
+              'Darkness é \\/ \\"Requiem\\"' in info_after,
+              "the JSON is written as the console writes it: UTF-8 as it is, / and \" escaped")
+        check(names(meta_param) == {new_name}, "the home screen's copy of param.json has the new name")
         check(logo_png.exists() and logo_info(base, "PPSA99314").startswith("/user/appmeta/PPSA99314/logo.png?ts="),
               "a renamed title keeps its logo through Apply changes")
-        check(Path(str(meta_param) + ".old").exists(), "the home screen's original name is kept across the install")
+        check(Path(str(meta_param) + ".old").exists(), "the home screen's original name is kept")
         check(not [r for r in h.rows("PENDING") if r[0] == "P"], "nothing is waiting after Apply changes")
         h.rows("APPS", "rescan")
         check(not [r for r in h.rows("PENDING") if r[0] == "P"], "the home screen shows the new name: nothing waits")
@@ -603,7 +716,9 @@ def main() -> int:
         check(not Path(str(psp) + ".old").exists(), "an added background has no original")
         check({r[1]: r for r in h.rows("APPS")}["PPSA99131"][14] == "1", "APPS: a background Art Swap added")
         pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
-        check(pend.get("PPSA99131") == "name", f"an added background waits for an install ({pend})")
+        check(pend.get("PPSA99131") == "install", f"an added background waits for an install ({pend})")
+        check(pend.get("PPSA99314") == "name", f"the restored name waits for Apply changes ({pend})")
+        uninstalls = smp.console.calls.count("/api/v1/games/uninstall")
         title = subprocess.Popen(["sleep", "1"])
         h.rows("HOME", str(title.pid))
         title.wait()
@@ -616,6 +731,12 @@ def main() -> int:
             time.sleep(0.2)
         check(next(r for r in h.rows("HOMESTATE") if r[0] == "home")[1] == "done" and installed.exists(),
               "the install takes the added background in")
+        check(smp.console.calls.count("/api/v1/games/uninstall") == uninstalls + 1,
+              "only the game with the added background was installed again")
+        check(sha(psp_download) == psp_download_sha and not (base / "user/download/PPSA99131.artswap").exists(),
+              "its download data, deleted by the uninstall, is back as it was")
+        held, sizes, _, _ = home_names(base, "PPSA99314")
+        check(held == {"Eternal Darkness™"} and sizes, f"the original name is back in the database, every place ({held})")
         h.rows("HOMESTATE", "seen")
         apps = {r[1]: r for r in h.rows("APPS", "rescan")}
         check(apps["PPSA99131"][5].startswith("dds-bc7 3840x2160"), f"APPS: its background now ({apps['PPSA99131'][5]})")
@@ -631,7 +752,7 @@ def main() -> int:
         check(not list(base.rglob("PPSA99131/**/pic0.dds")), f"RESTORE deletes the added background, every copy ({report})")
         check("PPSA99131" not in (base / "data/artswap/added.txt").read_text(), "added.txt forgets it")
         pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
-        check(pend.get("PPSA99131") == "name", "the restore waits for an install too")
+        check(pend.get("PPSA99131") == "install", f"the restore waits for an install too ({pend})")
 
         # music: songs of the person's, a clip of one as a title's snd0.at9
         music = base / "data/artswap/music"
@@ -677,7 +798,7 @@ def main() -> int:
         apps = {r[1]: r for r in h.rows("APPS")}
         check(apps["PPSA99314"][16].startswith("at9 30s") and apps["PPSA99314"][17] == "1", f"APPS: its music, added ({apps['PPSA99314'][16:18]})")
         pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
-        check(pend.get("PPSA99314") == "name", f"added music waits for an install ({pend})")
+        check(pend.get("PPSA99314") == "install", f"added music waits for an install ({pend})")
         # a title with its own: written over it, the original kept
         own = base / "user/appmeta/external/PPSA05678/snd0.at9"
         shutil.copy(snd, own)
@@ -805,6 +926,17 @@ def main() -> int:
         h.ask("BYE")
         proc.wait(timeout=10)
         check(proc.returncode == 0, "BYE ends the helper")
+
+        # a helper that ended while download data was aside: the next one puts it back as it starts
+        os.rename(psp_download.parent, base / "user/download/PPSA99131.artswap")
+        (base / "data/artswap/download-aside.txt").write_text("PPSA99131\n")
+        proc = subprocess.Popen([str(helper_bin)], env=env, stdout=log, stderr=subprocess.STDOUT)
+        check(wait_port(PORT), "the helper starts again")
+        check(sha(psp_download) == psp_download_sha and not (base / "user/download/PPSA99131.artswap").exists() and
+              (base / "data/artswap/download-aside.txt").read_text() == "",
+              "download data left aside is moved back when the helper starts")
+        Helper(port=PORT).ask("BYE")
+        proc.wait(timeout=10)
     finally:
         if proc.poll() is None:
             proc.kill()

@@ -27,8 +27,8 @@ void smp_info(const app_t *app, smp_info_t *out);
 int smp_folder_titles(char (*ids)[16], int max);
 
 /* Starts the refresh of one title in the background: ShadowMountPlus uninstalls
- * the title (its folder and saved data stay) and a scan installs it again, with
- * the art now in its folder. While the console is busy with a game (Art Swap
+ * the title (its folder, saved data and download data stay) and a scan installs
+ * it again, with the art now in its folder. While the console is busy with a game (Art Swap
  * itself, until it closes) ShadowMountPlus refuses; the refresh keeps asking
  * for wait_s seconds. False, with a sentence in err, when it cannot start. */
 bool smp_refresh_start(const app_t *app, int wait_s, char *err, size_t errlen);
@@ -43,3 +43,7 @@ bool smp_refresh_run(const app_t *app, int wait_s, char *message, size_t size);
 void smp_refresh_line(buf_t *out);
 void smp_refresh_seen(void);
 bool smp_refresh_running(void);
+
+/* Puts back download data an earlier refresh moved aside and never moved back (the helper ended in between).
+ * Run when the helper starts. */
+void smp_recover(void);

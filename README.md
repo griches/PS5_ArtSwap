@@ -15,7 +15,7 @@ the home screen, and every change shows at once, whatever installed the game:
 a folder, a disk image or a package. A **logo** (□) goes on the game's page in
 place of its name in plain text, and shows straight away.
 
-Title `PPSA99318`, version 1.3.0. Tested on a PS5 with firmware 13.60.
+Title `PPSA99318`, version 1.3.1. Tested on a PS5 with firmware 13.60.
 
 ## What it does
 
@@ -34,8 +34,10 @@ Title `PPSA99318`, version 1.3.0. Tested on a PS5 with firmware 13.60.
   ShadowMountPlus installed it from a folder: Art Swap writes `pic0.dds`
   (3840×2160 BC7, as the console writes its own) into the game's `sce_sys`,
   and Apply changes installs the game again, since the home screen takes a
-  background in only at an install. There is no original, so Restore deletes
-  it (the files are listed in `/data/artswap/added.txt`).
+  background in only at an install (its saved data and download data kept:
+  see [Installing a game again](#installing-a-game-again)). There is no
+  original, so Restore deletes it (the files are listed in
+  `/data/artswap/added.txt`).
 - **You choose the part kept** (△ in the picker opens the frame page): Fit (all
   of it, on a blurred fill of itself), the left, centre or right of a wide
   picture (top, middle or bottom of a tall one), or a part of your own: the
@@ -67,10 +69,10 @@ Title `PPSA99318`, version 1.3.0. Tested on a PS5 with firmware 13.60.
   as the home screen will, and Art Swap makes the `snd0.at9` on the console:
   see [Music](#music).
 - **Renames homebrew** (OPTIONS, Rename) that ShadowMountPlus installed from a folder: the
-  new name goes into the title's `param.json` (every language), and Art Swap
-  has ShadowMountPlus install the game again, since the home screen takes a
-  name only from an install: see [Renaming](#renaming). The original is kept
-  as `param.json.old`, and Restore puts it back too.
+  new name goes into the title's `param.json` (every language) and, at Apply
+  changes, into the home screen's database, which holds the names it shows. No
+  install, so nothing of the game is touched: see [Renaming](#renaming). The
+  original is kept as `param.json.old`, and Restore puts it back too.
 
 ## Installing
 
@@ -78,7 +80,7 @@ You need the console's homebrew environment running: etaHEN (or kstuff),
 ShadowMountPlus, and an **ELF loader on port 9021**. Art Swap starts its helper
 through that loader.
 
-1. Download `PS5_ArtSwap-v1.3.0.zip` from [Releases](https://github.com/griches/PS5_ArtSwap/releases/latest).
+1. Download `PS5_ArtSwap-v1.3.1.zip` from [Releases](https://github.com/griches/PS5_ArtSwap/releases/latest).
 2. Copy the `PPSA99318` folder inside it to `/data/homebrew/` (FTP is fine).
 3. ShadowMountPlus registers it and Art Swap appears on the home screen.
 4. Start it. The first screen says "Starting the helper" for a moment.
@@ -145,39 +147,73 @@ not touched, and payloads such as ShadowMountPlus keep running (there is no
 loader to run again). The helper keeps the titles changed since the last
 restart in `/data/artswap/pending.txt`. A console restart is not needed.
 
-A name is different: the home screen takes it only from an install, so a
-restart of either kind does not show it. That is what Rename does.
+A name is different: the home screen shows the names its database holds,
+which an install writes, so a restart alone does not show a new one. Apply
+changes writes a renamed game's new name there first: see
+[Renaming](#renaming). A background or music Art Swap added to a game that had
+none shows only after an install, so Apply changes installs that game again
+first: see [Installing a game again](#installing-a-game-again).
 
 ## Renaming
 
-Rename (OPTIONS) on homebrew that ShadowMountPlus installed from a folder asks for the new
-name, writes it, and has ShadowMountPlus install the game again, which deleting
-the title and letting ShadowMountPlus add it back would also do:
+Rename (OPTIONS) on homebrew that ShadowMountPlus installed from a folder asks
+for the new name and writes it as `titleName`, in every language, into each
+`param.json` the title has: its folder's, the home screen's copy in
+`/user/appmeta/<id>` and the install's in `/user/app/<id>/sce_sys`. Each
+original is kept once as `param.json.old`.
+
+Apply changes then writes the name into the home screen's database
+(`/system_data/priv/mms/app.db`), everywhere the title's install wrote it:
+`titleName` and the `TITLE` names in `AppInfoJson` (`tbl_contentinfo`), the
+concept's `conceptName` and `concept_name` fields in `ConceptInfoJson`
+(`tbl_conceptmetadata`), and each user's `tbl_iconinfo_<user>` and
+`tbl_concepticoninfo_<user>`. That JSON is edited as text: only the names and
+their lengths change, everything else byte for byte. The database is copied
+aside first (`/data/artswap/app.db.backup`). The restart shows the new name,
+and it stays through a console restart. Nothing of the game is installed again
+or touched. Restore puts the original name back the same way.
+
+A rename needs **ShadowMountPlus 1.7 or later**, running, and a title it
+installed **from a folder**: the name goes into the folder's `param.json` too,
+so a later install by ShadowMountPlus keeps it. A package's or a disk image's
+own `param.json` cannot be changed.
+
+Art Swap 1.3.0 had ShadowMountPlus install a renamed game again instead. The
+console's uninstall deletes the game's download data
+(`/user/download/<id>/download0.dat`, the game's `/download0`), and some
+homebrew keeps its saves there, so 1.3.1 renames without an install.
+
+## Installing a game again
+
+A background or music Art Swap added to homebrew that had none shows only after
+an install: Apply changes has ShadowMountPlus install that game again, which
+deleting the title and letting ShadowMountPlus add it back would also do.
 
 1. Art Swap notes every file in the game's folder (each one's path and size)
    and copies aside the console's saved data of the title (every user's
    `savedata_prospero/<id>` and `savedata/<id>`) and Art Swap's originals in the
    home screen's copy, to `/data/artswap/saves/<id>-<time>/`. If it cannot read
    the whole folder or make the whole copy, it stops and changes nothing.
-2. Art Swap closes: ShadowMountPlus will not take a title away while any game
+2. It moves the game's download data (`/user/download/<id>`), which the
+   console's uninstall deletes, aside to `/user/download/<id>.artswap`: the
+   same disk, so nothing is copied. If it cannot, it stops and changes nothing.
+3. Art Swap closes: ShadowMountPlus will not take a title away while any game
    is open. The helper carries on from the home screen.
-3. The helper asks ShadowMountPlus (its API on 127.0.0.1:10101) to uninstall the
+4. The helper asks ShadowMountPlus (its API on 127.0.0.1:10101) to uninstall the
    title. That removes only the home screen's entry; the game's folder, with
    its own saves and settings, stays where it is. A scan then adds the title
    back with its new art, and the helper waits until the install has finished.
-4. The helper checks every file of the folder against its notes, and puts back
-   any saved data or original that went missing. The next time Art Swap starts
-   it says how the rename's install went.
+5. The helper moves the download data back, before anything can start the
+   game, checks every file of the folder against its notes, and puts back any
+   saved data or original that went missing. The next time Art Swap starts it
+   says if anything went wrong.
 
-Nothing is deleted. If the game's folder had changed, the rename says so
-rather than calling itself done (the folder itself is not copied: the
-uninstall never touches it). The copy from the last install that went well is
-kept for each title, and the copy from any that did not.
-
-A rename needs **ShadowMountPlus 1.7 or later**, running, and a title it
-installed **from a folder**. Art Swap never installs again a title installed
-from a package (taking its tile away would delete the game) or from an image
-(that would copy the image's own name and art back); the pop-up says why.
+Nothing is deleted. If the game's folder had changed, Art Swap says so rather
+than calling the install done (the folder itself is not copied: the uninstall
+never touches it). The copy from the last install that went well is kept for
+each title, and the copy from any that did not. If the helper ends while the
+download data is aside, it moves it back when it next starts
+(`/data/artswap/download-aside.txt` names it until then).
 
 ## Logos
 
@@ -202,8 +238,8 @@ page as it will look beside the logo there now. ✕ puts it on:
 3. The page shows it straight away: Apply changes is not needed.
 
 A logo stays through a console restart. An install writes the title's entry
-afresh and takes the logo away, so after a rename's install (Apply changes)
-the helper waits for the entry to come back and puts the logo back, and each
+afresh and takes the logo away, so after an install (Apply changes, for an
+added background or music) the helper waits for the entry to come back and puts the logo back, and each
 time Art Swap starts it puts back any of its logos that went missing. Restore
 takes the logo off and puts back what the page had before (most often
 nothing). A title the home screen does not list has no page, so no logo.
@@ -302,8 +338,9 @@ On the console the helper keeps its files in `/data/artswap/`:
 | `matches.tsv` | the SteamGridDB game chosen for each title |
 | `pending.txt` | the titles changed since the home screen last restarted |
 | `home.txt` | how the last Apply changes ended |
-| `refresh.txt` | how the last rename's install ended |
-| `saves/` | what each rename's install copied aside (see above) |
+| `refresh.txt` | how the last install again ended |
+| `saves/` | what each install again copied aside (see above) |
+| `download-aside.txt` | a game whose download data is aside during an install, until it is back |
 | `apikey.txt` | your SteamGridDB API key |
 | `cache/` | downloaded pictures (trimmed to 192 MB when over 256 MB) |
 | `logos/` | the logo Art Swap put on each title's page (`<id>.png`), and what it replaced (`<id>.orig`) |
@@ -326,8 +363,8 @@ helper on 127.0.0.1 and starts it through the ELF loader; the scan (20 titles
 in 40-240 ms; `/user/appmeta/<id>/` holds `icon0.png`, `pic0.dds`, `pic1.dds`,
 `param.json` for a homebrew title); HTTPS to SteamGridDB's API and CDN
 (helper/tests/nettest.c); the key page from another machine on the network;
-changing and restoring icons and backgrounds; the install again that a rename
-uses (new art on the tile within seconds, the game's saves identical
+changing and restoring icons and backgrounds; the install again that 1.3.0's
+renames used (new art on the tile within seconds, the game's saves identical
 afterwards, file for file); and, with ShadowMountPlus 1.7beta7, Apply changes:
 new and restored art shown for a folder game, a disk image game (`.ffpfsc`)
 and a package game, the home screen back within about three seconds of Art
@@ -336,7 +373,10 @@ SteamGridDB on a homebrew game's page at once, with no restart; a store
 logo on a disk image game kept through a console restart; and a logo put back
 17 seconds into a rename's install, when the game's entry came back. The
 PlayStation Store lookup was tested from a Mac only. A background added to a
-homebrew emulator that had none, shown after Apply changes.
+homebrew emulator that had none, shown after Apply changes. 1.3.1's renames
+through the database and its keeping of download data were made without a
+console: they were tested against a copy of the console's `app.db` and the
+helper tests' made-up console.
 
 What the console taught (helper/tests/tlstest.c, procs.c):
 
@@ -352,7 +392,7 @@ What the console taught (helper/tests/tlstest.c, procs.c):
   for HELLO with a three-second limit, and starts the helper again when it has
   gone.
 - ShadowMountPlus refuses to uninstall (`EBUSY`) while any game is in the
-  foreground, Art Swap included, so a rename's install finishes from the home
+  foreground, Art Swap included, so an install again finishes from the home
   screen.
   Its game list says `installed` before the install has copied anything; the
   helper waits for the copies' change times instead.
@@ -365,6 +405,15 @@ What the console taught (helper/tests/tlstest.c, procs.c):
 - An install writes the title's entry in `app.db` some seconds after
   ShadowMountPlus lists it as installed (17 s once), so the helper waits for
   the entry before it puts a logo back.
+- The console's uninstall deletes a title's download data,
+  `/user/download/<id>` (`download0.dat`, the game's `/download0`), and the
+  game's next start makes an empty one. Some homebrew keeps its saves there
+  (mshivam019's Ship of Harkinian, when it cannot write its own folder), so a
+  1.3.0 rename lost them (reported on Reddit).
+- The home screen shows the names its database holds, written there by an
+  install, in several places (see [Renaming](#renaming)); a homebrew title's
+  entry has `TITLE` and `TITLE_01` (US English), a store game's one for each
+  language it names.
 - OnionHEN keeps its toolbox inside the home screen's process. After Apply
   changes restarts it, OnionHEN takes it for coming out of rest mode, tries to
   load the toolbox again, can time out, and the console may then show "System

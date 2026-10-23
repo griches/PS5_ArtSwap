@@ -432,14 +432,14 @@ static bool handle(int fd, char **field, int n)
             if (name || added || added_music)
                 rescan(); /* the name read again, the files gone */
             if (done && (name || added || added_music))
-                home_note_name(app.id); /* the original name, or none of the background, after an install */
+                home_note_name(app.id); /* the original name, or none of the background, at Apply changes */
             else if (done && art)
                 home_note(app.id); /* a logo goes from the page at once */
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
     } else if (strcmp(cmd, "RENAME") == 0) {
         /* RENAME id name: the title's name, for a title ShadowMountPlus installed from a folder; the home
-         * screen shows it once Apply changes has had ShadowMountPlus install it again */
+         * screen shows it once Apply changes has written it into its database */
         if (!want(fd, n, 3))
             return true;
         app_t app;
@@ -592,8 +592,9 @@ static bool handle(int fd, char **field, int n)
         smp_refresh_line(&text);
         ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "HOME") == 0) {
-        /* HOME pid: Apply changes. Once the process pid (Art Swap, closing) has ended, the renamed titles are
-         * installed again and the home screen restarts, showing every change (home.c) */
+        /* HOME pid: Apply changes. Once the process pid (Art Swap, closing) has ended, the renamed titles get
+         * their new names, the titles with added art are installed again, and the home screen restarts, showing
+         * every change (home.c) */
         if (!want(fd, n, 2))
             return true;
         char ids[32][16];
@@ -716,6 +717,8 @@ int main(void)
     log_open();
     log_line("artswapd %s starting, pid %d", ARTSWAP_VERSION, (int)getpid());
     config_load();
+    /* download data a refresh moved aside, if the last helper ended before it was put back */
+    smp_recover();
     g_http_ok = http_init(g_http_error, sizeof(g_http_error));
     log_line("network: %s %s, key: %s", g_http_ok ? "ready" : "unavailable", g_http_error, config_key_source());
     sgdb_cache_trim();

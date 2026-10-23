@@ -15,16 +15,13 @@
  * and the value it replaced in <id>.orig, for Restore. An install writes the
  * title's entry afresh, without the logo, and ShadowMountPlus's uninstall
  * empties its folder in /user/appmeta: logo_keep puts the logo back from the
- * copy. Before Art Swap first changes the database it is copied to
- * /data/artswap/app.db.first, and before each run's first change to
- * app.db.backup, through SQLite's backup, so each copy is whole.
+ * copy. The database is copied aside before Art Swap changes it (appdb.c).
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "logo.h"
-
-#include "../third_party/sqlite3.h"
+#include "appdb.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -32,12 +29,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP_DB "/system_data/priv/mms/app.db"
 /* Sony's own are about 2000x500; a larger one is made smaller, as a PNG */
 #define LOGO_MAX_W 2048
 #define LOGO_MAX_H 1024
-
-static bool g_backed_up; /* this run has copied the database aside */
 
 static const char *own_path(const char *id, const char *ext, char *out, size_t size)
 {
@@ -65,64 +59,7 @@ static bool logo_folder(const char *id, char *out, size_t size)
     return false;
 }
 
-/* ---- the home screen's database ---- */
-
-static sqlite3 *db_open(int flags, char *err, size_t errlen)
-{
-    char real[512];
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(cpath(APP_DB, real, sizeof(real)), &db, flags, NULL) != SQLITE_OK) {
-        snprintf(err, errlen, "The home screen's database did not open (%s)", db ? sqlite3_errmsg(db) : "no memory");
-        sqlite3_close(db);
-        return NULL;
-    }
-    sqlite3_busy_timeout(db, 10000); /* the home screen holds its lock only briefly */
-    return db;
-}
-
-/* A whole copy of the open database, through SQLite's backup */
-static bool db_copy(sqlite3 *db, const char *to)
-{
-    char partial[520];
-    snprintf(partial, sizeof(partial), "%s.new", to);
-    unlink(partial);
-    sqlite3 *out = NULL;
-    bool ok = sqlite3_open(partial, &out) == SQLITE_OK;
-    sqlite3_backup *backup = ok ? sqlite3_backup_init(out, "main", db, "main") : NULL;
-    ok = backup != NULL;
-    int rc = SQLITE_OK;
-    for (int tries = 0; ok && tries < 100; tries++) {
-        rc = sqlite3_backup_step(backup, -1);
-        if (rc != SQLITE_BUSY && rc != SQLITE_LOCKED)
-            break;
-        sqlite3_sleep(100);
-    }
-    if (backup != NULL)
-        sqlite3_backup_finish(backup);
-    ok = ok && rc == SQLITE_DONE;
-    sqlite3_close(out);
-    ok = ok && rename(partial, to) == 0;
-    if (!ok)
-        unlink(partial);
-    return ok;
-}
-
-/* Before this run's first change: a copy of the database as it was, and the first copy ever kept for good */
-static bool db_backup(sqlite3 *db, char *err, size_t errlen)
-{
-    if (g_backed_up)
-        return true;
-    char first[512], latest[512];
-    data_path("app.db.first", first, sizeof(first));
-    data_path("app.db.backup", latest, sizeof(latest));
-    if ((!file_exists(first) && !db_copy(db, first)) || !db_copy(db, latest)) {
-        snprintf(err, errlen, "The home screen's database could not be copied aside first, so it was not changed");
-        return false;
-    }
-    log_line("logo: the home screen's database copied to %s", latest);
-    g_backed_up = true;
-    return true;
-}
+/* ---- the home screen's database (appdb.c) ---- */
 
 /* The title's logoImageInfo: 1 with it in value ("" for none), 0 when the home screen has no entry for the
  * title, -1 on an error */
@@ -152,7 +89,7 @@ static int db_get(sqlite3 *db, const char *id, char *value, size_t size)
 /* Sets the title's logoImageInfo ("" for none) */
 static bool db_put(sqlite3 *db, const char *id, const char *value, char *err, size_t errlen)
 {
-    if (!db_backup(db, err, errlen))
+    if (!appdb_backup(db, err, errlen))
         return false;
     sqlite3_stmt *st = NULL;
     bool ok = sqlite3_prepare_v2(db,
@@ -226,7 +163,7 @@ bool logo_set(const app_t *app, const char *url, buf_t *report, char *err, size_
     image_free(&img);
     buf_free(&data);
 
-    sqlite3 *db = ok ? db_open(SQLITE_OPEN_READWRITE, err, errlen) : NULL;
+    sqlite3 *db = ok ? appdb_open(SQLITE_OPEN_READWRITE, err, errlen) : NULL;
     char before[512] = "";
     const int found = db ? db_get(db, app->id, before, sizeof(before)) : -1;
     if (db != NULL && found == 0)
@@ -279,7 +216,7 @@ bool logo_restore(const app_t *app, buf_t *report, char *err, size_t errlen)
     if (file_read(orig, &kept) && kept.len > 0)
         copy_str(before, sizeof(before), (const char *)kept.data);
     buf_free(&kept);
-    sqlite3 *db = db_open(SQLITE_OPEN_READWRITE, err, errlen);
+    sqlite3 *db = appdb_open(SQLITE_OPEN_READWRITE, err, errlen);
     char now[512];
     const int found = db ? db_get(db, app->id, now, sizeof(now)) : -1;
     /* no entry: the title has left the home screen, and nothing there needs putting back */
@@ -328,7 +265,7 @@ int logo_keep(const char *id, int wait_s)
         return 0;
     pthread_mutex_lock(&g_apply_lock);
     char err[300] = "";
-    sqlite3 *db = db_open(SQLITE_OPEN_READWRITE, err, sizeof(err));
+    sqlite3 *db = appdb_open(SQLITE_OPEN_READWRITE, err, sizeof(err));
     int put = 0;
     for (int i = 0; i < n && db != NULL; i++) {
         char value[512], meta[400], dest[420], real[512];
@@ -367,7 +304,7 @@ bool logo_current(const app_t *app, int max_w, int max_h, image_t *out, char *er
     own_path(app->id, "png", path, sizeof(path));
     if (!file_exists(path)) {
         /* not Art Swap's: the picture the database names, if any */
-        sqlite3 *db = db_open(SQLITE_OPEN_READONLY, err, errlen);
+        sqlite3 *db = appdb_open(SQLITE_OPEN_READONLY, err, errlen);
         char value[512] = "";
         const int found = db ? db_get(db, app->id, value, sizeof(value)) : -1;
         sqlite3_close(db);

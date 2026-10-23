@@ -192,8 +192,16 @@ class App
     void restore();
     std::string shows_after(const std::string &before, const char *what) const;
     // Apply changes: the titles changed since the home screen last restarted, and the restart itself
+    // what a change waits for at Apply changes: the restart alone, a new name written into the home screen's
+    // database first, or an install first (a background or music Art Swap added or took away)
+    enum class Pending
+    {
+        art,
+        name,
+        install
+    };
     void load_pending();
-    void note_pending(const std::string &id, bool name = false);
+    void note_pending(const std::string &id, Pending kind = Pending::art);
     bool is_pending(const std::string &id) const;
     void open_apply();
     void start_apply();
@@ -400,7 +408,8 @@ class App
     bool refresh_checked_ = false; // the last refresh's end, asked for once at the start
     bool close_ = false;
     std::vector<std::string> pending_; // ids changed since the home screen last restarted (the helper's PENDING)
-    std::vector<std::string> renamed_; // of those, renamed: Apply changes installs them again first
+    std::vector<std::string> renamed_;  // of those, renamed: Apply changes writes their new names first
+    std::vector<std::string> installs_; // of those, with added art: Apply changes installs them again first
     bool applying_ = false;            // Apply changes asked the helper; Art Swap closes on its answer
     bool home_checked_ = false;        // the last restart's end, asked for once at the start
     bool keyboard_up_ = false;         // the console's keyboard is open
