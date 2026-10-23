@@ -174,7 +174,7 @@ static void home_entries(sqlite3 *db, app_t *apps, int count)
 {
     sqlite3_stmt *rows = NULL;
     if (sqlite3_prepare_v2(db,
-                           "SELECT c.titleId, c.conceptId, m.logoImageInfo FROM tbl_contentinfo c "
+                           "SELECT c.titleId, c.conceptId, m.logoImageInfo, c.titleName FROM tbl_contentinfo c "
                            "LEFT JOIN tbl_conceptmetadata m ON m.localConceptId = c.localConceptId",
                            -1, &rows, NULL) != SQLITE_OK) {
         log_line("app.db: no home-screen entries (%s)", sqlite3_errmsg(db));
@@ -186,11 +186,13 @@ static void home_entries(sqlite3 *db, app_t *apps, int count)
         const char *id = (const char *)sqlite3_column_text(rows, 0);
         const long concept = (long)sqlite3_column_int64(rows, 1);
         const char *logo = (const char *)sqlite3_column_text(rows, 2);
+        const char *home_name = (const char *)sqlite3_column_text(rows, 3);
         for (int i = 0; id != NULL && i < count; i++)
             if (strcmp(apps[i].id, id) == 0) {
                 apps[i].listed = true;
                 apps[i].concept = concept > 0 && concept != strtol(id + 4, NULL, 10) ? concept : 0;
                 apps[i].logo = logo != NULL && logo[0] != 0;
+                copy_str(apps[i].home_name, sizeof(apps[i].home_name), home_name ? home_name : "");
                 listed++;
                 store += apps[i].concept > 0;
                 logos += apps[i].logo;
@@ -516,6 +518,7 @@ bool scan_apps(app_t **apps_out, int *count_out)
         if (!apps[i].name[0])
             copy_str(apps[i].name, sizeof(apps[i].name), apps[i].id);
         clean_name(apps[i].name);
+        clean_name(apps[i].home_name);
     }
     matches_apply(apps, count);
     if (count > 1)

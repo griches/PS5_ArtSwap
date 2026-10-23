@@ -84,6 +84,11 @@ static bool find_logo(long concept, char *url, size_t size, char *err, size_t er
         buf_t body = {0};
         int status = 0;
         if (!http_get_plain(address, &body, &status, err, errlen)) {
+            /* refused at once, most often: jailbroken consoles are kept from Sony's servers, to stop updates */
+            char why[160];
+            copy_str(why, sizeof(why), err);
+            snprintf(err, errlen, "This console cannot reach PlayStation Store: its servers are blocked here, as on "
+                     "most jailbroken consoles (%s)", why);
             buf_free(&body);
             return false;
         }

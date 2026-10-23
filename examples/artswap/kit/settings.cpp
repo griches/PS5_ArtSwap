@@ -359,6 +359,7 @@ void App::settings_select(ui::Feedback &feedback)
                 return;
             }
             store_logos_ = on;
+            store_unreachable_ = false; // asked again, the next time
         }, true);
     }
     else

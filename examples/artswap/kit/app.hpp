@@ -276,6 +276,7 @@ class App
     int total_ = 0;
     int store_arts_ = 0;        // the store's own logo, first among the logos (not SteamGridDB's)
     bool store_asked_ = false;  // asked for it since the tab opened
+    bool store_unreachable_ = false; // PlayStation Store did not answer this run: not asked again
     int hidden_ = 0;
     bool listing_ = false;
     bool matching_ = false;

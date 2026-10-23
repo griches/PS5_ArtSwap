@@ -107,6 +107,15 @@ static void rescan(void)
     /* first, Art Swap's logos the home screen has lost (an install since), so the scan sees them shown */
     logo_keep(NULL, 0);
     scan_apps(&apps, &count);
+    /* a title Art Swap renamed whose new name the home screen does not show (its install failed, or the rename
+     * came before renames waited for Apply changes): waiting again */
+    for (int i = 0; i < count; i++)
+        if (apps[i].listed && apps[i].home_name[0] && strcmp(apps[i].home_name, apps[i].name) != 0 &&
+            name_kept(&apps[i])) {
+            log_line("rename %s: the home screen shows \"%s\", not \"%s\": waiting for Apply changes", apps[i].id,
+                     apps[i].home_name, apps[i].name);
+            home_note_name(apps[i].id);
+        }
     pthread_mutex_lock(&g_apps_lock);
     free(g_apps);
     g_apps = apps;

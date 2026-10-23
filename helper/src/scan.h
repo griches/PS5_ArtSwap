@@ -27,6 +27,7 @@ typedef struct {
     char sgdb_name[200];
     /* from the home screen's database (app.db): */
     bool listed;  /* it has an entry there, so a logo can be set */
+    char home_name[200]; /* the name the home screen shows: an install's, which a rename waits for */
     long concept; /* its PlayStation Store concept; 0 for homebrew, whose concept is its own number */
     bool logo;    /* a logo shows on its page (logoImageInfo), Art Swap's or not */
 } app_t;

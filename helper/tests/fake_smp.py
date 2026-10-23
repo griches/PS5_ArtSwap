@@ -67,6 +67,19 @@ class Console:
         for f in (folder / "sce_sys").iterdir():
             if f.is_file() and not f.name.endswith(".old"):
                 shutil.copy(f, meta / f.name)
+        # the home screen's entry takes the name the install read
+        db_path = self.root / "system_data/priv/mms/app.db"
+        param = folder / "sce_sys/param.json"
+        if db_path.exists() and param.exists():
+            languages = json.loads(param.read_text())["localizedParameters"]
+            name = languages[languages["defaultLanguage"]]["titleName"]
+            db = sqlite3.connect(db_path)
+            try:
+                db.execute("UPDATE tbl_contentinfo SET titleName = ? WHERE titleId = ?", (name, title))
+                db.commit()
+            except sqlite3.OperationalError:
+                pass
+            db.close()
 
 
 def make_handler(console: Console):

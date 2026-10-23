@@ -108,10 +108,10 @@ def make_console(base: Path):
     db.execute("CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT, conceptId INT, localConceptId TEXT)")
     db.execute("CREATE TABLE tbl_conceptmetadata (localConceptId TEXT NOT NULL, conceptId INT, conceptName TEXT, "
                "logoImageInfo TEXT, PRIMARY KEY(localConceptId))")
-    for title, concept in (("PPSA99314", 99314), ("CUSA00001", 10000176), ("PPSA05678", 10002691),
-                           ("PPSA26525", 10012903)):
+    for title, name, concept in (("PPSA99314", "Eternal Darkness™", 99314), ("CUSA00001", "Bloodborne", 10000176),
+                                 ("PPSA05678", "Astro Bot", 10002691), ("PPSA26525", "Heretic + Hexen", 10012903)):
         local = f"cid:scp:{concept:016x}"
-        db.execute("INSERT INTO tbl_contentinfo VALUES (?, '', ?, ?)", (title, concept, local))
+        db.execute("INSERT INTO tbl_contentinfo VALUES (?, ?, ?, ?)", (title, name, concept, local))
         db.execute("INSERT INTO tbl_conceptmetadata VALUES (?, ?, '', NULL)", (local, concept))
     db.commit()
     db.close()
@@ -486,6 +486,11 @@ def main() -> int:
         # Apply changes installs the renamed title again first, then restarts the home screen
         pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
         check(pend.get("PPSA99314") == "name", f"PENDING: the rename waits for an install ({pend})")
+        # a rename the list lost (made before renames waited for Apply changes): found again by its name
+        (base / "data/artswap/pending.txt").write_text("")
+        h.rows("APPS", "rescan")
+        pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
+        check(pend.get("PPSA99314") == "name", f"a rename the home screen does not show yet waits again ({pend})")
         marker.unlink(missing_ok=True)
         title = subprocess.Popen(["sleep", "1"])  # Art Swap, closing
         h.rows("HOME", str(title.pid))
@@ -500,6 +505,8 @@ def main() -> int:
               "a renamed title keeps its logo through Apply changes")
         check(Path(str(meta_param) + ".old").exists(), "the home screen's original name is kept across the install")
         check(not [r for r in h.rows("PENDING") if r[0] == "P"], "nothing is waiting after Apply changes")
+        h.rows("APPS", "rescan")
+        check(not [r for r in h.rows("PENDING") if r[0] == "P"], "the home screen shows the new name: nothing waits")
         h.rows("HOMESTATE", "seen")
 
         # restore; a copy without its .old takes the folder's original

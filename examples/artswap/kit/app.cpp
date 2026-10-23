@@ -714,7 +714,7 @@ void App::load_page()
     listing_ = true;
     const int gen = generation_, page = page_;
     // a store game's own logo first, from PlayStation Store, when the person has turned that on
-    if (slot_ == "logo" && page == 0 && title.store_concept > 0 && store_logos_ && !store_asked_)
+    if (slot_ == "logo" && page == 0 && title.store_concept > 0 && store_logos_ && !store_asked_ && !store_unreachable_)
     {
         store_asked_ = true;
         helper_.ask({"STORELOGO", title.id}, [this, gen](Reply &reply) {
@@ -722,7 +722,11 @@ void App::load_page()
                 return;
             listing_ = false;
             if (!reply.ok)
+            {
+                // once a run: a console that cannot reach the store will not reach it the next time either
+                store_unreachable_ = true;
                 toast("PlayStation Store's logo did not load", reply.error, true);
+            }
             for (const auto &row : reply.rows())
                 if (row.size() >= 9 && row[0] == "I")
                 {
