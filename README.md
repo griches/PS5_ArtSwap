@@ -189,7 +189,11 @@ homebrew's is), the Logos tab starts with the game's own logo from
 PlayStation Store's public catalog. The helper asks it as a web browser would,
 with no account, key, cookie or anything that says Art Swap or PS5, but Sony
 still sees the console's address and which game, so it is your choice. Each
-game is asked about once; the answer is kept in `/data/artswap/store/`.
+game is asked about once; the answer is kept in `/data/artswap/store/`. Most
+jailbroken consoles are kept from Sony's servers, to stop updates: on those
+the store cannot be reached, the Logos tab says so once a run, and
+SteamGridDB's logos show as before (it has the official logo of most store
+games too). Settings says this under the switch.
 
 ## The SteamGridDB API key
 

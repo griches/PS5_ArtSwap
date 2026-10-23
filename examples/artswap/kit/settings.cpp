@@ -504,6 +504,19 @@ void App::draw_settings(gfx::DrawList &list) const
             draw_row(list, fonts_, settings_row_rect(c, i), rows[static_cast<std::size_t>(i)],
                      settings_in_rows_ && i == settings_row_[c]);
         });
+    // under PlayStation Store logos: when it cannot work
+    if (c == 1)
+        staggered(5, [&] {
+            const Rect row = settings_row_rect(1, 1);
+            const float x = row.x + kRowPad, y = row.y + row.h + 44;
+            list.circle(x + 5, y - 8, 4, kWarn);
+            ui::paragraph(list, fonts_.regular,
+                          "Most jailbroken consoles are kept from Sony's servers, to stop updates. If yours is, "
+                          "PlayStation Store cannot be reached and this does nothing: the logo tab says so once, and "
+                          "SteamGridDB's logos show as before. SteamGridDB has the official logo of most store games "
+                          "too.",
+                          x + 22, y, 22, row.w - 2 * kRowPad - 22, 32, kText.with_alpha(0.6f), 3);
+        });
     list.push_opacity(tween::stagger(page_age_, 6, 0.05f, 0.36f) * panel_in);
     draw_description(list, fonts_, kPanel, description);
     list.pop_opacity();
