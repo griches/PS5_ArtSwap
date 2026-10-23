@@ -28,6 +28,7 @@ GAMES = {
     "PPSA99314": {"source_type": "folder", "path": "/data/homebrew/PPSA99314", "installed_pkg": False},
     "CUSA00001": {"source_type": "pkg", "path": "/user/app/CUSA00001/app.pkg", "installed_pkg": True},
     "PPSA26525": {"source_type": "image", "path": "/data/homebrew/PPSA26525_Heretic_Hexen.ffpfsc", "installed_pkg": False},
+    "PPSA99131": {"source_type": "folder", "path": "/data/homebrew/PPSA99131", "installed_pkg": False},
 }
 CAPABILITIES = ["web_ui", "list_games", "game_info", "uninstall_game", "rescan"]
 

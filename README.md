@@ -30,6 +30,12 @@ Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
   heroes (art made for backgrounds). A PS5 background is 3840×2160, so the
   3840×1240 heroes are listed first and tagged 4K: a 1920×620 one is enlarged
   about 3.5 times to fill it, and the frame page says so.
+- **Adds a background** to homebrew that has none (△, "Add background"), when
+  ShadowMountPlus installed it from a folder: Art Swap writes `pic0.dds`
+  (3840×2160 BC7, as the console writes its own) into the game's `sce_sys`,
+  and Apply changes installs the game again, since the home screen takes a
+  background in only at an install. There is no original, so Restore deletes
+  it (the files are listed in `/data/artswap/added.txt`).
 - **You choose the part kept** (△ in the picker opens the frame page): Fit (all
   of it, on a blurred fill of itself), the left, centre or right of a wide
   picture (top, middle or bottom of a tall one), or a part of your own: the
@@ -80,7 +86,7 @@ through that loader.
 | --- | --- | --- |
 | Titles | ← → | choose a title |
 | | ✕ | change its icon |
-| | △ | change its background |
+| | △ | change its background, or add one to homebrew ShadowMountPlus installed from a folder |
 | | R1 | change the logo on its page (a title the home screen lists) |
 | | □ | restore its original art and name, and take its logo off (when Art Swap changed them) |
 | | L2 | rename it (homebrew ShadowMountPlus installed from a folder; asks first) |
@@ -254,6 +260,7 @@ On the console the helper keeps its files in `/data/artswap/`:
 | `apikey.txt` | your SteamGridDB API key |
 | `cache/` | downloaded pictures (trimmed to 192 MB when over 256 MB) |
 | `logos/` | the logo Art Swap put on each title's page (`<id>.png`), and what it replaced (`<id>.orig`) |
+| `added.txt` | the background files Art Swap added to titles that had none |
 | `app.db.first`, `app.db.backup` | the home screen's database before Art Swap first changed it, and before its last run's first change |
 | `store-logos` | if present, PlayStation Store logos are on |
 | `store/` | what PlayStation Store's catalog said about each store game's logo |
@@ -279,7 +286,8 @@ Swap closing, and a game open in the background carrying on. Logos: one from
 SteamGridDB on a homebrew game's page at once, with no restart; a store
 logo on a disk image game kept through a console restart; and a logo put back
 17 seconds into a rename's install, when the game's entry came back. The
-PlayStation Store lookup was tested from a Mac only.
+PlayStation Store lookup was tested from a Mac only. A background added to a
+homebrew emulator that had none, shown after Apply changes.
 
 What the console taught (helper/tests/tlstest.c, procs.c):
 
@@ -302,6 +310,9 @@ What the console taught (helper/tests/tlstest.c, procs.c):
 - Folders a game writes (its saves, mode 0700) can be read only as the game's
   user, not even as root: the helper switches to the folder's owner to read
   them.
+- The home screen registers a background only as `pic0.dds`: a title whose
+  `sce_sys` has a `pic0.png` alone (PS5X360's, or one Art Swap wrote as PNG)
+  has none on the home screen, and its `pic0Info` stays empty.
 - An install writes the title's entry in `app.db` some seconds after
   ShadowMountPlus lists it as installed (17 s once), so the helper waits for
   the entry before it puts a logo back.

@@ -264,7 +264,7 @@ static void *restart_job(void *argument)
     int failures = 0;
     for (int i = 0; i < job->nrenamed; i++) {
         const app_t *app = &job->renamed[i];
-        set_phase("installing", "Installing %s again for its new name", app->name);
+        set_phase("installing", "Installing %s again for its new name or background", app->name);
         char message[480];
         if (!smp_refresh_run(app, 60, message, sizeof(message))) {
             failures++;
@@ -322,7 +322,9 @@ static void *restart_job(void *argument)
     pending_write(list, kept);
     pthread_mutex_unlock(&g_lock);
     if (failures > 0)
-        set_phase("failed", "The home screen restarted, but %s %s not installed again, so %s new name does not show yet. %s",
+        set_phase("failed",
+                  "The home screen restarted, but %s %s not installed again, so %s new name or background does not "
+                  "show yet. %s",
                   failed_names, failures == 1 ? "was" : "were", failures == 1 ? "its" : "their", why);
     else
         set_phase("done", ok ? "The home screen restarted with every change" : "");

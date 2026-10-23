@@ -197,6 +197,8 @@ static void list_apps(buf_t *out)
         bool kept = false;
         for (int j = 0; j < app->nfiles; j++)
             kept |= app->files[j].has_old;
+        const bool added = art_added(app->id);
+        kept |= added;
         buf_printf(out, "A\t%s\t", app->id);
         buf_field(out, app->name);
         buf_printf(out, "\t%s\t", app->kind);
@@ -209,8 +211,8 @@ static void list_apps(buf_t *out)
         for (int j = 0; j < nfolders && !refresh; j++)
             refresh = strcmp(folders[j], app->id) == 0;
         /* the home screen's entry: the store concept, and the logo (art: Art Swap's, other: one of its own) */
-        buf_printf(out, "\t%d\t%d\t%ld\t%s\t%d\n", name_kept(app), refresh, app->concept,
-                   logo_kept(app->id) ? "art" : app->logo ? "other" : "-", app->listed);
+        buf_printf(out, "\t%d\t%d\t%ld\t%s\t%d\t%d\n", name_kept(app), refresh, app->concept,
+                   logo_kept(app->id) ? "art" : app->logo ? "other" : "-", app->listed, added);
     }
     pthread_mutex_unlock(&g_apps_lock);
 }
@@ -346,13 +348,37 @@ static bool handle(int fd, char **field, int n)
         if (!find_app(field[1], &app)) {
             ok = reply_error(fd, "no such title");
         } else {
+            /* a title with no background: one added to its folder, for an install to take in */
+            int pics = 0;
+            for (int i = 0; i < app.nfiles; i++)
+                pics += slot_matches(&app.files[i], "pic");
+            const bool add = strcmp(field[2], "pic") == 0 && pics == 0;
+            smp_info_t info;
+            if (add)
+                smp_info(&app, &info);
+            if (add && !info.can_refresh) {
+                snprintf(err, sizeof(err),
+                         "%s has no background. Art Swap can add one only to a game ShadowMountPlus installed from a "
+                         "folder, as the home screen takes a new background in only when the game is installed.",
+                         app.name);
+                return reply_error(fd, err);
+            }
+            const char *mode = n > 4 ? field[4] : "cover";
+            const float pan_x = n > 5 ? (float)atof(field[5]) : 0.0f, pan_y = n > 6 ? (float)atof(field[6]) : 0.0f;
+            const float zoom = n > 7 ? (float)atof(field[7]) : 1.0f;
             pthread_mutex_lock(&g_apply_lock);
-            const bool done = art_apply(&app, field[2], field[3], n > 4 ? field[4] : "cover",
-                                        n > 5 ? (float)atof(field[5]) : 0.0f, n > 6 ? (float)atof(field[6]) : 0.0f,
-                                        n > 7 ? (float)atof(field[7]) : 1.0f, &text, err, sizeof(err));
+            const bool done = add ? art_add_background(&app, info.path, field[3], mode, pan_x, pan_y, zoom, &text, err,
+                                                       sizeof(err))
+                                  : art_apply(&app, field[2], field[3], mode, pan_x, pan_y, zoom, &text, err,
+                                              sizeof(err));
             pthread_mutex_unlock(&g_apply_lock);
-            refresh_app(app.id, -1, "", NULL);
-            if (done)
+            if (add && done)
+                rescan(); /* the new file */
+            else
+                refresh_app(app.id, -1, "", NULL);
+            if (done && add)
+                home_note_name(app.id); /* shown once the game is installed again */
+            else if (done)
                 home_note(app.id);
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
@@ -369,10 +395,11 @@ static bool handle(int fd, char **field, int n)
             const bool all = strcmp(slot, "all") == 0, logo_only = strcmp(slot, "logo") == 0;
             const bool name = all && name_kept(&app);
             const bool logo = (all || logo_only) && logo_kept(app.id);
+            const bool added = (all || strcmp(slot, "pic") == 0) && art_added(app.id);
             bool art = false;
             for (int i = 0; i < app.nfiles && !logo_only; i++)
                 art |= app.files[i].has_old && (all || slot_matches(&app.files[i], slot));
-            bool done = art || name || logo;
+            bool done = art || name || logo || added;
             if (!done)
                 snprintf(err, sizeof(err), "%s has no original art kept", app.name);
             if (done && art)
@@ -383,14 +410,18 @@ static bool handle(int fd, char **field, int n)
             }
             if (done && logo)
                 done = logo_restore(&app, &text, err, sizeof(err));
+            if (done && added && art_remove_added(app.id, &text) < 0) {
+                snprintf(err, sizeof(err), "The background Art Swap added could not all be deleted");
+                done = false;
+            }
             pthread_mutex_unlock(&g_apply_lock);
             refresh_app(app.id, -1, "", NULL);
             if (logo)
                 set_logo_shown(app.id, false);
-            if (name)
-                rescan(); /* the name, read again */
-            if (done && name)
-                home_note_name(app.id); /* the original name shows after an install, as a new one does */
+            if (name || added)
+                rescan(); /* the name read again, the files gone */
+            if (done && (name || added))
+                home_note_name(app.id); /* the original name, or none of the background, after an install */
             else if (done && art)
                 home_note(app.id); /* a logo goes from the page at once */
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);

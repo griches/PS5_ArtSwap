@@ -24,3 +24,12 @@ bool art_apply(const app_t *app, const char *slot, const char *url, const char *
                float zoom, buf_t *report, char *err, size_t errlen);
 /* The kept originals back; slot "icon", "pic" or "all". report gets "R" lines. */
 bool art_restore(const app_t *app, const char *slot, buf_t *report, char *err, size_t errlen);
+
+/* A background for a title that has none: pic0.dds (3840x2160 BC7) in its folder's sce_sys (folder: the game's
+ * folder, as ShadowMountPlus names it), which an install then copies for the home screen. report gets a "W" line. */
+bool art_add_background(const app_t *app, const char *folder, const char *url, const char *mode, float pan_x,
+                        float pan_y, float zoom, buf_t *report, char *err, size_t errlen);
+/* Art Swap added the title's background (/data/artswap/added.txt): there is no original to keep */
+bool art_added(const char *id);
+/* The files of the background Art Swap added, deleted; how many, -1 when one could not be. report gets "R" lines. */
+int art_remove_added(const char *id, buf_t *report);

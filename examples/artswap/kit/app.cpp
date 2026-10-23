@@ -227,6 +227,12 @@ struct App::Title
     long store_concept = 0; // its PlayStation Store concept: 0 for homebrew
     std::string logo = "-"; // the logo on its page: art (Art Swap's), other (its own) or - (none: its name shows)
     bool listed = true;     // the home screen has an entry for it, so it can have a logo
+    bool added = false;     // Art Swap added its background (it had none): Restore deletes it
+    // a background to change, or one Art Swap can add (ShadowMountPlus installs the game again for it)
+    bool has_pic() const
+    {
+        return !(pic_desc == "-" || pic_desc.empty());
+    }
     long sgdb_id = 0;
     // changed by Art Swap: art (originals kept), a name or a logo, so Restore has something to put back
     bool changed() const
@@ -379,6 +385,7 @@ void App::load_titles(bool rescan)
                 title->logo = row[12];
                 title->listed = row[13] == "1";
             }
+            title->added = row.size() > 14 && row[14] == "1";
             title->sgdb_id = std::strtol(row[7].c_str(), nullptr, 10);
             title->sgdb_name = row[8];
             // keep the pictures already loaded, unless this is a fresh look
@@ -535,7 +542,7 @@ std::vector<int> App::tab_kinds() const
     if (picker_title_ >= 0)
     {
         const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
-        if (!title.pic_desc.empty() && title.pic_desc != "-")
+        if (title.has_pic() || title.refresh)
             out.push_back(1);
         if (title.listed)
             out.push_back(2);
@@ -1200,6 +1207,12 @@ void App::draw_frame(gfx::DrawList &list) const
     // how much of the picture is kept, and how far it is enlarged to the file's size
     int file_w = 0, file_h = 0;
     desc_size(icon ? title.icon_desc : title.pic_desc, file_w, file_h);
+    if (!icon && file_w == 0)
+    {
+        // a background Art Swap adds is 3840x2160
+        file_w = 3840;
+        file_h = 2160;
+    }
     char line[160];
     float enlarged = 0.0f;
     if (framing_.fit)
@@ -1274,6 +1287,21 @@ void App::apply()
                     if (!reply.ok)
                     {
                         toast("That did not work", reply.error, true);
+                        return;
+                    }
+                    bool added = false;
+                    for (auto &t : titles_)
+                        if (t->id == id && slot == "pic" && !t->has_pic())
+                            added = true;
+                    if (added)
+                    {
+                        // a new file in the game's folder: the home screen takes it in when the game is installed
+                        toast("Background added to " + name,
+                              "Your game had none, so Restore deletes it. Apply changes (R2) installs the game again "
+                              "to show it on the home screen.");
+                        note_pending(id, true);
+                        close_picker();
+                        load_titles(false);
                         return;
                     }
                     for (auto &t : titles_)
@@ -1384,7 +1412,7 @@ void App::restore()
     sheet_ = Sheet::working;
     working_text_ = title->name_kept || title->logo == "art" ? "Putting the originals back" : "Putting the original art back";
     const std::string id = title->id, name = title->name;
-    const bool named = title->name_kept, art = title->kept;
+    const bool named = title->name_kept || title->added, art = title->kept;
     helper_.ask({"RESTORE", id, "all"}, [this, id, name, named, art](Reply &reply) {
         sheet_ = Sheet::none;
         if (!reply.ok)
@@ -1397,6 +1425,7 @@ void App::restore()
             {
                 t->kept = false;
                 t->name_kept = false;
+                t->added = false;
                 if (t->logo == "art")
                     t->logo = "-";
                 t->icon_asked = false;
@@ -1414,7 +1443,7 @@ void App::restore()
               shows_after("", "them"));
         note_pending(id, named);
         if (named)
-            load_titles(false); // its name, as the helper reads it again
+            load_titles(false); // its name, as the helper reads it again, and its art files
     }, true);
 }
 
@@ -1791,6 +1820,13 @@ void App::update(const hui::InputFrame &pad, float dt, ui::Feedback &feedback)
             backdrop_ = focused->background;
             backdrop_fade_.start(0.45f);
         }
+        else if (!focused->has_pic() && backdrop_ != 0)
+        {
+            // none of its own: the last title's fades away, rather than stand in for it
+            backdrop_old_ = backdrop_;
+            backdrop_ = 0;
+            backdrop_fade_.start(0.45f);
+        }
         if (focused->background)
             focused->background_used = clock_;
     }
@@ -1878,10 +1914,13 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
         want_picker("icon", feedback);
     else if (input.is_pressed(Action::north))
     {
-        if (title->pic_desc == "-" || title->pic_desc.empty())
+        if (!title->has_pic() && !title->refresh)
         {
             feedback.play(Cue::error);
-            toast(title->name + " has no background", "There is no pic0 or pic1 file for it to replace.", true);
+            toast(title->name + " has no background",
+                  "Art Swap adds one only to homebrew ShadowMountPlus installed from a folder: the home screen takes a "
+                  "new background in when the game is installed again.",
+                  true);
         }
         else
             want_picker("pic", feedback);
@@ -2377,8 +2416,8 @@ void App::draw_library(gfx::DrawList &list) const
         bx += w + 20;
     }
     {
-        const bool has_pic = !(title->pic_desc == "-" || title->pic_desc.empty());
-        const char *label = "Change background";
+        const bool has_pic = title->has_pic() || title->refresh;
+        const char *label = title->has_pic() || !title->refresh ? "Change background" : "Add background";
         const float w = fonts_.semibold.measure(label, 27) + 100;
         const Rect pill{bx, by, w, 64};
         list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(has_pic ? 0.35f : 0.12f));
@@ -2797,10 +2836,14 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
                               : Rect{panel.x + panel.w - 64 - 400, panel.y + 170, 400, 225};
         draw_new_art(list, pic, icon ? 26.0f : 10.0f);
         const std::string file = icon ? "icon0" : "pic0 and pic1";
+        const bool adding = !icon && title && !title->has_pic();
         ui::paragraph(list, fonts_.regular,
-                      "Art Swap writes it over " + file +
-                          " in every copy of the game's art, in the same format and size. The original is kept, so "
-                          "Restore can always put it back.",
+                      adding ? name + " has no background yet. Art Swap adds this one to the game's folder, and Apply "
+                                      "changes installs the game again so the home screen takes it in. Restore "
+                                      "deletes it."
+                             : "Art Swap writes it over " + file +
+                                   " in every copy of the game's art, in the same format and size. The original is "
+                                   "kept, so Restore can always put it back.",
                       x, y, 25, panel.w - 128 - pic.w - 40, 38, kWhite.with_alpha(0.85f), 6);
         if (sheet_ == Sheet::working)
         {
@@ -2814,11 +2857,14 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         heading("RESTORE", "The original art of " + name + "?");
         // what goes back: the art, the name, and the logo comes off
         std::string what;
-        if (title && title->kept)
+        if (title && title->kept && !(title->added && !title->name_kept))
             what = title->name_kept ? "the icon, background and name" : "the icon and background";
         else if (title && title->name_kept)
             what = "the name";
         std::string text = what.empty() ? "" : "Art Swap puts back " + what + " this game came with.";
+        if (title && title->added)
+            text += std::string(text.empty() ? "Art Swap" : " It also") +
+                    " deletes the background it added, which the game did not have.";
         if (title && title->logo == "art")
             text += std::string(text.empty() ? "Art Swap" : " It also") +
                     " takes its logo off its page, which shows its name again.";
@@ -2846,7 +2892,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         const std::string steps[] = {
             "Art Swap closes.",
             renamed.empty() ? std::string("The home screen goes dark for a few seconds.")
-                            : "ShadowMountPlus installs " + renamed + " again, for the new name.",
+                            : "ShadowMountPlus installs " + renamed + " again, for its new name or background.",
             renamed.empty() ? std::string("It comes back with your new art.")
                             : std::string("The home screen restarts with your new art and names.")};
         for (int i = 0; i < 3; ++i)
@@ -3082,7 +3128,7 @@ void App::draw_hints(gfx::DrawList &list) const
         if (title)
         {
             hints.push_back({ui::Button::cross, "Icon"});
-            if (!(title->pic_desc == "-" || title->pic_desc.empty()))
+            if (title->has_pic() || title->refresh)
                 hints.push_back({ui::Button::triangle, "Background"});
             if (title->listed)
                 hints.push_back({ui::Button::r1, "Logo"});

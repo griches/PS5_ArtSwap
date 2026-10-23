@@ -714,3 +714,32 @@ bool image_encode_like(const image_t *img, const art_format_t *like, const uint8
         return false;
     }
 }
+
+bool image_encode_bc7_dds(const image_t *img, buf_t *out, char *err, size_t errlen)
+{
+    out->len = 0;
+    if (img->w % 4 || img->h % 4) {
+        snprintf(err, errlen, "internal: %dx%d is not made of 4x4 blocks", img->w, img->h);
+        return false;
+    }
+    uint32_t header[37] = {0};
+    memcpy(header, "DDS ", 4);
+    header[1] = 124;                                      /* the header's size */
+    header[2] = 0x000a1007;                               /* caps, height, width, pixel format, linear size, levels */
+    header[3] = (uint32_t)img->h;
+    header[4] = (uint32_t)img->w;
+    header[5] = (uint32_t)(img->w / 4) * (uint32_t)(img->h / 4) * 16; /* the level's bytes */
+    header[7] = 1;                                        /* one level */
+    header[19] = 32;                                      /* the pixel format's size */
+    header[20] = 0x4;                                     /* a FourCC */
+    memcpy(&header[21], "DX10", 4);
+    header[27] = 0x1000;                                  /* a texture */
+    header[32] = 98;                                      /* DXGI_FORMAT_BC7_UNORM */
+    header[33] = 3;                                       /* 2D */
+    header[35] = 1;                                       /* one picture */
+    if (!buf_append(out, header, sizeof(header)) || !encode_level(img, DDS_BC7, out)) {
+        snprintf(err, errlen, "out of memory");
+        return false;
+    }
+    return true;
+}

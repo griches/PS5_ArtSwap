@@ -54,5 +54,9 @@ bool image_has_alpha(const image_t *img);
 bool image_encode_like(const image_t *img, const art_format_t *like, const uint8_t *like_data,
                        size_t like_len, buf_t *out, char *err, size_t errlen);
 
+/* img (sides multiples of 4) as a new DDS: BC7 in one level, behind the header the console writes for its own
+ * backgrounds (DX10, BC7_UNORM, as Astro's Playroom's pic0.dds on 13.60) */
+bool image_encode_bc7_dds(const image_t *img, buf_t *out, char *err, size_t errlen);
+
 /* BC7 mode 6 blocks for a picture whose sides are multiples of 4 (bc7enc.c) */
 void bc7_encode_image(const image_t *img, uint8_t *blocks);

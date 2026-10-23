@@ -109,7 +109,8 @@ def make_console(base: Path):
     db.execute("CREATE TABLE tbl_conceptmetadata (localConceptId TEXT NOT NULL, conceptId INT, conceptName TEXT, "
                "logoImageInfo TEXT, PRIMARY KEY(localConceptId))")
     for title, name, concept in (("PPSA99314", "Eternal Darkness™", 99314), ("CUSA00001", "Bloodborne", 10000176),
-                                 ("PPSA05678", "Astro Bot", 10002691), ("PPSA26525", "Heretic + Hexen", 10012903)):
+                                 ("PPSA05678", "Astro Bot", 10002691), ("PPSA26525", "Heretic + Hexen", 10012903),
+                                 ("PPSA99131", "PSP5", 99131)):
         local = f"cid:scp:{concept:016x}"
         db.execute("INSERT INTO tbl_contentinfo VALUES (?, ?, ?, ?)", (title, name, concept, local))
         db.execute("INSERT INTO tbl_conceptmetadata VALUES (?, ?, '', NULL)", (local, concept))
@@ -124,6 +125,11 @@ def make_console(base: Path):
     hb.mkdir(parents=True)
     Image.new("RGB", (512, 512), (250, 120, 0)).save(hb / "icon0.png")
     (hb / "param.json").write_text(param_json("PPSA99316", "Burnout 3"))
+    # a folder game with an icon and no background (PSP5)
+    for folder in (meta / "PPSA99131", base / "data/homebrew/PPSA99131/sce_sys", base / "user/app/PPSA99131/sce_sys"):
+        folder.mkdir(parents=True)
+        Image.new("RGB", (512, 512), (20, 60, 200)).save(folder / "icon0.png")
+        (folder / "param.json").write_text(param_json("PPSA99131", "PSP5"))
     # a game ShadowMountPlus installed from a disk image: the home screen's copy in /user/app/<id>/sce_sys
     for folder in (meta / "PPSA26525", base / "user/app/PPSA26525/sce_sys"):
         folder.mkdir(parents=True)
@@ -193,8 +199,8 @@ def main() -> int:
 
         apps = {r[1]: r for r in h.rows("APPS")}
         print("     " + "\n     ".join("\t".join(r) for r in apps.values()))
-        check(set(apps) == {"PPSA99314", "CUSA00001", "PPSA05678", "PPSA99316", "PPSA26525"},
-              "APPS lists the five titles, not the system app")
+        check(set(apps) == {"PPSA99314", "CUSA00001", "PPSA05678", "PPSA99316", "PPSA26525", "PPSA99131"},
+              "APPS lists the six titles, not the system app")
         ed = apps["PPSA99314"]
         check(ed[2] == "Eternal Darkness", "the name from param.json, trademark sign dropped")
         check(ed[3] == "homebrew", "a title with a homebrew folder is homebrew")
@@ -534,6 +540,58 @@ def main() -> int:
             check(False, "a second restore says there is nothing")
         except HelperError as e:
             check("no original" in str(e), f"a second restore says there is nothing ({e})")
+
+        # a background for a folder game that has none: pic0.dds in its folder, taken in by an install
+        psp = base / "data/homebrew/PPSA99131/sce_sys/pic0.dds"
+        check({r[1]: r for r in h.rows("APPS")}["PPSA99131"][5] == "-", "PSP5 has no background")
+        try:
+            h.rows("APPLY", "PPSA05678", "pic", hero[2], "cover", "0", "0")
+            check(False, "no background is added to a game ShadowMountPlus cannot install again")
+        except HelperError as e:
+            check("installed from a folder" in str(e), f"no background is added to a game it cannot install ({e})")
+        report = h.rows("APPLY", "PPSA99131", "pic", hero[2], "cover", "0", "0")
+        im = Image.open(psp)
+        im.load()
+        check(im.size == (3840, 2160) and dds_info(psp)[1] == 8294548,
+              f"APPLY adds pic0.dds, 3840x2160 BC7, to the folder ({report})")
+        # Astro's Playroom's pic0.dds on the console, as the system wrote it
+        astro_header = bytes.fromhex(
+            "444453207c00000007100a0070080000000f000000907e000000000001000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000020000000040000004458313000000000000000000000000000"
+            "0000000000000000100000000000000000000000000000000000006200000003000000000000000100000000000000")
+        check(dds_info(psp)[0] == astro_header, "its header is the one the console writes for its own")
+        check(not Path(str(psp) + ".old").exists(), "an added background has no original")
+        check({r[1]: r for r in h.rows("APPS")}["PPSA99131"][14] == "1", "APPS: a background Art Swap added")
+        pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
+        check(pend.get("PPSA99131") == "name", f"an added background waits for an install ({pend})")
+        title = subprocess.Popen(["sleep", "1"])
+        h.rows("HOME", str(title.pid))
+        title.wait()
+        end = time.time() + 90
+        while time.time() < end and next(r for r in h.rows("HOMESTATE") if r[0] == "home")[1] not in ("done", "failed"):
+            time.sleep(0.3)
+        installed = base / "user/appmeta/PPSA99131/pic0.dds"
+        end = time.time() + 5  # the fake install copies its files in no fixed order
+        while time.time() < end and not installed.exists():
+            time.sleep(0.2)
+        check(next(r for r in h.rows("HOMESTATE") if r[0] == "home")[1] == "done" and installed.exists(),
+              "the install takes the added background in")
+        h.rows("HOMESTATE", "seen")
+        apps = {r[1]: r for r in h.rows("APPS", "rescan")}
+        check(apps["PPSA99131"][5].startswith("dds-bc7 3840x2160"), f"APPS: its background now ({apps['PPSA99131'][5]})")
+        # Restore straight after the install: the install's copies go too
+        report = h.rows("RESTORE", "PPSA99131", "all")
+        check(not list(base.rglob("PPSA99131/**/pic0.dds")), f"RESTORE deletes the install's copies too ({report})")
+        h.rows("APPLY", "PPSA99131", "pic", hero[2], "cover", "0", "0")
+        shutil.copy(psp, base / "user/appmeta/PPSA99131/pic0.dds")  # as an install copies it
+        h.rows("APPS", "rescan")
+        h.rows("APPLY", "PPSA99131", "pic", lists["heroes"][-1][2], "fit", "0", "0")
+        check(not list(base.rglob("PPSA99131/**/pic0.dds.old")), "changing an added background keeps no original")
+        report = h.rows("RESTORE", "PPSA99131", "all")
+        check(not list(base.rglob("PPSA99131/**/pic0.dds")), f"RESTORE deletes the added background, every copy ({report})")
+        check("PPSA99131" not in (base / "data/artswap/added.txt").read_text(), "added.txt forgets it")
+        pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
+        check(pend.get("PPSA99131") == "name", "the restore waits for an install too")
 
         # the key
         try:

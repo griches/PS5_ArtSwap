@@ -9,6 +9,12 @@
  * form of the file it replaces (container, size, channels, DDS format, levels
  * and header), so the home screen reads it as it read the original.
  *
+ * A title with no background has nothing to replace: Art Swap adds pic0.dds
+ * to the game's own sce_sys, and the home screen takes it in when the game is
+ * installed again (Apply changes). It registers only a pic0.dds: a title with
+ * a pic0.png alone shows none. Those files have no original; they are
+ * listed in /data/artswap/added.txt, and Restore deletes them.
+ *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -20,6 +26,8 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+
+static void added_note(const char *id, const char *file);
 
 /* The file to show for a slot: pic0 before pic1, the home screen's copy first */
 static const art_file_t *preview_file(const app_t *app, const char *slot)
@@ -84,6 +92,128 @@ static bool other_old(const app_t *app, const art_file_t *file, buf_t *out)
         buf_free(out);
     }
     return false;
+}
+
+/* ---- backgrounds Art Swap added ---- */
+
+static const char *added_path(char *out, size_t size)
+{
+    return data_path("added.txt", out, size);
+}
+
+bool art_added(const char *id)
+{
+    char path[512], line[24];
+    buf_t text = {0};
+    snprintf(line, sizeof(line), "\n%s\t", id); /* a line of its own: the text read starts after a newline */
+    bool found = false;
+    if (file_read(added_path(path, sizeof(path)), &text) && text.len > 0) {
+        buf_t lines = {0};
+        buf_append(&lines, "\n", 1);
+        buf_append(&lines, text.data, text.len);
+        found = strstr((const char *)lines.data, line) != NULL;
+        buf_free(&lines);
+    }
+    buf_free(&text);
+    return found;
+}
+
+/* "id<TAB>path", once */
+static void added_note(const char *id, const char *file)
+{
+    char path[512], line[460];
+    buf_t text = {0};
+    snprintf(line, sizeof(line), "%s\t%s\n", id, file);
+    file_read(added_path(path, sizeof(path)), &text);
+    if (text.len == 0 || strstr((const char *)text.data, line) == NULL) {
+        buf_append(&text, line, strlen(line));
+        file_write_replace(path, text.data, text.len, NULL);
+    }
+    buf_free(&text);
+}
+
+int art_remove_added(const char *id, buf_t *report)
+{
+    char path[512];
+    buf_t text = {0}, kept = {0};
+    if (!file_read(added_path(path, sizeof(path)), &text) || text.len == 0) {
+        buf_free(&text);
+        return 0;
+    }
+    const size_t idlen = strlen(id);
+    int removed = 0;
+    bool failed = false;
+    char *save = NULL;
+    for (char *line = strtok_r((char *)text.data, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        if (strncmp(line, id, idlen) != 0 || line[idlen] != '\t') {
+            buf_printf(&kept, "%s\n", line);
+            continue;
+        }
+        char real[512];
+        const char *file = line + idlen + 1;
+        if (unlink(cpath(file, real, sizeof(real))) == 0 || !file_exists(real)) {
+            buf_printf(report, "R\t%s\n", file);
+            removed++;
+        } else {
+            buf_printf(&kept, "%s\n", line); /* tried again next time */
+            failed = true;
+        }
+    }
+    file_write_replace(path, kept.data ? kept.data : (uint8_t *)"", kept.len, NULL);
+    buf_free(&text);
+    buf_free(&kept);
+    /* the copies an install made of it for the home screen, which the list may not name yet */
+    static const char *copies[] = {"/user/appmeta/%s/pic0.dds", "/user/app/%s/sce_sys/pic0.dds",
+                                   "/user/appmeta/%s/pic0.png", "/user/app/%s/sce_sys/pic0.png"};
+    for (size_t i = 0; i < sizeof(copies) / sizeof(copies[0]) && removed > 0; i++) {
+        char copy[200], real[512], old[220], real_old[512];
+        snprintf(copy, sizeof(copy), copies[i], id);
+        snprintf(old, sizeof(old), "%s.old", copy);
+        if (file_exists(cpath(copy, real, sizeof(real))) && !file_exists(cpath(old, real_old, sizeof(real_old))) &&
+            unlink(real) == 0) {
+            buf_printf(report, "R\t%s\n", copy);
+            removed++;
+        }
+    }
+    log_line("restore %s: %d added background files deleted%s", id, removed, failed ? ", one could not be" : "");
+    return failed ? -1 : removed;
+}
+
+bool art_add_background(const app_t *app, const char *folder, const char *url, const char *mode, float pan_x,
+                        float pan_y, float zoom, buf_t *report, char *err, size_t errlen)
+{
+    char dest[440], real[512], icon[440], like[512];
+    snprintf(dest, sizeof(dest), "%s/sce_sys/pic0.dds", folder);
+    snprintf(icon, sizeof(icon), "%s/sce_sys/icon0.png", folder);
+    cpath(icon, like, sizeof(like));
+    if (file_exists(cpath(dest, real, sizeof(real)))) {
+        snprintf(err, errlen, "%s has a background already: %s", app->name, dest);
+        return false;
+    }
+    buf_t download = {0}, dds = {0};
+    image_t src = {0}, made = {0};
+    bool ok = sgdb_fetch(url, &download, err, errlen) && image_decode(download.data, download.len, &src, err, errlen);
+    buf_free(&download);
+    /* the home screen registers a background only as pic0.dds (a pic0.png alone is left out): 3840x2160 BC7,
+     * as the console writes its own */
+    if (ok && !art_compose(&src, "pic", mode, pan_x, pan_y, zoom, 3840, 2160, &made)) {
+        snprintf(err, errlen, "the picture could not be made at 3840x2160");
+        ok = false;
+    }
+    ok = ok && image_encode_bc7_dds(&made, &dds, err, errlen);
+    if (ok && !file_write_replace(real, dds.data, dds.len, file_exists(like) ? like : NULL)) {
+        snprintf(err, errlen, "%s could not be written", dest);
+        ok = false;
+    }
+    if (ok) {
+        added_note(app->id, dest);
+        buf_printf(report, "W\t%s\tdds-bc7 3840x2160\n", dest);
+    }
+    log_line("add %s background: %s, %s%s%s", app->id, url, dest, ok ? "" : ": ", ok ? "" : err);
+    image_free(&src);
+    image_free(&made);
+    buf_free(&dds);
+    return ok;
 }
 
 bool art_compose(const image_t *src, const char *slot, const char *mode, float pan_x, float pan_y, float zoom, int w,
@@ -151,8 +281,12 @@ bool art_apply(const app_t *app, const char *slot, const char *url, const char *
         }
         if (ok)
             ok = image_encode_like(&made, &fmt, original.data, original.len, &encoded, err, errlen);
-        /* the original, kept once: another copy's, if it keeps one, rather than the art shown now */
-        if (ok && !file_exists(real_old)) {
+        /* the original, kept once: another copy's, if it keeps one, rather than the art shown now; a background
+         * Art Swap added had none, so its copies are listed with it instead */
+        const bool added = strcmp(slot, "pic") == 0 && art_added(app->id);
+        if (ok && added)
+            added_note(app->id, file->path);
+        else if (ok && !file_exists(real_old)) {
             buf_t kept = {0};
             const buf_t *keep = other_old(app, file, &kept) ? &kept : &original;
             ok = file_write_replace(real_old, keep->data, keep->len, real);
