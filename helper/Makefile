@@ -12,8 +12,8 @@ ROOT := $(abspath $(CURDIR)/..)
 OUT := $(ROOT)/build/helper
 HOST_OUT := $(ROOT)/build/helper-host
 
-SOURCES := src/artswapd.c src/art.c src/home.c src/logo.c src/name.c src/phone.c src/scan.c src/sgdb.c src/smp.c src/store.c \
-	src/image.c src/bc7enc.c src/config.c src/util.c
+SOURCES := src/artswapd.c src/art.c src/home.c src/logo.c src/music.c src/name.c src/phone.c src/scan.c src/sgdb.c src/smp.c \
+	src/store.c src/at9.c src/at9_tables.c src/image.c src/bc7enc.c src/config.c src/util.c
 THIRD := src/stb_impl.c third_party/cJSON.c
 SQLITE := third_party/sqlite3.c
 SQLITE_FLAGS := -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION=1 -DSQLITE_DEFAULT_MEMSTATUS=0 \

@@ -150,6 +150,36 @@ def wait_port(port, seconds=10):
     return False
 
 
+def make_song(path, seconds=40, rate=44100):
+    """A stereo WAV that sounds like something: a chord, a beat, a slow swell"""
+    import math
+    import wave
+    frames = bytearray()
+    for i in range(int(seconds * rate)):
+        t = i / rate
+        swell = 0.5 + 0.5 * math.sin(2 * math.pi * t / 8)
+        beat = math.exp(-((t * 2) % 1) * 12)
+        left = 0.25 * swell * (math.sin(2 * math.pi * 220 * t) + 0.6 * math.sin(2 * math.pi * 277.2 * t)) + 0.2 * beat * math.sin(2 * math.pi * 60 * t)
+        right = 0.25 * swell * (math.sin(2 * math.pi * 330 * t) + 0.6 * math.sin(2 * math.pi * 440 * t)) + 0.2 * beat * math.sin(2 * math.pi * 60 * t)
+        frames += struct.pack("<hh", int(max(-1, min(1, left)) * 32767), int(max(-1, min(1, right)) * 32767))
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(bytes(frames))
+
+
+def at9_loudness(path):
+    """(seconds, integrated LUFS) of an AT9 file, as FFmpeg's own ATRAC9 decoder hears it"""
+    import re
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af", "ebur128", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    lufs = re.findall(r"I:\s+(-?[\d.]+) LUFS", out)
+    dur = re.search(r"Duration: (\d+):(\d+):([\d.]+)", out)
+    seconds = int(dur.group(1)) * 3600 + int(dur.group(2)) * 60 + float(dur.group(3)) if dur else 0
+    return seconds, float(lufs[-1]) if lufs else None
+
+
 def logo_info(base, title):
     db = sqlite3.connect(base / "system_data/priv/mms/app.db")
     row = db.execute("SELECT m.logoImageInfo FROM tbl_contentinfo c JOIN tbl_conceptmetadata m "
@@ -193,7 +223,7 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.4.0", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.5.0", f"HELLO names the version ({hello})")
         check(hello.get("store") == "off", "PlayStation Store logos start off")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
@@ -602,6 +632,108 @@ def main() -> int:
         check("PPSA99131" not in (base / "data/artswap/added.txt").read_text(), "added.txt forgets it")
         pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
         check(pend.get("PPSA99131") == "name", "the restore waits for an install too")
+
+        # music: songs of the person's, a clip of one as a title's snd0.at9
+        music = base / "data/artswap/music"
+        music.mkdir(parents=True, exist_ok=True)
+        make_song(music / "Song.wav")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(music / "Song.wav"), "-b:a", "192k",
+                        str(music / "Song.mp3")], check=True)
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(music / "Song.wav"), str(music / "Song.flac")],
+                       check=True)
+        (music / "notes.txt").write_text("not music")
+        rows = h.rows("SONGS")
+        songs = [r[1] for r in rows if r[0] == "S"]
+        check(songs == ["Song.flac", "Song.mp3", "Song.wav"], f"SONGS lists the music, A to Z ({songs})")
+        maximum = float(next(r for r in rows if r[0] == "max")[1])
+        check(86 < maximum < 88, f"SONGS: the longest clip ({maximum})")
+        for name in songs:
+            info = {r[0]: r for r in h.rows("SONG", name)}
+            check(abs(float(info["song"][2]) - 40) < 0.2 and info["song"][3] == "44100" and info["song"][4] == "2"
+                  and len(info["W"]) == 201, f"SONG {name}: 40 s, 44.1 kHz stereo, 200 levels ({info['song']})")
+        raw = h.ask_raw("CLIP", "Song.flac", "5", "20")
+        head, _, pcm = raw.partition(b"\n")
+        fields = head.decode().split("\t")
+        check(fields[0] == "clip" and fields[1] == "960000" and len(pcm) == 960000 * 4 and abs(float(fields[3]) + 28) < 0.5,
+              f"CLIP: 20 s of 48 kHz stereo at -28 LUFS ({fields})")
+        try:
+            h.rows("SONG", "../apikey.txt")
+            check(False, "SONG refuses a path")
+        except HelperError:
+            check(True, "SONG refuses a path")
+        # a title with none: added to its folder, for an install to take in
+        report = h.rows("MUSIC", "PPSA99314", "Song.mp3", "10", "30")
+        snd = base / "data/homebrew/PPSA99314/sce_sys/snd0.at9"
+        check(any(r[0] == "W" and r[1].endswith("sce_sys/snd0.at9") for r in report) and snd.exists(),
+              f"MUSIC adds snd0.at9 to a folder game that had none ({report})")
+        data = snd.read_bytes()
+        check(data[:4] == b"RIFF" and data[8:12] == b"WAVE" and len(data) <= 2 * 1024 * 1024 and b"smpl" in data[:200],
+              f"snd0.at9: RIFF/WAVE, looping, {len(data)} bytes")
+        seconds, lufs = at9_loudness(snd)
+        check(abs(seconds - 30.0) < 0.1 and lufs is not None and abs(lufs + 28) < 1.0,
+              f"FFmpeg's ATRAC9 decoder plays it: {seconds:.2f} s at {lufs} LUFS")
+        params = json.loads((base / "data/homebrew/PPSA99314/sce_sys/param.json").read_text())
+        check(abs(float(params["pubtools"]["loudnessSnd0"]) + 28) < 0.5, f"param.json's loudnessSnd0 ({params['pubtools']})")
+        apps = {r[1]: r for r in h.rows("APPS")}
+        check(apps["PPSA99314"][16].startswith("at9 30s") and apps["PPSA99314"][17] == "1", f"APPS: its music, added ({apps['PPSA99314'][16:18]})")
+        pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
+        check(pend.get("PPSA99314") == "name", f"added music waits for an install ({pend})")
+        # a title with its own: written over it, the original kept
+        own = base / "user/appmeta/external/PPSA05678/snd0.at9"
+        shutil.copy(snd, own)
+        original_music = own.read_bytes()
+        h.rows("APPS", "rescan")
+        h.rows("MUSIC", "PPSA05678", "Song.wav", "0", "15")
+        check(Path(str(own) + ".old").read_bytes() == original_music and own.read_bytes() != original_music,
+              "MUSIC over a title's own music keeps the original")
+        check(abs(at9_loudness(own)[0] - 15.0) < 0.1, "... and the new one is 15 s")
+        pend = {r[1]: r[2] for r in h.rows("PENDING") if r[0] == "P"}
+        check(pend.get("PPSA05678") == "art", f"new music over its own waits for a restart ({pend})")
+        h.rows("RESTORE", "PPSA05678", "snd0")
+        check(own.read_bytes() == original_music and not Path(str(own) + ".old").exists(), "RESTORE snd0 puts the original back")
+        h.rows("RESTORE", "PPSA99314", "snd0")
+        check(not snd.exists() and "snd0" not in (base / "data/artswap/added.txt").read_text(), "RESTORE deletes music Art Swap added")
+        try:
+            h.rows("MUSIC", "CUSA00001", "Song.wav", "0", "15")
+            check(False, "no music is added to a game ShadowMountPlus cannot install again")
+        except HelperError as e:
+            check("installed from a folder" in str(e), f"no music is added to a package ({e})")
+        # songs from a phone
+        rows = dict(r[:2] for r in h.rows("PHONE", "4242", "music"))
+        page = f"http://127.0.0.1:{PHONE_PORT}"
+        time.sleep(0.5)
+        html = urllib.request.urlopen(page + "/4242", timeout=5).read().decode()
+        check("Send music to your PS5" in html and "value='4242'" in html, "the music page carries the code")
+
+        def put(code, name, body):
+            req = urllib.request.Request(f"{page}/upload?code={code}&name={urllib.parse.quote(name)}", data=body, method="PUT")
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        song_mp3 = (music / "Song.mp3").read_bytes()
+        check(put("4242", "From my phone.mp3", song_mp3) == 200 and (music / "From my phone.mp3").read_bytes() == song_mp3,
+              "a phone sends a song into the music folder")
+        # as some phones' browsers send a file: in chunks, its size not announced first
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", PHONE_PORT, timeout=30)
+        conn.putrequest("PUT", "/upload?code=4242&name=" + urllib.parse.quote("In chunks.mp3"))
+        conn.putheader("Transfer-Encoding", "chunked")
+        conn.endheaders()
+        for at in range(0, len(song_mp3), 70000):
+            piece = song_mp3[at:at + 70000]
+            conn.send(b"%x\r\n" % len(piece) + piece + b"\r\n")
+        conn.send(b"0\r\n\r\n")
+        status = conn.getresponse().status
+        conn.close()
+        check(status == 200 and (music / "In chunks.mp3").read_bytes() == song_mp3, f"a song sent in chunks arrives whole ({status})")
+        check(put("1111", "x.mp3", b"abc") == 403, "a wrong code sends nothing")
+        check(put("4242", "../../apikey.txt", b"abc") == 400, "only music, by a plain name")
+        check(not list(music.glob(".*partial")), "no partial file is left")
+        h.ask("PHONE")
+        time.sleep(1.0)
 
         # the key
         try:

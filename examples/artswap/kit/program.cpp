@@ -19,6 +19,7 @@
 #include "helper_client.hpp"
 
 #include <algorithm>
+#include <array>
 #include <memory>
 
 #ifndef PS5_APP_ROOT
@@ -47,12 +48,43 @@ class KitTextures final : public artswap::TextureSink
     hui::gfx::VkRenderer &renderer_;
 };
 
+// The music page's clip on the kit's mixer. The audio thread reads a clip after play() returns, so each play
+// uses the next of a few: a clip stopped a moment ago is never rewritten while it may still be read.
+class KitSpeaker final : public artswap::Speaker
+{
+  public:
+    explicit KitSpeaker(hui::audio::Mixer &mixer) : mixer_(mixer)
+    {
+    }
+    void play(const float *samples, std::size_t frames) override
+    {
+        mixer_.stop_all();
+        hui::audio::Clip &clip = clips_[next_];
+        next_ = (next_ + 1) % clips_.size();
+        clip.samples = samples;
+        clip.frames = frames;
+        hui::audio::PlayParams params;
+        params.bus = hui::audio::Bus::sfx;
+        mixer_.play_clip(&clip, params);
+    }
+    void stop() override
+    {
+        mixer_.stop_all();
+    }
+
+  private:
+    hui::audio::Mixer &mixer_;
+    std::array<hui::audio::Clip, 4> clips_{};
+    std::size_t next_ = 0;
+};
+
 class ArtSwapProgram : public ps5ui::KitExample
 {
   public:
     std::unique_ptr<artswap::Helper> helper;
     std::unique_ptr<KitTextures> textures;
     std::unique_ptr<artswap::Keyboard> keyboard;
+    std::unique_ptr<KitSpeaker> speaker;
     std::unique_ptr<artswap::App> app;
     hui::app::Frame frame;
     hui::ui::Feedback feedback;
@@ -78,7 +110,8 @@ class ArtSwapProgram : public ps5ui::KitExample
         helper = std::make_unique<artswap::Helper>(PS5_APP_ROOT "/artswapd.elf");
         textures = std::make_unique<KitTextures>(kit.renderer);
         keyboard = artswap::make_keyboard();
-        app = std::make_unique<artswap::App>(kit.fonts, *helper, *textures, keyboard.get());
+        speaker = std::make_unique<KitSpeaker>(kit.mixer);
+        app = std::make_unique<artswap::App>(kit.fonts, *helper, *textures, keyboard.get(), speaker.get());
         feedback.play(hui::audio::Cue::welcome);
         prepared = true;
     }

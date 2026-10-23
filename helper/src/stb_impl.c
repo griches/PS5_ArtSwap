@@ -17,3 +17,14 @@
 
 #define BCDEC_IMPLEMENTATION
 #include "../third_party/bcdec.h"
+
+#define DR_WAV_IMPLEMENTATION
+#include "../third_party/dr_wav.h"
+
+#define DR_FLAC_IMPLEMENTATION
+#include "../third_party/dr_flac.h"
+
+#define MINIMP3_IMPLEMENTATION
+#define MINIMP3_FLOAT_OUTPUT
+#define MINIMP3_NO_STDIO
+#include "../third_party/minimp3_ex.h"

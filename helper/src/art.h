@@ -29,7 +29,11 @@ bool art_restore(const app_t *app, const char *slot, buf_t *report, char *err, s
  * folder, as ShadowMountPlus names it), which an install then copies for the home screen. report gets a "W" line. */
 bool art_add_background(const app_t *app, const char *folder, const char *url, const char *mode, float pan_x,
                         float pan_y, float zoom, buf_t *report, char *err, size_t errlen);
-/* Art Swap added the title's background (/data/artswap/added.txt): there is no original to keep */
-bool art_added(const char *id);
-/* The files of the background Art Swap added, deleted; how many, -1 when one could not be. report gets "R" lines. */
-int art_remove_added(const char *id, buf_t *report);
+/* Art Swap added the title's background ("pic0") or music ("snd0") (/data/artswap/added.txt): there is no
+ * original to keep */
+bool art_added(const char *id, const char *what);
+/* One more file of something Art Swap added, listed once */
+void art_added_note(const char *id, const char *file);
+/* The files of the background or music Art Swap added, deleted, and the install's copies of them; how many, -1
+ * when one could not be. report gets "R" lines. */
+int art_remove_added(const char *id, const char *what, buf_t *report);

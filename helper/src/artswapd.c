@@ -12,6 +12,7 @@
 #include "art.h"
 #include "home.h"
 #include "logo.h"
+#include "music.h"
 #include "name.h"
 #include "phone.h"
 #include "smp.h"
@@ -183,6 +184,8 @@ static void describe_slot(buf_t *out, const app_t *app, const char *slot)
         }
     if (first == NULL)
         buf_printf(out, "-");
+    else if (strcmp(slot, "snd0") == 0)
+        buf_printf(out, "at9 %ds x%d", (first->ms + 500) / 1000, count);
     else
         buf_printf(out, "%s %dx%d x%d", format_name(&first->fmt), first->fmt.w, first->fmt.h, count);
 }
@@ -197,8 +200,8 @@ static void list_apps(buf_t *out)
         bool kept = false;
         for (int j = 0; j < app->nfiles; j++)
             kept |= app->files[j].has_old;
-        const bool added = art_added(app->id);
-        kept |= added;
+        const bool added = art_added(app->id, "pic0");
+        kept |= added || art_added(app->id, "snd0");
         buf_printf(out, "A\t%s\t", app->id);
         buf_field(out, app->name);
         buf_printf(out, "\t%s\t", app->kind);
@@ -211,8 +214,11 @@ static void list_apps(buf_t *out)
         for (int j = 0; j < nfolders && !refresh; j++)
             refresh = strcmp(folders[j], app->id) == 0;
         /* the home screen's entry: the store concept, and the logo (art: Art Swap's, other: one of its own) */
-        buf_printf(out, "\t%d\t%d\t%ld\t%s\t%d\t%d\t%ld\n", name_kept(app), refresh, app->concept,
+        buf_printf(out, "\t%d\t%d\t%ld\t%s\t%d\t%d\t%ld\t", name_kept(app), refresh, app->concept,
                    logo_kept(app->id) ? "art" : app->logo ? "other" : "-", app->listed, added, app->recent);
+        /* the music: what the tile plays, and whether Art Swap added it (the title had none) */
+        describe_slot(out, app, "snd0");
+        buf_printf(out, "\t%d\n", art_added(app->id, "snd0"));
     }
     pthread_mutex_unlock(&g_apps_lock);
 }
@@ -289,7 +295,7 @@ static bool handle(int fd, char **field, int n)
         if (n < 2 || field[1][0] == 0) {
             phone_stop();
             ok = reply_text(fd, &text);
-        } else if (!phone_start(field[1], err, sizeof(err))) {
+        } else if (!phone_start(field[1], n > 2 && strcmp(field[2], "music") == 0, err, sizeof(err))) {
             ok = reply_error(fd, err);
         } else {
             char lan[64];
@@ -395,11 +401,12 @@ static bool handle(int fd, char **field, int n)
             const bool all = strcmp(slot, "all") == 0, logo_only = strcmp(slot, "logo") == 0;
             const bool name = all && name_kept(&app);
             const bool logo = (all || logo_only) && logo_kept(app.id);
-            const bool added = (all || strcmp(slot, "pic") == 0) && art_added(app.id);
+            const bool added = (all || strcmp(slot, "pic") == 0) && art_added(app.id, "pic0");
+            const bool added_music = (all || strcmp(slot, "snd0") == 0) && art_added(app.id, "snd0");
             bool art = false;
             for (int i = 0; i < app.nfiles && !logo_only; i++)
                 art |= app.files[i].has_old && (all || slot_matches(&app.files[i], slot));
-            bool done = art || name || logo || added;
+            bool done = art || name || logo || added || added_music;
             if (!done)
                 snprintf(err, sizeof(err), "%s has no original art kept", app.name);
             if (done && art)
@@ -410,17 +417,21 @@ static bool handle(int fd, char **field, int n)
             }
             if (done && logo)
                 done = logo_restore(&app, &text, err, sizeof(err));
-            if (done && added && art_remove_added(app.id, &text) < 0) {
+            if (done && added && art_remove_added(app.id, "pic0", &text) < 0) {
                 snprintf(err, sizeof(err), "The background Art Swap added could not all be deleted");
+                done = false;
+            }
+            if (done && added_music && art_remove_added(app.id, "snd0", &text) < 0) {
+                snprintf(err, sizeof(err), "The music Art Swap added could not all be deleted");
                 done = false;
             }
             pthread_mutex_unlock(&g_apply_lock);
             refresh_app(app.id, -1, "", NULL);
             if (logo)
                 set_logo_shown(app.id, false);
-            if (name || added)
+            if (name || added || added_music)
                 rescan(); /* the name read again, the files gone */
-            if (done && (name || added))
+            if (done && (name || added || added_music))
                 home_note_name(app.id); /* the original name, or none of the background, after an install */
             else if (done && art)
                 home_note(app.id); /* a logo goes from the page at once */
@@ -446,6 +457,58 @@ static bool handle(int fd, char **field, int n)
                 refresh_app(app.id, -1, "", field[2]);
                 home_note_name(app.id);
             }
+            ok = done ? reply_text(fd, &text) : reply_error(fd, err);
+        }
+    } else if (strcmp(cmd, "SONGS") == 0) {
+        /* SONGS: the music to choose from, in /data/artswap/music */
+        char folder[512];
+        buf_printf(&text, "folder\t%s\nmax\t%.2f\n", music_folder(folder, sizeof(folder)), music_max_seconds());
+        music_list(&text);
+        ok = reply_text(fd, &text);
+    } else if (strcmp(cmd, "SONG") == 0) {
+        /* SONG name: its length, and how loud it is along it */
+        if (!want(fd, n, 2))
+            return true;
+        ok = music_info(field[1], &text, err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
+    } else if (strcmp(cmd, "CLIP") == 0) {
+        /* CLIP name start seconds: the clip as the home screen will play it, for the title to play */
+        if (!want(fd, n, 4))
+            return true;
+        ok = music_clip(field[1], atof(field[2]), atof(field[3]), &text, err, sizeof(err)) ? reply_text(fd, &text)
+                                                                                          : reply_error(fd, err);
+    } else if (strcmp(cmd, "MUSIC") == 0) {
+        /* MUSIC id name start seconds: the clip as the title's snd0.at9 */
+        if (!want(fd, n, 5))
+            return true;
+        app_t app;
+        if (!find_app(field[1], &app)) {
+            ok = reply_error(fd, "no such title");
+        } else {
+            /* a title with no music can have some added to its folder, for an install to take in */
+            bool has = false;
+            for (int i = 0; i < app.nfiles && !has; i++)
+                has = strcmp(app.files[i].slot, "snd0") == 0;
+            smp_info_t info;
+            memset(&info, 0, sizeof(info));
+            if (!has)
+                smp_info(&app, &info);
+            if (!has && !info.can_refresh) {
+                snprintf(err, sizeof(err),
+                         "%s has no music. Art Swap can add music only to homebrew ShadowMountPlus installed from a "
+                         "folder, as the home screen takes it in when the game is installed.",
+                         app.name);
+                return reply_error(fd, err);
+            }
+            bool added = false;
+            pthread_mutex_lock(&g_apply_lock);
+            const bool done = music_apply(&app, has ? NULL : info.path, field[2], atof(field[3]), atof(field[4]),
+                                          &added, &text, err, sizeof(err));
+            pthread_mutex_unlock(&g_apply_lock);
+            rescan(); /* the new file, or its length */
+            if (done && added)
+                home_note_name(app.id); /* shown once the game is installed again */
+            else if (done)
+                home_note(app.id);
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
     } else if (strcmp(cmd, "PREF") == 0) {

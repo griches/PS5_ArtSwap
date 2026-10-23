@@ -30,7 +30,7 @@ make -s -C "$root/helper" host HOST_OUT="$work/helper" >/dev/null
 sources=("$root/tools/preview/preview_main.cpp" "$root/tools/preview/platform_host.cpp"
     "$root/examples/artswap/kit/app.cpp" "$root/examples/artswap/kit/helper_client.cpp"
     "$root/examples/artswap/kit/keyboard.cpp" "$root/examples/artswap/kit/qrcodegen.cpp"
-    "$root/examples/artswap/kit/settings.cpp")
+    "$root/examples/artswap/kit/settings.cpp" "$root/examples/artswap/kit/music.cpp")
 while IFS= read -r -d '' source; do
     sources+=("$source")
 done < <(find "$kit/src" -type f \( -name '*.cpp' -o -name '*.c' \) ! -path "$kit/src/platform/*" \
@@ -41,7 +41,7 @@ pids=()
 for source in "${sources[@]}"; do
     object="$work/obj/$(echo "${source#"$root/"}" | tr / _).o"
     objects+=("$object")
-    if [[ ! -f $object || $source -nt $object || $root/examples/artswap/kit/app.hpp -nt $object ||
+    if [[ ! -f $object || $source -nt $object || $root/examples/artswap/kit/app.hpp -nt $object || $root/examples/artswap/kit/title.hpp -nt $object ||
             $root/examples/artswap/kit/helper_client.hpp -nt $object ]]; then
         if [[ $source == *.c ]]; then
             clang -std=c11 -O1 -w -I"$kit/src" -c "$source" -o "$object" &
@@ -69,6 +69,8 @@ base = Path(sys.argv[1])
 if base.exists():
     shutil.rmtree(base)
 test_helper.make_console(base)
+(base / "data/artswap/music").mkdir(parents=True, exist_ok=True)
+test_helper.make_song(base / "data/artswap/music/Theme.wav", 45)
 PY
 key=$(sed -n 's/^SGDB_KEY=//p' "$root/.env" 2>/dev/null || true)
 [[ -n ${NOKEY:-} || -z $key ]] || printf '%s\n' "$key" > "$work/console-root/data/artswap/apikey.txt"

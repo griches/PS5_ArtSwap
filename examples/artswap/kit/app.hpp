@@ -53,10 +53,20 @@ struct Keyboard
 // The console's keyboard dialog; null off the console (keyboard.cpp)
 std::unique_ptr<Keyboard> make_keyboard();
 
+// Plays a clip of music on the console's output (the kit's mixer, program.cpp); null off the console
+struct Speaker
+{
+    virtual ~Speaker() = default;
+    // Interleaved stereo at 48 kHz, -1..1; the samples must stay alive until stop() or the next play()
+    virtual void play(const float *samples, std::size_t frames) = 0;
+    virtual void stop() = 0;
+};
+
 class App
 {
   public:
-    App(const hui::ui::Fonts &fonts, Helper &helper, TextureSink &textures, Keyboard *keyboard);
+    App(const hui::ui::Fonts &fonts, Helper &helper, TextureSink &textures, Keyboard *keyboard,
+        Speaker *speaker = nullptr);
     ~App();
 
     // Between frames: answers from the helper, then texture uploads
@@ -89,6 +99,7 @@ class App
         frame,    // full page: the part of the chosen picture kept (the picker's triangle)
         settings, // full page: a rail of categories, a panel (settings.cpp)
         connect,  // full page: adding the SteamGridDB key, the QR code showing (settings.cpp)
+        music,    // the music the tile plays: a clip of a song of the person's (music.cpp)
     };
     enum class Sheet
     {
@@ -100,7 +111,9 @@ class App
         restore,
         refresh, // Rename: the new name, then installing the game again so the home screen shows it
         apply,   // Apply changes: the home screen restarts to show every change
-        menu,    // OPTIONS: Rename, Restore originals, Settings, Close Art Swap
+        menu,    // OPTIONS: Music, Rename, Restore originals, Settings, Close Art Swap
+        music_phone,   // sending music from a phone: the QR code
+        music_confirm, // the clip as the game's music?
     };
     // The order of the games on the shelf (L2)
     enum class Sort
@@ -204,6 +217,21 @@ class App
     void start_refresh();
     void poll_refresh(float dt);
     void check_last_refresh();
+    // ---- the music: a full page (music.cpp) ----
+    void open_music();
+    void leave_music();
+    void load_songs();
+    void load_song();
+    void play_clip();
+    void stop_clip();
+    void apply_music();
+    void open_music_phone();
+    void update_music(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
+    void update_music_sheet(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
+    void draw_music(hui::gfx::DrawList &list) const;
+    void draw_music_sheet(hui::gfx::DrawList &list, const hui::gfx::Rect &panel, float x, float y) const;
+    bool can_have_music(const Title &title) const;
+
     // ---- settings and adding the key: full pages (settings.cpp) ----
     void open_settings();
     void update_settings(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
@@ -261,12 +289,14 @@ class App
     Helper &helper_;
     TextureSink &textures_;
     Keyboard *keyboard_;
+    Speaker *speaker_;
     std::vector<Upload> uploads_;
 
     Screen screen_ = Screen::starting;
     Sheet sheet_ = Sheet::none;
     float age_ = 0.0f;
     float clock_ = 0.0f;
+    float dt_ = 0.0f; // this frame's step, for the sheets
     float menu_held_ = -1.0f; // OPTIONS: a short press opens the settings, a hold leaves
 
     // the titles
@@ -375,6 +405,37 @@ class App
     bool home_checked_ = false;        // the last restart's end, asked for once at the start
     bool keyboard_up_ = false;         // the console's keyboard is open
     bool swallow_input_ = false;       // it closed: the pad is ignored until every button is let go
+    // the music page
+    struct Song
+    {
+        std::string name;
+        long long bytes = 0;
+    };
+    std::vector<Song> songs_;
+    bool songs_loading_ = false;
+    std::string songs_error_, music_folder_;
+    double music_max_ = 87.0;
+    int song_focus_ = 0;
+    hui::tween::Spring song_focus_position_;
+    std::string song_name_;          // the song SONG has described
+    double song_seconds_ = 0.0;
+    std::vector<int> song_levels_;   // how loud it is along its length, 0-99
+    bool song_loading_ = false;
+    std::string song_error_;
+    float song_rest_ = 0.0f;         // seconds the focus has rested on a song, before it is read
+    double clip_start_ = 0.0, clip_seconds_ = 30.0;
+    std::vector<float> clip_pcm_;    // the clip playing (the speaker reads it)
+    std::vector<std::vector<float>> clip_retired_; // clips stopped lately, kept a moment for the audio thread
+    float clip_retire_ = 0.0f;
+    bool clip_loading_ = false, clip_playing_ = false;
+    int clip_serial_ = 0;
+    float clip_started_ = 0.0f;      // clock_ when it began
+    double clip_length_ = 0.0;       // seconds of the clip playing
+    double clip_lufs_ = 0.0;
+    bool music_applying_ = false;
+    float songs_poll_ = 0.0f;        // the phone sheet: the list asked for again
+    std::vector<std::string> songs_seen_; // names before the phone sheet opened
+
     bool renaming_ = false;     // the sheet was opened by Rename: whether the title can be renamed
     std::string renamed_to_;    // the refresh follows a rename to this name
 };

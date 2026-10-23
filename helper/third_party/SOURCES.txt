@@ -3,3 +3,6 @@ bcdec 80859ed3b7afb1c527a2a99d70c61457bea72d0c (iOrange/bcdec, MIT or Unlicense)
 cJSON v1.7.18 (DaveGamble/cJSON, MIT)
 sqlite 3.50.4 amalgamation (public domain)
 stb_dxt.h, stb_image.h, stb_image_write.h from the same stb commit
+dr_wav.h v0.14.5 fa931f3285ced10ace628f7f1ac951e1951e7ea6 (mackron/dr_libs, public domain or MIT No Attribution)
+dr_flac.h v0.13.3 69d777c482775858e8ea8a7b047c9bcd451febc8 (mackron/dr_libs, public domain or MIT No Attribution)
+minimp3.h, minimp3_ex.h ea99364f61c14656440e8d77e9c233ccf3124633 (lieff/minimp3, CC0 1.0)

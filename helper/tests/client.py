@@ -26,6 +26,11 @@ class Helper:
 
     def ask(self, *fields):
         """One request: text (str), or (width, height, rgba bytes) for a picture."""
+        answer = self.ask_raw(*fields)
+        return answer if isinstance(answer, tuple) else answer.decode()
+
+    def ask_raw(self, *fields):
+        """One request: its text as bytes (CLIP's carries samples), or (width, height, rgba bytes)."""
         self.sock.sendall(("\t".join(str(f) for f in fields) + "\n").encode())
         head = self.file.readline().decode().rstrip("\n")
         if head.startswith("ERR "):
@@ -38,7 +43,7 @@ class Helper:
             raise HelperError("answer cut short")
         if width or height:
             return width, height, body
-        return body.decode()
+        return body
 
     def rows(self, *fields):
         return [line.split("\t") for line in self.ask(*fields).splitlines() if line]

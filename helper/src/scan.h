@@ -8,12 +8,13 @@
 
 #include "image.h"
 
-#define APP_MAX_FILES 24 /* /user/appmeta, the installed copy and the homebrew folder: up to 6 each */
+#define APP_MAX_FILES 30 /* /user/appmeta, the installed copy and the homebrew folder: up to 7 each */
 
 typedef struct {
     char path[400]; /* as the console names it (cpath() before opening) */
-    char slot[8];   /* icon0, pic0 or pic1 */
+    char slot[8];   /* icon0, pic0, pic1, or snd0 for the music */
     art_format_t fmt;
+    int ms;         /* snd0: its length */
     bool has_old;   /* the original is kept beside it as <path>.old */
 } art_file_t;
 

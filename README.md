@@ -4,8 +4,8 @@
 [![release](https://img.shields.io/github/v/release/griches/PS5_ArtSwap)](https://github.com/griches/PS5_ArtSwap/releases/latest)
 [![licence](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](LICENSE)
 
-**Change the icon, background and logo of any title on your PS5's home screen, with
-art from [SteamGridDB](https://www.steamgriddb.com).**
+**Change the icon, background, logo and music of any title on your PS5's home
+screen, with art from [SteamGridDB](https://www.steamgriddb.com) and songs of your own.**
 
 Art Swap lists every title on the console that has home-screen art, finds each
 one on SteamGridDB, shows you that game's art, and writes the one you pick over
@@ -62,6 +62,10 @@ Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
   installed backups. Art Swap puts a logo from SteamGridDB there, and it shows
   at once: see [Logos](#logos). Store games can also be offered their own
   logo from PlayStation Store, when you turn that on in Settings.
+- **Music** (OPTIONS, Music): the tune a tile plays while it is selected. Send
+  songs from your phone or copy them over FTP, choose the clip to keep, hear it
+  as the home screen will, and Art Swap makes the `snd0.at9` on the console:
+  see [Music](#music).
 - **Renames homebrew** (OPTIONS, Rename) that ShadowMountPlus installed from a folder: the
   new name goes into the title's `param.json` (every language), and Art Swap
   has ShadowMountPlus install the game again, since the home screen takes a
@@ -95,7 +99,7 @@ L1 R1 L2 R2, OPTIONS, then ○.
 | | □ | change the logo on its page (a game the home screen lists) |
 | | L2 | the order of the games: the home screen's own (most recently used first, to begin with), A to Z, or the games Art Swap changed first; kept for next time, and the shelf starts again at its first game |
 | | R2 | apply changes: restart the home screen so it shows them all (asks first) |
-| | OPTIONS | Rename (homebrew ShadowMountPlus installed from a folder), Restore originals, Settings, Close Art Swap |
+| | OPTIONS | Music, Rename (homebrew ShadowMountPlus installed from a folder), Restore originals, Settings, Close Art Swap |
 | | hold OPTIONS | close Art Swap |
 | Pictures | L1 R1 | the Icons, Backgrounds and Logos tabs |
 | | D-pad, left stick | choose a picture |
@@ -109,6 +113,14 @@ L1 R1 L2 R2, OPTIONS, then ○.
 | | L1 R1 | Fit, Left, Centre, Right (or Top, Middle, Bottom), Custom |
 | | L2 R2 | zoom out, zoom in |
 | | ○ | back to the pictures |
+| Music | ↑ ↓ | choose a song |
+| | ← → | move the clip's start a second |
+| | ✕ | use the clip as the game's music (asks first) |
+| | △ | play the clip as the home screen will, or stop it |
+| | □ | send songs from your phone (a QR code) |
+| | L1 R1 | move the start ten seconds |
+| | L2 R2 | make the clip five seconds shorter, longer |
+| | ○ | back to the games |
 | Settings | L1 R1, D-pad | the categories, and the rows in one |
 | | ✕ | select |
 | | ○ | back |
@@ -208,6 +220,34 @@ the store cannot be reached, the Logos tab says so once a run, and
 SteamGridDB's logos show as before (it has the official logo of most store
 games too). Settings says this under the switch.
 
+## Music
+
+A title can carry `sce_sys/snd0.at9`, music the home screen loops while its
+tile is selected. Art Swap makes one from a song of yours, on the console:
+
+1. **Songs.** OPTIONS, then Music, lists the MP3, FLAC, WAV and AIFF files in
+   `/data/artswap/music`. □ shows a QR code: the phone's page sends the songs
+   chosen on it straight into that folder, and they appear as they arrive.
+   Copying files there over FTP works too. Use music that is yours to use.
+2. **The clip.** The page shows how loud the song is along its length and the
+   part kept, lit: ← → move its start a second at a time, L1 R1 ten seconds,
+   L2 R2 make it five seconds shorter or longer, up to about 87 seconds (the
+   2 MiB the home screen allows). △ plays it as the home screen will.
+3. **The file.** ✕ has the helper decode the song (minimp3, dr_flac, dr_wav),
+   make the clip stereo at 48 kHz, bring it to -28 LUFS with its true peak
+   under -2 dBTP, fade both ends so the loop does not click, and encode it as
+   ATRAC9 at 192 kb/s with a whole-track loop, as BlackBearReloaded's
+   [ps5-at9-converter](https://github.com/blackbearreloaded/ps5-at9-converter)
+   does (its encoder ported to C, `helper/src/at9.c`). `pubtools.loudnessSnd0`
+   goes into each `param.json` beside it.
+
+A title that has music gets the new file over each copy of its own, the
+original kept as `snd0.at9.old` for Restore, and Apply changes restarts the
+home screen. A title with none has nothing for the home screen to play until
+an install registers one, so, for homebrew ShadowMountPlus installed from a
+folder, Art Swap adds `snd0.at9` to the game's `sce_sys` and Apply changes
+installs it again, as for a background it never had; Restore deletes it.
+
 ## The SteamGridDB API key
 
 SteamGridDB's API needs a key, and each person registers their own: it is free,
@@ -267,7 +307,8 @@ On the console the helper keeps its files in `/data/artswap/`:
 | `apikey.txt` | your SteamGridDB API key |
 | `cache/` | downloaded pictures (trimmed to 192 MB when over 256 MB) |
 | `logos/` | the logo Art Swap put on each title's page (`<id>.png`), and what it replaced (`<id>.orig`) |
-| `added.txt` | the background files Art Swap added to titles that had none |
+| `added.txt` | the background and music files Art Swap added to titles that had none |
+| `music/` | your songs, sent from a phone or copied over FTP |
 | `app.db.first`, `app.db.backup` | the home screen's database before Art Swap first changed it, and before its last run's first change |
 | `store-logos` | if present, PlayStation Store logos are on |
 | `prefs.txt` | Art Swap's own choices, such as the order of the games |
@@ -339,6 +380,7 @@ ps5/tools/vm.sh build                  # dist/PPSA99318/ with eboot.bin and arts
 helper/tools/build.sh                  # the helper alone: build/helper/artswapd.elf
 helper/tools/build.sh host             # the helper for this Mac (libcurl)
 python3 helper/tests/test_helper.py    # the helper against a made-up console and SteamGridDB, the key page too
+python3 helper/tests/test_at9.py       # the C ATRAC9 encoder against ps5-at9-converter (beside this folder)
 tools/preview/run.sh                   # the screens with the real helper, drawn in the VM: build/preview/*.png
 NOKEY=1 tools/preview/run.sh FILE      # ... as someone who has not added a key yet
 ```
@@ -367,6 +409,11 @@ at `b577e950`, with its UI module. Art Swap's code is in `examples/artswap/kit/`
   (public domain); `helper/third_party/SOURCES.txt` pins each. Its BC7 encoder
   follows PS5 RetroArch's `tools/make-title-art.py` (GPL-3.0-or-later). The
   keyboard follows PS5_WindWakerHD's.
+- The **music encoder** is BlackBearReloaded's [ps5-at9-converter](https://github.com/blackbearreloaded/ps5-at9-converter)
+  (GPL-3.0-or-later) ported to C; its ATRAC9 tables follow
+  [LibAtrac9](https://github.com/Thealexbarney/LibAtrac9) (MIT). Songs are read with
+  [dr_wav and dr_flac](https://github.com/mackron/dr_libs) (public domain or MIT-0) and
+  [minimp3](https://github.com/lieff/minimp3) (CC0).
 - The QR code is drawn with [Nayuki's QR Code generator](https://github.com/nayuki/QR-Code-generator)
   (MIT), in `examples/artswap/kit/qrcodegen.*`.
 - **The art Art Swap offers** is SteamGridDB's, made and uploaded by its

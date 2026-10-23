@@ -14,6 +14,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "app.hpp"
+#include "title.hpp"
 
 #include "audio/cues.hpp"
 #include "qrcodegen.hpp"
@@ -218,36 +219,6 @@ void palette_of(const Picture &p, Color &dark, Color &mid, Color &accent)
 
 } // namespace
 
-struct App::Title
-{
-    std::string id, name, kind, icon_desc, pic_desc, sgdb_name;
-    bool kept = false;      // an original of its art is kept
-    bool name_kept = false; // its original name is kept (renamed)
-    bool refresh = true;    // ShadowMountPlus can install it again (R2); otherwise only a restart shows new art
-    long store_concept = 0; // its PlayStation Store concept: 0 for homebrew
-    std::string logo = "-"; // the logo on its page: art (Art Swap's), other (its own) or - (none: its name shows)
-    bool listed = true;     // the home screen has an entry for it, so it can have a logo
-    bool added = false;     // Art Swap added its background (it had none): Restore deletes it
-    long recent = 0;        // its place in the home screen's order: higher was used more recently
-    // a background to change, or one Art Swap can add (ShadowMountPlus installs the game again for it)
-    bool has_pic() const
-    {
-        return !(pic_desc == "-" || pic_desc.empty());
-    }
-    long sgdb_id = 0;
-    // changed by Art Swap: art (originals kept), a name or a logo, so Restore has something to put back
-    bool changed() const
-    {
-        return kept || name_kept || logo == "art";
-    }
-    std::uint32_t icon = 0;
-    bool icon_asked = false, icon_failed = false;
-    std::uint32_t background = 0;
-    int background_w = 0, background_h = 0;
-    bool background_asked = false, background_failed = false;
-    float background_used = 0.0f;
-    Color dark = Color::rgb(0x0e121c), mid = Color::rgb(0x27324a), accent = Color::rgb(0x9fd8ff);
-};
 
 struct App::Art
 {
@@ -259,8 +230,8 @@ struct App::Art
     bool asked = false, failed = false, tried_full = false;
 };
 
-App::App(const ui::Fonts &fonts, Helper &helper, TextureSink &textures, Keyboard *keyboard)
-    : fonts_(fonts), helper_(helper), textures_(textures), keyboard_(keyboard)
+App::App(const ui::Fonts &fonts, Helper &helper, TextureSink &textures, Keyboard *keyboard, Speaker *speaker)
+    : fonts_(fonts), helper_(helper), textures_(textures), keyboard_(keyboard), speaker_(speaker)
 {
     palette_[0].snap(Color::rgb(0x070910));
     palette_[1].snap(Color::rgb(0x0e1424));
@@ -281,6 +252,8 @@ App::~App()
     forget(preview_);
     forget(current_art_);
     forget(frame_picture_);
+    if (speaker_)
+        speaker_->stop();
 }
 
 Color App::accent() const
@@ -426,6 +399,8 @@ void App::load_titles(bool rescan)
             }
             title->added = row.size() > 14 && row[14] == "1";
             title->recent = row.size() > 15 ? std::strtol(row[15].c_str(), nullptr, 10) : 0;
+            title->music = row.size() > 16 ? row[16] : "-";
+            title->music_added = row.size() > 17 && row[17] == "1";
             title->sgdb_id = std::strtol(row[7].c_str(), nullptr, 10);
             title->sgdb_name = row[8];
             // keep the pictures already loaded, unless this is a fresh look
@@ -1464,7 +1439,7 @@ void App::restore()
     sheet_ = Sheet::working;
     working_text_ = title->name_kept || title->logo == "art" ? "Putting the originals back" : "Putting the original art back";
     const std::string id = title->id, name = title->name;
-    const bool named = title->name_kept || title->added, art = title->kept;
+    const bool named = title->name_kept || title->added || title->music_added, art = title->kept;
     helper_.ask({"RESTORE", id, "all"}, [this, id, name, named, art](Reply &reply) {
         sheet_ = Sheet::none;
         if (!reply.ok)
@@ -1478,6 +1453,7 @@ void App::restore()
                 t->kept = false;
                 t->name_kept = false;
                 t->added = false;
+                t->music_added = false;
                 if (t->logo == "art")
                     t->logo = "-";
                 t->icon_asked = false;
@@ -1690,7 +1666,9 @@ std::vector<App::MenuItem> App::menu_items() const
 {
     const Title *title = focused_title();
     const bool rename = title && title->refresh, restore = title && title->changed();
+    const bool music = title && can_have_music(*title);
     return {
+        {"Music", music ? "what its tile plays, from a song of yours" : "homebrew installed from a folder only", music},
         {"Rename", rename ? "the name on the home screen" : "homebrew installed from a folder only", rename},
         {"Restore originals", restore ? "the art and name it came with" : "nothing changed", restore},
         {"Settings", "SteamGridDB key, game list, store logos, log", true},
@@ -1719,15 +1697,20 @@ void App::menu_select(ui::Feedback &feedback)
     switch (sheet_focus_)
     {
     case 0:
+        feedback.play(Cue::open);
+        sheet_ = Sheet::none;
+        open_music();
+        break;
+    case 1:
         feedback.play(Cue::select);
         sheet_ = Sheet::none;
         open_refresh(true);
         break;
-    case 1:
+    case 2:
         feedback.play(Cue::select);
         sheet_ = Sheet::restore;
         break;
-    case 2:
+    case 3:
         feedback.play(Cue::open);
         sheet_ = Sheet::none;
         open_settings();
@@ -1841,6 +1824,7 @@ void App::update(const hui::InputFrame &pad, float dt, ui::Feedback &feedback)
     const hui::InputFrame &input = keyboard_up_ || swallow_input_ ? quiet : pad;
     age_ += dt;
     clock_ += dt;
+    dt_ = dt;
     for (Toast &t : toasts_)
         t.age += dt;
     toasts_.erase(std::remove_if(toasts_.begin(), toasts_.end(), [](const Toast &t) { return t.age > t.life; }),
@@ -1853,6 +1837,14 @@ void App::update(const hui::InputFrame &pad, float dt, ui::Feedback &feedback)
     check_last_refresh();
     check_last_home();
     poll_refresh(dt);
+    // the music's clip: over when its length has played; stopped ones freed once the audio thread is done with them
+    if (clip_playing_ && clock_ - clip_started_ > static_cast<float>(clip_length_))
+        clip_playing_ = false;
+    if (!clip_retired_.empty() && (clip_retire_ += dt) > 2.0f)
+    {
+        clip_retired_.clear();
+        clip_retire_ = 0.0f;
+    }
 
     // OPTIONS: a short press is the settings; the program leaves on a hold
     if (input.is_pressed(Action::menu))
@@ -1877,6 +1869,8 @@ void App::update(const hui::InputFrame &pad, float dt, ui::Feedback &feedback)
         update_frame(input, dt, feedback);
     else if (screen_ == Screen::settings)
         update_settings(input, dt, feedback);
+    else if (screen_ == Screen::music)
+        update_music(input, dt, feedback);
     else
         update_connect(input, dt, feedback);
     // OPTIONS opens the menu, and closes it again
@@ -2202,6 +2196,10 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
             sheet_ = Sheet::none;
         }
         return;
+    case Sheet::music_phone:
+    case Sheet::music_confirm:
+        update_music_sheet(input, 0.0f, feedback);
+        return;
     case Sheet::menu:
     {
         const int rows = static_cast<int>(menu_items().size());
@@ -2352,6 +2350,8 @@ void App::draw(hui::app::Frame &frame) const
             draw_library(list);
         else if (screen_ == Screen::frame)
             draw_frame(list);
+        else if (screen_ == Screen::music)
+            draw_music(list);
         else
             draw_picker(list);
     }
@@ -2392,7 +2392,8 @@ void App::draw_backdrop(hui::app::Frame &frame) const
     gfx::DrawList &list = frame.scene;
     const Rect screen{0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight};
     const float t = backdrop_fade_.running ? tween::smoothstep(backdrop_fade_.progress()) : 1.0f;
-    const float strength = screen_ == Screen::picker || screen_ == Screen::frame ? 0.45f : 1.0f;
+    const float strength =
+        screen_ == Screen::picker || screen_ == Screen::frame || screen_ == Screen::music ? 0.45f : 1.0f;
     if (backdrop_old_ && t < 1.0f)
         list.image(backdrop_old_, screen, gfx::kFullUv, kWhite.with_alpha(strength * (1.0f - t)));
     if (backdrop_)
@@ -2507,6 +2508,12 @@ void App::draw_library(gfx::DrawList &list) const
     std::string facts = "Icon  " + describe(title->icon_desc) + "     Background  " + describe(title->pic_desc);
     if (title->listed)
         facts += "     Logo  " + logo_label(title->logo);
+    {
+        int seconds = 0;
+        facts += "     Music  " + (std::sscanf(title->music.c_str(), "at9 %ds", &seconds) == 1
+                                       ? std::to_string(seconds) + " s"
+                                       : std::string("none"));
+    }
     ui::text(list, fonts_.regular, fonts_.regular.font->fit(facts, 25, 1240), x, 362, 25, kWhite.with_alpha(0.78f));
     float y = 412;
     if (title->changed())
@@ -2568,7 +2575,7 @@ void App::draw_library(gfx::DrawList &list) const
     // the rest is in the OPTIONS menu, as the console's own "..." beside Play Game; a wider glyph
     bx = x;
     {
-        const char *label = title->refresh ? "Rename, restore, settings" : "Restore, settings";
+        const char *label = title->refresh ? "Music, rename, restore, settings" : "Music, restore, settings";
         const float w = fonts_.semibold.measure(label, 22) + 108;
         const Rect pill{bx, by + 82, w, 52};
         list.bordered_rect(pill, 26, kWhite.with_alpha(0.08f), 1.5f, kWhite.with_alpha(0.28f));
@@ -2893,8 +2900,9 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
 {
     const float t = sheet_open_.value;
     const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::log || sheet_ == Sheet::apply ||
+                      sheet_ == Sheet::music_phone ||
                       (sheet_ == Sheet::refresh && (refresh_ == Refresh::ready || refresh_ == Refresh::starting));
-    const float h = tall ? 760.0f : 470.0f;
+    const float h = tall ? 760.0f : sheet_ == Sheet::menu ? 600.0f : 470.0f;
     const Rect panel{360, (1080 - h) * 0.5f + 40.0f * (1.0f - t), 1200, h};
     list.push_opacity(tween::clamp01(t * 1.4f));
     list.shadow({panel.x, panel.y + 20, panel.w, panel.h}, 44, 60, Color::rgb(0x000000, 0.5f));
@@ -2988,6 +2996,9 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         if (title && title->added)
             text += std::string(text.empty() ? "Art Swap" : " It also") +
                     " deletes the background it added, which the game did not have.";
+        if (title && title->music_added)
+            text += std::string(text.empty() ? "Art Swap" : " It also") +
+                    " deletes the music it added, which the game did not have.";
         if (title && title->logo == "art")
             text += std::string(text.empty() ? "Art Swap" : " It also") +
                     " takes its logo off its page, which shows its name again.";
@@ -3146,6 +3157,10 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
             ui::text(list, fonts_.regular, search_error_, x, y + 50, 24, kAmber);
         break;
     }
+    case Sheet::music_phone:
+    case Sheet::music_confirm:
+        draw_music_sheet(list, panel, x, y);
+        break;
     case Sheet::menu:
     {
         heading("OPTIONS", title ? name : std::string("Art Swap"));
@@ -3237,6 +3252,29 @@ void App::draw_hints(gfx::DrawList &list) const
         hints = {{ui::Button::circle, "Back"}};
     else if (sheet_ == Sheet::menu)
         hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Select"}, {ui::Button::circle, "Close"}};
+    else if (sheet_ == Sheet::music_phone)
+        hints = {{ui::Button::circle, "Done"}};
+    else if (sheet_ == Sheet::music_confirm)
+    {
+        if (!music_applying_)
+            hints = {{ui::Button::cross, "Use this music"}, {ui::Button::circle, "Cancel"}};
+    }
+    else if (screen_ == Screen::music)
+    {
+        hints.push_back({ui::Button::dpad, "Song, start"});
+        if (!songs_.empty())
+        {
+            hints.push_back({ui::Button::cross, "Use this"});
+            hints.push_back({ui::Button::triangle, clip_playing_ ? "Stop" : "Play"});
+        }
+        hints.push_back({ui::Button::square, "From your phone"});
+        if (!songs_.empty())
+        {
+            hints.push_back({ui::Button::l1, "10 s", ui::Button::r1});
+            hints.push_back({ui::Button::l2, "Length", ui::Button::r2});
+        }
+        hints.push_back({ui::Button::circle, "Back"});
+    }
     else if (sheet_ == Sheet::apply)
     {
         if (!applying_)

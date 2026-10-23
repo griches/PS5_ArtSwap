@@ -31,7 +31,7 @@
 #include <unistd.h>
 
 static const char *kArtNames[] = {"icon0.png", "icon0.dds", "icon0.jpg", "pic0.png", "pic0.dds",
-                                  "pic0.jpg",  "pic1.png",  "pic1.dds",  "pic1.jpg"};
+                                  "pic0.jpg",  "pic1.png",  "pic1.dds",  "pic1.jpg", "snd0.at9"};
 
 static const char *kHomebrewRoots[] = {
     "/data/homebrew",      "/mnt/usb0/homebrew", "/mnt/usb1/homebrew", "/mnt/usb2/homebrew",
@@ -320,6 +320,32 @@ static bool probe_file(const char *path, art_format_t *fmt)
     return ok;
 }
 
+/* A snd0.at9's length, from its fact chunk (samples at 48 kHz); false when it is not an AT9 file */
+static bool probe_at9(const char *path, int *ms)
+{
+    char real[512];
+    const int fd = open(cpath(path, real, sizeof(real)), O_RDONLY);
+    if (fd < 0)
+        return false;
+    uint8_t head[512];
+    const ssize_t got = read(fd, head, sizeof(head));
+    close(fd);
+    if (got < 12 || memcmp(head, "RIFF", 4) != 0 || memcmp(head + 8, "WAVE", 4) != 0)
+        return false;
+    for (ssize_t at = 12; at + 12 <= got;) {
+        const uint32_t size = (uint32_t)head[at + 4] | (uint32_t)head[at + 5] << 8 | (uint32_t)head[at + 6] << 16 |
+                              (uint32_t)head[at + 7] << 24;
+        if (memcmp(head + at, "fact", 4) == 0) {
+            const uint32_t samples = (uint32_t)head[at + 8] | (uint32_t)head[at + 9] << 8 |
+                                     (uint32_t)head[at + 10] << 16 | (uint32_t)head[at + 11] << 24;
+            *ms = (int)((uint64_t)samples * 1000 / 48000);
+            return true;
+        }
+        at += 8 + (ssize_t)size + (size & 1);
+    }
+    return false;
+}
+
 /* The art files in folder, added to app */
 static void add_art(app_t *app, const char *folder)
 {
@@ -337,8 +363,9 @@ static void add_art(app_t *app, const char *folder)
             snprintf(file->path, sizeof(file->path), "%s/%s", folder, e->d_name);
             copy_str(file->slot, sizeof(file->slot), kArtNames[i]);
             *strchr(file->slot, '.') = 0;
-            if (!probe_file(file->path, &file->fmt)) {
-                log_line("%s: not a picture this app writes", file->path);
+            if (strcmp(file->slot, "snd0") == 0 ? !probe_at9(file->path, &file->ms)
+                                                : !probe_file(file->path, &file->fmt)) {
+                log_line("%s: not a file this app writes", file->path);
                 continue;
             }
             char old[420], real_old[512];
@@ -461,8 +488,11 @@ static void write_report(const app_t *apps, int count)
                    apps[i].logo ? ", logo" : "");
         for (int j = 0; j < apps[i].nfiles; j++) {
             const art_file_t *f = &apps[i].files[j];
-            buf_printf(&text, "\t%s\t%s %dx%d mips %d\t%s%s\n", f->slot, format_name(&f->fmt), f->fmt.w,
-                       f->fmt.h, f->fmt.mips, f->path, f->has_old ? "\t(.old kept)" : "");
+            if (strcmp(f->slot, "snd0") == 0)
+                buf_printf(&text, "\tsnd0\tat9 %d ms\t%s%s\n", f->ms, f->path, f->has_old ? "\t(.old kept)" : "");
+            else
+                buf_printf(&text, "\t%s\t%s %dx%d mips %d\t%s%s\n", f->slot, format_name(&f->fmt), f->fmt.w,
+                           f->fmt.h, f->fmt.mips, f->path, f->has_old ? "\t(.old kept)" : "");
         }
     }
     char path[512];

@@ -27,8 +27,6 @@
 #include <strings.h>
 #include <unistd.h>
 
-static void added_note(const char *id, const char *file);
-
 /* The file to show for a slot: pic0 before pic1, the home screen's copy first */
 static const art_file_t *preview_file(const app_t *app, const char *slot)
 {
@@ -101,25 +99,32 @@ static const char *added_path(char *out, size_t size)
     return data_path("added.txt", out, size);
 }
 
-bool art_added(const char *id)
+/* A line of added.txt that is the title's, and of a file whose name starts with what */
+static bool added_line(const char *line, const char *id, const char *what)
 {
-    char path[512], line[24];
+    const size_t idlen = strlen(id);
+    if (strncmp(line, id, idlen) != 0 || line[idlen] != '\t')
+        return false;
+    const char *slash = strrchr(line, '/');
+    return strncmp(slash ? slash + 1 : line + idlen + 1, what, strlen(what)) == 0;
+}
+
+bool art_added(const char *id, const char *what)
+{
+    char path[512];
     buf_t text = {0};
-    snprintf(line, sizeof(line), "\n%s\t", id); /* a line of its own: the text read starts after a newline */
     bool found = false;
     if (file_read(added_path(path, sizeof(path)), &text) && text.len > 0) {
-        buf_t lines = {0};
-        buf_append(&lines, "\n", 1);
-        buf_append(&lines, text.data, text.len);
-        found = strstr((const char *)lines.data, line) != NULL;
-        buf_free(&lines);
+        char *save = NULL;
+        for (char *line = strtok_r((char *)text.data, "\n", &save); line && !found; line = strtok_r(NULL, "\n", &save))
+            found = added_line(line, id, what);
     }
     buf_free(&text);
     return found;
 }
 
 /* "id<TAB>path", once */
-static void added_note(const char *id, const char *file)
+void art_added_note(const char *id, const char *file)
 {
     char path[512], line[460];
     buf_t text = {0};
@@ -132,7 +137,7 @@ static void added_note(const char *id, const char *file)
     buf_free(&text);
 }
 
-int art_remove_added(const char *id, buf_t *report)
+int art_remove_added(const char *id, const char *what, buf_t *report)
 {
     char path[512];
     buf_t text = {0}, kept = {0};
@@ -145,7 +150,7 @@ int art_remove_added(const char *id, buf_t *report)
     bool failed = false;
     char *save = NULL;
     for (char *line = strtok_r((char *)text.data, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-        if (strncmp(line, id, idlen) != 0 || line[idlen] != '\t') {
+        if (!added_line(line, id, what)) {
             buf_printf(&kept, "%s\n", line);
             continue;
         }
@@ -163,11 +168,12 @@ int art_remove_added(const char *id, buf_t *report)
     buf_free(&text);
     buf_free(&kept);
     /* the copies an install made of it for the home screen, which the list may not name yet */
-    static const char *copies[] = {"/user/appmeta/%s/pic0.dds", "/user/app/%s/sce_sys/pic0.dds",
-                                   "/user/appmeta/%s/pic0.png", "/user/app/%s/sce_sys/pic0.png"};
+    static const char *copies[] = {"/user/appmeta/%s/%s.dds", "/user/app/%s/sce_sys/%s.dds",
+                                   "/user/appmeta/%s/%s.png", "/user/app/%s/sce_sys/%s.png",
+                                   "/user/appmeta/%s/%s.at9", "/user/app/%s/sce_sys/%s.at9"};
     for (size_t i = 0; i < sizeof(copies) / sizeof(copies[0]) && removed > 0; i++) {
         char copy[200], real[512], old[220], real_old[512];
-        snprintf(copy, sizeof(copy), copies[i], id);
+        snprintf(copy, sizeof(copy), copies[i], id, what);
         snprintf(old, sizeof(old), "%s.old", copy);
         if (file_exists(cpath(copy, real, sizeof(real))) && !file_exists(cpath(old, real_old, sizeof(real_old))) &&
             unlink(real) == 0) {
@@ -175,7 +181,7 @@ int art_remove_added(const char *id, buf_t *report)
             removed++;
         }
     }
-    log_line("restore %s: %d added background files deleted%s", id, removed, failed ? ", one could not be" : "");
+    log_line("restore %s: %d added %s files deleted%s", id, removed, what, failed ? ", one could not be" : "");
     return failed ? -1 : removed;
 }
 
@@ -206,7 +212,7 @@ bool art_add_background(const app_t *app, const char *folder, const char *url, c
         ok = false;
     }
     if (ok) {
-        added_note(app->id, dest);
+        art_added_note(app->id, dest);
         buf_printf(report, "W\t%s\tdds-bc7 3840x2160\n", dest);
     }
     log_line("add %s background: %s, %s%s%s", app->id, url, dest, ok ? "" : ": ", ok ? "" : err);
@@ -283,9 +289,9 @@ bool art_apply(const app_t *app, const char *slot, const char *url, const char *
             ok = image_encode_like(&made, &fmt, original.data, original.len, &encoded, err, errlen);
         /* the original, kept once: another copy's, if it keeps one, rather than the art shown now; a background
          * Art Swap added had none, so its copies are listed with it instead */
-        const bool added = strcmp(slot, "pic") == 0 && art_added(app->id);
+        const bool added = strcmp(slot, "pic") == 0 && art_added(app->id, "pic0");
         if (ok && added)
-            added_note(app->id, file->path);
+            art_added_note(app->id, file->path);
         else if (ok && !file_exists(real_old)) {
             buf_t kept = {0};
             const buf_t *keep = other_old(app, file, &kept) ? &kept : &original;

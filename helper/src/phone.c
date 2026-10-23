@@ -1,5 +1,5 @@
 /*
- * Art Swap helper - the key page, for adding a SteamGridDB key from a phone.
+ * Art Swap helper - the phone page: a SteamGridDB key, or music, sent from a phone.
  *
  * Typing a 32-character key on the console's keyboard is slow, so the title
  * offers a page instead: while its "From your phone" sheet is open (PHONE
@@ -10,10 +10,15 @@
  * on 9118 at any other time; the page closes after ten minutes, when the
  * sheet closes, or after ten wrong codes.
  *
+ * Opened for music (PHONE <code> music), the page instead sends the files
+ * chosen on the phone, one PUT each, into /data/artswap/music (music.c), where
+ * the title lists them. The code goes with each.
+ *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "phone.h"
+#include "music.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -30,6 +35,7 @@
 #define PHONE_PORT 9118
 #define SESSION_MS (10 * 60 * 1000)
 #define MAX_WRONG 10
+#define UPLOAD_MAX ((size_t)400 << 20) /* a long FLAC album track fits */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_code[8];
@@ -37,6 +43,7 @@ static uint64_t g_until;
 static int g_wrong;
 static bool g_running;
 static int g_port;
+static bool g_music; /* the page sends music, not a key */
 
 /* ---- the console's address ---- */
 
@@ -125,6 +132,43 @@ static void page_form(buf_t *out, const char *code, const char *message)
                     "the key screen on your TV.</p></main></body></html>");
 }
 
+/* Sends the files chosen, one PUT /upload?code=&name= each, the TV listing them as they come */
+static void page_music(buf_t *out, const char *code)
+{
+    buf_printf(out, "<!doctype html><html><head><meta charset=utf-8><title>Art Swap: send music</title>%s</head><body><main>",
+               kStyle);
+    buf_printf(out, "<div class=brand><span></span>Art Swap on your PS5</div>"
+                    "<h1>Send music to your PS5</h1>"
+                    "<p>Choose songs on this phone (MP3, FLAC, WAV or AIFF). They go to your PS5, where Art Swap "
+                    "makes a clip of one into the music a game's tile plays. Use music that is yours to use.</p>"
+                    "<div class=card>");
+    if (code && code[0])
+        buf_printf(out, "<input type=hidden id=code value='%s'>", code);
+    else
+        buf_printf(out, "<label for=code>The code on your TV</label>"
+                        "<input class=code id=code inputmode=numeric maxlength=4 autocomplete=off required>");
+    buf_printf(out, "<label for=files>Your music</label>"
+                    "<input id=files type=file multiple accept='audio/*,.mp3,.flac,.wav,.aif,.aiff'>"
+                    "<button id=send>Send to my PS5</button><div id=list></div></div>"
+                    "<p class=small>The files stay on your PS5, in /data/artswap/music. This page closes when you "
+                    "leave the music screen on your TV.</p></main>"
+                    "<script>"
+                    "const list=document.getElementById('list');"
+                    "function row(t){const p=document.createElement('p');p.textContent=t;list.appendChild(p);return p}"
+                    "function put(f,code){return new Promise(done=>{const p=row(f.name+': 0%%');"
+                    "const x=new XMLHttpRequest();"
+                    "x.open('PUT','/upload?code='+encodeURIComponent(code)+'&name='+encodeURIComponent(f.name));"
+                    "x.upload.onprogress=e=>{if(e.lengthComputable)p.textContent=f.name+': '+Math.round(e.loaded*100/e.total)+'%%'};"
+                    "x.onload=()=>{p.textContent=f.name+(x.status==200?': on your PS5 \u2713':': '+x.responseText);"
+                    "p.className=x.status==200?'':'err';done()};"
+                    "x.onerror=()=>{p.textContent=f.name+': the PS5 did not answer';p.className='err';done()};"
+                    "x.send(f)})}"
+                    "document.getElementById('send').onclick=async()=>{"
+                    "const code=document.getElementById('code').value.trim();"
+                    "for(const f of document.getElementById('files').files)await put(f,code)};"
+                    "</script></body></html>");
+}
+
 static void page_done(buf_t *out)
 {
     buf_printf(out, "<!doctype html><html><head><meta charset=utf-8><title>Art Swap: key saved</title>%s</head><body><main>"
@@ -138,8 +182,8 @@ static void page_closed(buf_t *out)
 {
     buf_printf(out, "<!doctype html><html><head><meta charset=utf-8><title>Art Swap</title>%s</head><body><main>"
                     "<div class=brand><span></span>Art Swap on your PS5</div>"
-                    "<h1>This page has closed</h1><p>Open <b>Add your key from your phone</b> in Art Swap's settings "
-                    "on your PS5 again, and scan the new code.</p></main></body></html>",
+                    "<h1>This page has closed</h1><p>Open it again in Art Swap on your PS5 (the key in its "
+                    "settings, or Music's <b>From your phone</b>), and scan the new code.</p></main></body></html>",
                kStyle);
 }
 
@@ -164,7 +208,12 @@ static const char *header_value(const char *head, const char *name)
 
 static void respond(int fd, int status, const buf_t *body)
 {
-    const char *reason = status == 200 ? "OK" : status == 403 ? "Forbidden" : status == 404 ? "Not Found" : "Error";
+    const char *reason = status == 200   ? "OK"
+                         : status == 400 ? "Bad Request"
+                         : status == 403 ? "Forbidden"
+                         : status == 404 ? "Not Found"
+                         : status == 413 ? "Too Large"
+                                         : "Error";
     char head[256];
     snprintf(head, sizeof(head),
              "HTTP/1.1 %d %s\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %zu\r\n"
@@ -216,13 +265,153 @@ static bool session_open(char *code, size_t size)
     return open;
 }
 
+static void wrong_code(void)
+{
+    pthread_mutex_lock(&g_lock);
+    g_wrong++;
+    pthread_mutex_unlock(&g_lock);
+    log_line("phone: a wrong code");
+}
+
+static void answer(int fd, int status, const char *text)
+{
+    buf_t body = {0};
+    buf_printf(&body, "%s", text);
+    respond(fd, status, &body);
+    buf_free(&body);
+}
+
+/* An upload's body: first what came with the head, then the socket */
+typedef struct {
+    int fd;
+    const char *pending;
+    size_t have;
+} reader_t;
+
+/* Up to n bytes: 0 at the end, -1 when nothing comes for 20 seconds or the connection fails */
+static ssize_t reader_read(reader_t *r, char *out, size_t n)
+{
+    if (r->have > 0) {
+        const size_t take = n < r->have ? n : r->have;
+        memcpy(out, r->pending, take);
+        r->pending += take;
+        r->have -= take;
+        return (ssize_t)take;
+    }
+    struct pollfd wait = {r->fd, POLLIN, 0};
+    if (poll(&wait, 1, 20000) <= 0)
+        return -1;
+    return recv(r->fd, out, n, 0);
+}
+
+/* A line of a chunked body (a chunk's size, or the CRLF after its data), without its line break */
+static bool reader_line(reader_t *r, char *line, size_t size)
+{
+    size_t o = 0;
+    for (;;) {
+        char c;
+        if (reader_read(r, &c, 1) != 1)
+            return false;
+        if (c == '\n')
+            break;
+        if (c != '\r' && o + 1 < size)
+            line[o++] = c;
+    }
+    line[o] = 0;
+    return true;
+}
+
+/* n bytes of the body into out; false when they do not all come */
+static bool reader_copy(reader_t *r, FILE *out, size_t n, char *buffer, size_t buffer_size)
+{
+    while (n > 0) {
+        const ssize_t got = reader_read(r, buffer, n < buffer_size ? n : buffer_size);
+        if (got <= 0 || fwrite(buffer, 1, (size_t)got, out) != (size_t)got)
+            return false;
+        n -= (size_t)got;
+    }
+    return true;
+}
+
+/* PUT /upload?code=&name=: a music file into the music folder. Its size is announced (Content-Length), or, as
+ * some phones' browsers send a file, it comes in chunks, each announcing its own (Transfer-Encoding: chunked). */
+static void upload(int fd, const char *code, const char *query, const char *first, size_t have, size_t length,
+                   bool chunked)
+{
+    char sent_code[16], wanted[256], name[200], folder[512], partial[800], path[800];
+    form_value(query, "code", sent_code, sizeof(sent_code));
+    form_value(query, "name", wanted, sizeof(wanted));
+    if (strcmp(sent_code, code) != 0) {
+        wrong_code();
+        answer(fd, 403, "That is not the code on your TV.");
+        return;
+    }
+    if (!music_upload_name(wanted, name, sizeof(name))) {
+        answer(fd, 400, "Art Swap reads MP3, FLAC, WAV and AIFF files.");
+        return;
+    }
+    if (!chunked && (length == 0 || length > UPLOAD_MAX)) {
+        answer(fd, length == 0 ? 400 : 413,
+               length == 0 ? "The file came empty: try again." : "That file is too big for Art Swap (400 MB at most).");
+        return;
+    }
+    music_folder(folder, sizeof(folder));
+    snprintf(partial, sizeof(partial), "%s/.%s.partial", folder, name);
+    snprintf(path, sizeof(path), "%s/%s", folder, name);
+    FILE *out = fopen(partial, "wb");
+    /* on the heap: the console gives a thread a small stack */
+    const size_t buffer_size = 65536;
+    char *buffer = malloc(buffer_size);
+    reader_t reader = {fd, first, have};
+    size_t done = 0;
+    bool ok = out != NULL && buffer != NULL, too_big = false;
+    if (ok && !chunked) {
+        ok = reader_copy(&reader, out, length, buffer, buffer_size);
+        done = ok ? length : 0;
+    }
+    while (ok && chunked) {
+        char line[64];
+        ok = reader_line(&reader, line, sizeof(line));
+        const size_t size = ok ? strtoul(line, NULL, 16) : 0;
+        if (!ok || size == 0)
+            break;
+        if (done + size > UPLOAD_MAX) {
+            too_big = true;
+            ok = false;
+            break;
+        }
+        ok = reader_copy(&reader, out, size, buffer, buffer_size) && reader_line(&reader, line, sizeof(line));
+        done += size;
+    }
+    /* after the last chunk: any trailing headers, then an empty line */
+    for (char line[256]; ok && chunked && reader_line(&reader, line, sizeof(line)) && line[0];)
+        ;
+    if (ok && done == 0)
+        ok = false;
+    free(buffer);
+    if (out != NULL && fclose(out) != 0)
+        ok = false;
+    if (ok && rename(partial, path) != 0)
+        ok = false;
+    if (!ok) {
+        unlink(partial);
+        log_line("phone: %s did not arrive whole (%zu bytes%s)", name, done, chunked ? ", in chunks" : "");
+        answer(fd, too_big ? 413 : 500,
+               too_big ? "That file is too big for Art Swap (400 MB at most)." : "It did not arrive whole: try again.");
+        return;
+    }
+    log_line("phone: received %s (%zu bytes%s)", name, done, chunked ? ", in chunks" : "");
+    answer(fd, 200, "ok");
+}
+
 static void serve(int fd)
 {
     char request[16384];
     size_t used = 0;
     char *body = NULL;
     size_t content_length = 0;
-    /* the head, then as much body as it announces */
+    bool streamed = false;
+    /* the head, then as much body as it announces; an upload's body is streamed to its file instead */
     while (used + 1 < sizeof(request)) {
         struct pollfd wait = {fd, POLLIN, 0};
         if (poll(&wait, 1, 5000) <= 0)
@@ -236,6 +425,10 @@ static void serve(int fd)
             body += 4;
             const char *length = header_value(request, "Content-Length");
             content_length = length ? strtoul(length, NULL, 10) : 0;
+            if (strncmp(request, "PUT ", 4) == 0) {
+                streamed = true;
+                break;
+            }
         }
         if (body && (size_t)(request + used - body) >= content_length)
             break;
@@ -243,30 +436,43 @@ static void serve(int fd)
     request[used] = 0;
     buf_t page = {0};
     char code[8];
-    char path[64] = "";
-    sscanf(request, "%*s %63s", path);
+    char path[300] = "";
+    sscanf(request, "%*s %299s", path);
     const bool post = strncmp(request, "POST ", 5) == 0;
+    pthread_mutex_lock(&g_lock);
+    const bool music = g_music;
+    pthread_mutex_unlock(&g_lock);
     if (!session_open(code, sizeof(code))) {
         page_closed(&page);
         respond(fd, 404, &page);
+    } else if (streamed) {
+        const char *query = strchr(path, '?');
+        const char *encoding = header_value(request, "Transfer-Encoding");
+        const bool chunked = encoding != NULL && strstr(encoding, "chunked") != NULL;
+        if (music && strncmp(path, "/upload?", 8) == 0 && body)
+            upload(fd, code, query + 1, body, (size_t)(request + used - body), content_length, chunked);
+        else
+            answer(fd, 404, "Nothing to send here.");
     } else if (!post) {
         /* the QR code's address carries the code: /1234 */
         const bool with_code = strcmp(path + 1, code) == 0;
         if (strcmp(path, "/favicon.ico") == 0) {
             respond(fd, 404, &page);
         } else {
-            page_form(&page, with_code ? code : NULL, NULL);
+            if (music)
+                page_music(&page, with_code ? code : NULL);
+            else
+                page_form(&page, with_code ? code : NULL, NULL);
             respond(fd, 200, &page);
         }
+    } else if (music) {
+        answer(fd, 404, "Nothing to send here.");
     } else {
         char sent_code[16], key[96];
         form_value(body ? body : "", "code", sent_code, sizeof(sent_code));
         form_value(body ? body : "", "key", key, sizeof(key));
         if (strcmp(sent_code, code) != 0) {
-            pthread_mutex_lock(&g_lock);
-            g_wrong++;
-            pthread_mutex_unlock(&g_lock);
-            log_line("phone: a wrong code");
+            wrong_code();
             page_form(&page, NULL, "That is not the code on your TV.");
             respond(fd, 403, &page);
         } else {
@@ -320,7 +526,7 @@ static int open_listener(void)
 static void *listen_thread(void *argument)
 {
     const int server = (int)(intptr_t)argument;
-    log_line("phone: the key page is open on port %d", g_port);
+    log_line("phone: the phone page is open on port %d", g_port);
     char code[8];
     while (session_open(code, sizeof(code))) {
         struct pollfd wait = {server, POLLIN, 0};
@@ -336,11 +542,11 @@ static void *listen_thread(void *argument)
     pthread_mutex_lock(&g_lock);
     g_running = false;
     pthread_mutex_unlock(&g_lock);
-    log_line("phone: the key page has closed");
+    log_line("phone: the phone page has closed");
     return NULL;
 }
 
-bool phone_start(const char *code, char *err, size_t errlen)
+bool phone_start(const char *code, bool music, char *err, size_t errlen)
 {
     if (strlen(code) != 4) {
         snprintf(err, errlen, "the code is four digits");
@@ -363,14 +569,21 @@ bool phone_start(const char *code, char *err, size_t errlen)
     }
     pthread_mutex_lock(&g_lock);
     copy_str(g_code, sizeof(g_code), code);
+    g_music = music;
     g_until = now_ms() + SESSION_MS;
     g_wrong = 0;
     if (start)
         g_running = true;
     pthread_mutex_unlock(&g_lock);
     if (start) {
+        /* a stack as the helper's other threads have: the console's default is small */
         pthread_t thread;
-        if (pthread_create(&thread, NULL, listen_thread, (void *)(intptr_t)server) != 0) {
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 256 * 1024);
+        const int rc = pthread_create(&thread, &attr, listen_thread, (void *)(intptr_t)server);
+        pthread_attr_destroy(&attr);
+        if (rc != 0) {
             close(server);
             pthread_mutex_lock(&g_lock);
             g_running = false;
