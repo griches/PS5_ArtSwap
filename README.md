@@ -15,7 +15,7 @@ the home screen, and every change shows at once, whatever installed the game:
 a folder, a disk image or a package. A **logo** (□) goes on the game's page in
 place of its name in plain text, and shows straight away.
 
-Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
+Title `PPSA99318`, version 1.3.0. Tested on a PS5 with firmware 13.60.
 
 ## What it does
 
@@ -78,7 +78,7 @@ You need the console's homebrew environment running: etaHEN (or kstuff),
 ShadowMountPlus, and an **ELF loader on port 9021**. Art Swap starts its helper
 through that loader.
 
-1. Download `PS5_ArtSwap-v1.2.0.zip` from [Releases](https://github.com/griches/PS5_ArtSwap/releases/latest).
+1. Download `PS5_ArtSwap-v1.3.0.zip` from [Releases](https://github.com/griches/PS5_ArtSwap/releases/latest).
 2. Copy the `PPSA99318` folder inside it to `/data/homebrew/` (FTP is fine).
 3. ShadowMountPlus registers it and Art Swap appears on the home screen.
 4. Start it. The first screen says "Starting the helper" for a moment.
