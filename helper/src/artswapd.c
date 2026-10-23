@@ -211,8 +211,8 @@ static void list_apps(buf_t *out)
         for (int j = 0; j < nfolders && !refresh; j++)
             refresh = strcmp(folders[j], app->id) == 0;
         /* the home screen's entry: the store concept, and the logo (art: Art Swap's, other: one of its own) */
-        buf_printf(out, "\t%d\t%d\t%ld\t%s\t%d\t%d\n", name_kept(app), refresh, app->concept,
-                   logo_kept(app->id) ? "art" : app->logo ? "other" : "-", app->listed, added);
+        buf_printf(out, "\t%d\t%d\t%ld\t%s\t%d\t%d\t%ld\n", name_kept(app), refresh, app->concept,
+                   logo_kept(app->id) ? "art" : app->logo ? "other" : "-", app->listed, added, app->recent);
     }
     pthread_mutex_unlock(&g_apps_lock);
 }
@@ -447,6 +447,17 @@ static bool handle(int fd, char **field, int n)
                 home_note_name(app.id);
             }
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
+        }
+    } else if (strcmp(cmd, "PREF") == 0) {
+        /* PREF key [value]: one of the title's own choices (the sort order), kept in /data/artswap/prefs.txt */
+        if (!want(fd, n, 2))
+            return true;
+        char value[64];
+        if (n > 2 && !config_set_pref(field[1], field[2]))
+            ok = reply_error(fd, "that choice could not be kept");
+        else {
+            buf_printf(&text, "pref\t%s\t%s\n", field[1], config_pref(field[1], value, sizeof(value)) ? value : "");
+            ok = reply_text(fd, &text);
         }
     } else if (strcmp(cmd, "LOGO") == 0) {
         /* LOGO id url: the picture as the logo on the title's home-screen page, which shows it at once */

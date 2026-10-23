@@ -228,6 +228,7 @@ struct App::Title
     std::string logo = "-"; // the logo on its page: art (Art Swap's), other (its own) or - (none: its name shows)
     bool listed = true;     // the home screen has an entry for it, so it can have a logo
     bool added = false;     // Art Swap added its background (it had none): Restore deletes it
+    long recent = 0;        // its place in the home screen's order: higher was used more recently
     // a background to change, or one Art Swap can add (ShadowMountPlus installs the game again for it)
     bool has_pic() const
     {
@@ -345,6 +346,46 @@ const App::Title *App::focused_title() const
     return titles_[static_cast<std::size_t>(focus_)].get();
 }
 
+const char *App::sort_label(Sort sort)
+{
+    return sort == Sort::home ? "home screen" : sort == Sort::changed ? "changed first" : "name";
+}
+
+void App::order_titles()
+{
+    auto lower = [](const std::string &text) {
+        std::string out = text;
+        for (char &c : out)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return out;
+    };
+    auto changed = [this](const Title &t) { return t.changed() || is_pending(t.id); };
+    std::stable_sort(titles_.begin(), titles_.end(), [&](const auto &a, const auto &b) {
+        if (sort_ == Sort::home && a->recent != b->recent)
+            return a->recent > b->recent;
+        if (sort_ == Sort::changed && changed(*a) != changed(*b))
+            return changed(*a);
+        const std::string x = lower(a->name), y = lower(b->name);
+        return x != y ? x < y : a->id < b->id;
+    });
+}
+
+void App::set_sort(Sort sort, bool keep)
+{
+    const std::string id = focused_title() ? focused_title()->id : "";
+    sort_ = sort;
+    order_titles();
+    focus_ = 0;
+    for (int i = 0; i < static_cast<int>(titles_.size()); ++i)
+        if (titles_[static_cast<std::size_t>(i)]->id == id)
+            focus_ = i;
+    grow_.assign(titles_.size(), tween::Spring{});
+    if (!grow_.empty())
+        grow_[static_cast<std::size_t>(focus_)].snap(1.0f);
+    if (keep)
+        helper_.ask({"PREF", "sort", sort_label(sort)}, nullptr, true);
+}
+
 void App::load_titles(bool rescan)
 {
     if (titles_loading_)
@@ -386,6 +427,7 @@ void App::load_titles(bool rescan)
                 title->listed = row[13] == "1";
             }
             title->added = row.size() > 14 && row[14] == "1";
+            title->recent = row.size() > 15 ? std::strtol(row[15].c_str(), nullptr, 10) : 0;
             title->sgdb_id = std::strtol(row[7].c_str(), nullptr, 10);
             title->sgdb_name = row[8];
             // keep the pictures already loaded, unless this is a fresh look
@@ -413,6 +455,18 @@ void App::load_titles(bool rescan)
                 forget(before->icon);
                 forget(before->background);
             }
+        order_titles();
+        if (!sort_loaded_)
+        {
+            sort_loaded_ = true;
+            helper_.ask({"PREF", "sort"}, [this](Reply &answer) {
+                for (const auto &r : answer.rows())
+                    if (r.size() >= 3 && r[0] == "pref")
+                        for (Sort s : {Sort::name, Sort::home, Sort::changed})
+                            if (r[2] == sort_label(s) && s != sort_)
+                                set_sort(s, false);
+            }, true);
+        }
         focus_ = 0;
         for (int i = 0; i < static_cast<int>(titles_.size()); ++i)
             if (titles_[static_cast<std::size_t>(i)]->id == keep_focus)
@@ -1632,6 +1686,61 @@ void App::check_last_refresh()
     }, true);
 }
 
+// ---------------------------------------------------------------- OPTIONS
+
+std::vector<App::MenuItem> App::menu_items() const
+{
+    const Title *title = focused_title();
+    const bool rename = title && title->refresh, restore = title && title->changed();
+    return {
+        {"Rename", rename ? "the name on the home screen" : "homebrew installed from a folder only", rename},
+        {"Restore originals", restore ? "the art and name it came with" : "nothing changed", restore},
+        {"Settings", "SteamGridDB key, game list, store logos, log", true},
+        {"Close Art Swap", "", true},
+    };
+}
+
+void App::open_menu()
+{
+    sheet_ = Sheet::menu;
+    const auto items = menu_items();
+    sheet_focus_ = 0;
+    while (sheet_focus_ + 1 < static_cast<int>(items.size()) && !items[static_cast<std::size_t>(sheet_focus_)].enabled)
+        sheet_focus_++;
+    sheet_focus_position_.snap(static_cast<float>(sheet_focus_));
+}
+
+void App::menu_select(ui::Feedback &feedback)
+{
+    const auto items = menu_items();
+    if (!items[static_cast<std::size_t>(sheet_focus_)].enabled)
+    {
+        feedback.play(Cue::error);
+        return;
+    }
+    switch (sheet_focus_)
+    {
+    case 0:
+        feedback.play(Cue::select);
+        sheet_ = Sheet::none;
+        open_refresh(true);
+        break;
+    case 1:
+        feedback.play(Cue::select);
+        sheet_ = Sheet::restore;
+        break;
+    case 2:
+        feedback.play(Cue::open);
+        sheet_ = Sheet::none;
+        open_settings();
+        break;
+    default:
+        feedback.play(Cue::back);
+        close_ = true;
+        break;
+    }
+}
+
 void App::open_search(const std::string &term)
 {
     sheet_ = Sheet::search;
@@ -1772,10 +1881,19 @@ void App::update(const hui::InputFrame &pad, float dt, ui::Feedback &feedback)
         update_settings(input, dt, feedback);
     else
         update_connect(input, dt, feedback);
-    if (menu_tap && sheet_ == Sheet::none && (screen_ == Screen::library || screen_ == Screen::picker))
+    // OPTIONS opens the menu, and closes it again
+    if (menu_tap && screen_ == Screen::library && (sheet_ == Sheet::none || sheet_ == Sheet::menu))
     {
-        open_settings();
-        feedback.play(Cue::open);
+        if (sheet_ == Sheet::none)
+        {
+            open_menu();
+            feedback.play(Cue::modal_open);
+        }
+        else
+        {
+            sheet_ = Sheet::none;
+            feedback.play(Cue::modal_close);
+        }
     }
 
     // ---- animation ----
@@ -1878,6 +1996,10 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
     int next = focus_;
     if (input.nav == Direction::left || input.nav == Direction::right)
         next += input.nav == Direction::right ? 1 : -1;
+    if (input.is_pressed(Action::page_next))
+        next += 6;
+    if (input.is_pressed(Action::page_prev))
+        next -= 6;
     if (next != focus_ && count > 0)
     {
         const int clamped = std::clamp(next, 0, count - 1);
@@ -1925,7 +2047,7 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
         else
             want_picker("pic", feedback);
     }
-    else if (input.is_pressed(Action::page_next))
+    else if (input.is_pressed(Action::west))
     {
         if (title->listed)
             want_picker("logo", feedback);
@@ -1936,34 +2058,17 @@ void App::update_library(const hui::InputFrame &input, float dt, ui::Feedback &f
                   "The home screen does not list it yet, so there is nowhere to show one.", true);
         }
     }
-    else if (input.is_pressed(Action::west))
+    else if (input.is_pressed(Action::jump_prev))
     {
-        if (title->changed())
-        {
-            sheet_ = Sheet::restore;
-            feedback.play(Cue::modal_open);
-        }
-        else
-            feedback.play(Cue::error);
+        // the next order: name, the home screen's, changed first
+        feedback.play(Cue::tab);
+        set_sort(sort_ == Sort::name ? Sort::home : sort_ == Sort::home ? Sort::changed : Sort::name, true);
+        hero_.start(0.35f);
     }
     else if (input.is_pressed(Action::jump_next))
     {
         feedback.play(Cue::modal_open);
         open_apply();
-    }
-    else if (input.is_pressed(Action::jump_prev))
-    {
-        if (title->refresh)
-        {
-            feedback.play(Cue::modal_open);
-            open_refresh(true);
-        }
-        else
-        {
-            feedback.play(Cue::error);
-            toast(title->name + " cannot be renamed",
-                  "Art Swap renames homebrew that ShadowMountPlus installed from a folder.", true);
-        }
     }
     (void)dt;
 }
@@ -2099,6 +2204,29 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
             sheet_ = Sheet::none;
         }
         return;
+    case Sheet::menu:
+    {
+        const int rows = static_cast<int>(menu_items().size());
+        if (input.nav == Direction::up || input.nav == Direction::down)
+        {
+            const int next = std::clamp(sheet_focus_ + (input.nav == Direction::down ? 1 : -1), 0, rows - 1);
+            if (next != sheet_focus_)
+            {
+                sheet_focus_ = next;
+                feedback.play(Cue::focus, 1.0f, 0.2f);
+            }
+            else if (!input.nav_repeat)
+                feedback.play(Cue::error, 1.0f, 0.0f, 0.5f);
+        }
+        if (input.is_pressed(Action::confirm))
+            menu_select(feedback);
+        else if (input.is_pressed(Action::back))
+        {
+            feedback.play(Cue::modal_close);
+            sheet_ = Sheet::none;
+        }
+        return;
+    }
     case Sheet::log:
         if (input.is_pressed(Action::back) || input.is_pressed(Action::confirm))
         {
@@ -2321,7 +2449,7 @@ void App::draw_top_bar(gfx::DrawList &list) const
     }
     else if (key_state_ == "none")
     {
-        right = "No SteamGridDB key: press OPTIONS to add yours";
+        right = "No SteamGridDB key: OPTIONS, then Settings, to add yours";
         dot = kAmber;
     }
     else
@@ -2427,44 +2555,33 @@ void App::draw_library(gfx::DrawList &list) const
         list.pop_opacity();
         bx += w + 20;
     }
-    if (title->listed)
     {
-        // the logo on the game's page, where its name shows without one; a shoulder glyph is wider
+        // the logo on the game's page, where its name shows without one
         const char *label = "Change logo";
-        const float w = fonts_.semibold.measure(label, 27) + 112;
+        const float w = fonts_.semibold.measure(label, 27) + 100;
         const Rect pill{bx, by, w, 64};
-        list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(0.35f));
-        ui::draw_button(list, fonts_, dark, ui::Button::r1, pill.x + 20, pill.cy(), 34);
-        ui::text(list, fonts_.semibold, label, pill.x + 82, pill.cy() + 10, 27, kWhite);
+        list.bordered_rect(pill, 32, kWhite.with_alpha(0.1f), 2, kWhite.with_alpha(title->listed ? 0.35f : 0.12f));
+        list.push_opacity(title->listed ? 1.0f : 0.4f);
+        ui::draw_button(list, fonts_, dark, ui::Button::square, pill.x + 20, pill.cy(), 34);
+        ui::text(list, fonts_.semibold, label, pill.x + 70, pill.cy() + 10, 27, kWhite);
+        list.pop_opacity();
         bx += w + 20;
     }
-    // the rest, smaller, on a row of their own; a shoulder button's glyph is wider than a face button's
-    struct Secondary
-    {
-        ui::Button button;
-        const char *label;
-    };
-    std::vector<Secondary> more;
-    if (title->changed())
-        more.push_back({ui::Button::square, "Restore"});
-    if (title->refresh)
-        more.push_back({ui::Button::l2, "Rename"});
+    // the rest is in the OPTIONS menu, as the console's own "..." beside Play Game; a wider glyph
     bx = x;
-    for (const Secondary &item : more)
     {
-        const bool face = item.button == ui::Button::square;
-        const float w = fonts_.semibold.measure(item.label, 22) + (face ? 80 : 92);
+        const char *label = title->refresh ? "Rename, restore, settings" : "Restore, settings";
+        const float w = fonts_.semibold.measure(label, 22) + 108;
         const Rect pill{bx, by + 82, w, 52};
         list.bordered_rect(pill, 26, kWhite.with_alpha(0.08f), 1.5f, kWhite.with_alpha(0.28f));
-        ui::draw_button(list, fonts_, dark, item.button, pill.x + 16, pill.cy(), 28);
-        ui::text(list, fonts_.semibold, item.label, pill.x + (face ? 56 : 68), pill.cy() + 8, 22,
-                 kWhite.with_alpha(0.9f));
+        ui::draw_button(list, fonts_, dark, ui::Button::options, pill.x + 18, pill.cy(), 28);
+        ui::text(list, fonts_.semibold, label, pill.x + 84, pill.cy() + 8, 22, kWhite.with_alpha(0.9f));
         bx += w + 14;
     }
     // a change of this game the home screen does not show yet
     if (is_pending(title->id))
     {
-        const float left = more.empty() ? x : bx + 10;
+        const float left = bx + 10;
         const float ny = by + 82 + 26;
         list.circle(left + 8, ny, 6, kAmber);
         ui::text(list, fonts_.regular,
@@ -2493,7 +2610,15 @@ void App::draw_library(gfx::DrawList &list) const
     list.push_opacity(shelf_in);
     char heading[64];
     std::snprintf(heading, sizeof(heading), "Your games  \xC2\xB7  %d", static_cast<int>(titles_.size()));
-    ui::text(list, fonts_.semibold, heading, kMargin, kShelfY - 70, 24, kWhite.with_alpha(0.9f));
+    const float hw = ui::text(list, fonts_.semibold, heading, kMargin, kShelfY - 70, 24, kWhite.with_alpha(0.9f));
+    // the order, and the button that changes it
+    {
+        const std::string order = sort_ == Sort::home      ? "Home screen order"
+                                  : sort_ == Sort::changed ? "Changed first"
+                                                           : "A to Z";
+        ui::draw_button(list, fonts_, ui::GlyphStyle::dark(), ui::Button::l2, kMargin + hw + 34, kShelfY - 78, 26);
+        ui::text(list, fonts_.regular, order, kMargin + hw + 72, kShelfY - 70, 22, kWhite.with_alpha(0.6f));
+    }
     const float lift = 40.0f * (1.0f - shelf_in);
     for (int i = 0; i < static_cast<int>(titles_.size()); ++i)
     {
@@ -3023,6 +3148,25 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
             ui::text(list, fonts_.regular, search_error_, x, y + 50, 24, kAmber);
         break;
     }
+    case Sheet::menu:
+    {
+        heading("OPTIONS", title ? name : std::string("Art Swap"));
+        const auto items = menu_items();
+        const float row_h = 64, width = panel.w - 128;
+        list.rounded_rect({x - 20, y + sheet_focus_position_.value * row_h, width + 40, row_h - 8}, 28, kWhite);
+        for (int i = 0; i < static_cast<int>(items.size()); ++i)
+        {
+            const MenuItem &item = items[static_cast<std::size_t>(i)];
+            const bool f = i == sheet_focus_;
+            const float ry = y + i * row_h;
+            const float alpha = item.enabled ? 1.0f : 0.45f;
+            ui::text(list, fonts_.semibold, item.label, x + 8, ry + 39, 26,
+                     (f ? kInk : kWhite).with_alpha((f ? 1.0f : 0.9f) * alpha));
+            ui::text(list, fonts_.regular, fonts_.regular.font->fit(item.note, 22, width * 0.6f), x + width - 8,
+                     ry + 39, 22, (f ? kInk : kWhite).with_alpha(0.6f * alpha), gfx::Align::right);
+        }
+        break;
+    }
     case Sheet::log:
     {
         heading("HELPER LOG", "/data/artswap/helper.log");
@@ -3093,6 +3237,8 @@ void App::draw_hints(gfx::DrawList &list) const
         hints = {{ui::Button::cross, "Choose"}, {ui::Button::circle, "Back"}};
     else if (sheet_ == Sheet::log)
         hints = {{ui::Button::circle, "Back"}};
+    else if (sheet_ == Sheet::menu)
+        hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Select"}, {ui::Button::circle, "Close"}};
     else if (sheet_ == Sheet::apply)
     {
         if (!applying_)
@@ -3131,14 +3277,11 @@ void App::draw_hints(gfx::DrawList &list) const
             if (title->has_pic() || title->refresh)
                 hints.push_back({ui::Button::triangle, "Background"});
             if (title->listed)
-                hints.push_back({ui::Button::r1, "Logo"});
-            if (title->changed())
-                hints.push_back({ui::Button::square, "Restore"});
-            if (title->refresh)
-                hints.push_back({ui::Button::l2, "Rename"});
+                hints.push_back({ui::Button::square, "Logo"});
+            hints.push_back({ui::Button::l2, "Sort"});
         }
         hints.push_back({ui::Button::r2, "Apply changes"});
-        hints.push_back({ui::Button::options, "Settings"});
+        hints.push_back({ui::Button::options, "More"});
     }
     else if (screen_ == Screen::frame)
         hints = {{ui::Button::left_stick, "Move"}, {ui::Button::r2, "Zoom in"}, {ui::Button::l2, "Zoom out"},
@@ -3156,6 +3299,20 @@ void App::draw_hints(gfx::DrawList &list) const
     }
     if (hints.empty())
         return;
+    // one order everywhere: moving, the face buttons, the shoulders left before right, OPTIONS, and ○ last
+    auto rank = [](ui::Button button) {
+        static const ui::Button order[] = {ui::Button::dpad,     ui::Button::left_stick, ui::Button::right_stick,
+                                           ui::Button::cross,    ui::Button::triangle,   ui::Button::square,
+                                           ui::Button::l1,       ui::Button::r1,         ui::Button::l2,
+                                           ui::Button::r2,       ui::Button::touchpad,   ui::Button::options,
+                                           ui::Button::circle};
+        for (int i = 0; i < static_cast<int>(sizeof(order) / sizeof(order[0])); ++i)
+            if (order[i] == button)
+                return i;
+        return 99;
+    };
+    std::stable_sort(hints.begin(), hints.end(),
+                     [&](const ui::Hint &a, const ui::Hint &b) { return rank(a.button) < rank(b.button); });
     list.push_opacity(tween::stagger(age_, 6, 0.06f, 0.4f));
     ui::draw_hints(list, fonts_, style, hints.data(), static_cast<int>(hints.size()), 1824, true);
     list.pop_opacity();

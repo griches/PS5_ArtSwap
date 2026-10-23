@@ -12,7 +12,7 @@ one on SteamGridDB, shows you that game's art, and writes the one you pick over
 the title's own `icon0` or `pic0`/`pic1`. The original is kept beside it as an
 `.old` file, so Restore can put it back. **Apply changes** (R2) then restarts
 the home screen, and every change shows at once, whatever installed the game:
-a folder, a disk image or a package. A **logo** (R1) goes on the game's page in
+a folder, a disk image or a package. A **logo** (□) goes on the game's page in
 place of its name in plain text, and shows straight away.
 
 Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
@@ -25,7 +25,7 @@ Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
   it is now and what form that art takes (for example "Icon PNG 512×512, 2 files ·
   Background DDS BC7 3840×2160, 4 files").
 - **Finds the game on SteamGridDB** by its name, and remembers the match. If the
-  match is wrong, □ lists other matches or searches for any name you type.
+  match is wrong, □ in the picker lists other matches or searches for any name you type.
 - **Icons** come from SteamGridDB's square grids, and **Backgrounds** from its
   heroes (art made for backgrounds). A PS5 background is 3840×2160, so the
   3840×1240 heroes are listed first and tagged 4K: a 1920×620 one is enlarged
@@ -39,7 +39,7 @@ Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
 - **You choose the part kept** (△ in the picker opens the frame page): Fit (all
   of it, on a blurred fill of itself), the left, centre or right of a wide
   picture (top, middle or bottom of a tall one), or a part of your own: the
-  left stick or D-pad moves it, R2 and L2 zoom in and out (up to 3×). The page
+  left stick or D-pad moves it, L2 and R2 zoom out and in (up to 3×). The page
   shows the whole picture with the part kept lit, and the result beside it.
 - **The preview is exact**: what you see under NEW is what the helper will
   write, beside the art there NOW.
@@ -57,12 +57,12 @@ Title `PPSA99318`, version 1.2.0. Tested on a PS5 with firmware 13.60.
   screen restarts: see [Apply changes](#apply-changes). The top of the screen
   says how many games are waiting, and a changed game's page says it is not
   on the home screen yet.
-- **Logos** (R1): a game's page on the home screen shows its logo where it has
+- **Logos** (□): a game's page on the home screen shows its logo where it has
   one and its name in plain text where it has not, as with homebrew and
   installed backups. Art Swap puts a logo from SteamGridDB there, and it shows
   at once: see [Logos](#logos). Store games can also be offered their own
   logo from PlayStation Store, when you turn that on in Settings.
-- **Renames homebrew** (L2) that ShadowMountPlus installed from a folder: the
+- **Renames homebrew** (OPTIONS, Rename) that ShadowMountPlus installed from a folder: the
   new name goes into the title's `param.json` (every language), and Art Swap
   has ShadowMountPlus install the game again, since the home screen takes a
   name only from an install: see [Renaming](#renaming). The original is kept
@@ -82,29 +82,36 @@ through that loader.
 
 ## Using it
 
+Face buttons change the focused game's art, the shoulder buttons come in left
+and right pairs, and the rest is in the OPTIONS menu, as on the console's own
+game pages. Every hint row lists the buttons in the same order: moving, ✕ △ □,
+L1 R1 L2 R2, OPTIONS, then ○.
+
 | Where | Button | What it does |
 | --- | --- | --- |
-| Titles | ← → | choose a title |
+| Games | ← → (L1 R1 by six) | choose a game |
 | | ✕ | change its icon |
 | | △ | change its background, or add one to homebrew ShadowMountPlus installed from a folder |
-| | R1 | change the logo on its page (a title the home screen lists) |
-| | □ | restore its original art and name, and take its logo off (when Art Swap changed them) |
-| | L2 | rename it (homebrew ShadowMountPlus installed from a folder; asks first) |
+| | □ | change the logo on its page (a game the home screen lists) |
+| | L2 | the order of the games: A to Z, the home screen's own order (most recently used first), or the games Art Swap changed first; kept for next time |
 | | R2 | apply changes: restart the home screen so it shows them all (asks first) |
-| | OPTIONS | settings: API key, look at the console again, PlayStation Store logos, helper log |
+| | OPTIONS | Rename (homebrew ShadowMountPlus installed from a folder), Restore originals, Settings, Close Art Swap |
 | | hold OPTIONS | close Art Swap |
-| Art | L1 R1 | the Icons, Backgrounds and Logos tabs |
+| Pictures | L1 R1 | the Icons, Backgrounds and Logos tabs |
 | | D-pad, left stick | choose a picture |
-| | △ | the frame page: which part of the picture is kept (not for a logo, which is used whole) |
 | | right stick | slide the part kept, when Fill cuts the picture |
 | | ✕ | use it (asks first) |
+| | △ | the frame page: which part of the picture is kept (not for a logo, which is used whole) |
 | | □ | another game, or search by name with the keyboard |
-| | ○ | back to the titles |
-| Frame | L1 R1 | Fit, Left, Centre, Right (or Top, Middle, Bottom), Custom |
-| | left stick, D-pad | move the part kept |
-| | R2 L2 | zoom in, zoom out |
+| | ○ | back to the games |
+| Frame | left stick, D-pad | move the part kept |
 | | ✕ | use it (asks first) |
+| | L1 R1 | Fit, Left, Centre, Right (or Top, Middle, Bottom), Custom |
+| | L2 R2 | zoom out, zoom in |
 | | ○ | back to the pictures |
+| Settings | L1 R1, D-pad | the categories, and the rows in one |
+| | ✕ | select |
+| | ○ | back |
 
 ## Apply changes
 
@@ -131,7 +138,7 @@ restart of either kind does not show it. That is what Rename does.
 
 ## Renaming
 
-L2 on homebrew that ShadowMountPlus installed from a folder asks for the new
+Rename (OPTIONS) on homebrew that ShadowMountPlus installed from a folder asks for the new
 name, writes it, and has ShadowMountPlus install the game again, which deleting
 the title and letting ShadowMountPlus add it back would also do:
 
@@ -168,7 +175,7 @@ the picture its database names for the title (`logoImageInfo` in
 `/system_data/priv/mms/app.db`). Store games get theirs from PlayStation
 Network, which a jailbroken console does not reach, and homebrew has none.
 
-R1, or the Logos tab of the picker, lists SteamGridDB's logos for the game
+□, or the Logos tab of the picker, lists SteamGridDB's logos for the game
 (transparent PNGs, mostly white lettering), each on a dark plate, with the
 page as it will look beside the logo there now. ✕ puts it on:
 
@@ -218,7 +225,7 @@ add it:
   at most), needs the code, and closes after ten wrong codes.
 - **With the console's keyboard**.
 
-Settings (OPTIONS) shows whether a key is in, with its last four characters,
+Settings (OPTIONS, then Settings) shows whether a key is in, with its last four characters,
 and can add, replace or remove it, refresh the game list, or show the helper's
 log. The key is kept in `/data/artswap/apikey.txt`, which can also be copied
 over FTP. Without a key, Art Swap still lists your games and restores original
@@ -263,6 +270,7 @@ On the console the helper keeps its files in `/data/artswap/`:
 | `added.txt` | the background files Art Swap added to titles that had none |
 | `app.db.first`, `app.db.backup` | the home screen's database before Art Swap first changed it, and before its last run's first change |
 | `store-logos` | if present, PlayStation Store logos are on |
+| `prefs.txt` | Art Swap's own choices, such as the order of the games |
 | `store/` | what PlayStation Store's catalog said about each store game's logo |
 | `no-appdb` | if present, the system's `app.db` is never read (no names from it, no logos) |
 

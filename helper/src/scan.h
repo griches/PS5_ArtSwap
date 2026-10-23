@@ -30,6 +30,7 @@ typedef struct {
     char home_name[200]; /* the name the home screen shows: an install's, which a rename waits for */
     long concept; /* its PlayStation Store concept; 0 for homebrew, whose concept is its own number */
     bool logo;    /* a logo shows on its page (logoImageInfo), Art Swap's or not */
+    long recent;  /* its place in the home screen's own order (lastAccessIndex): higher was used more recently */
 } app_t;
 
 /* Every title with art; the list is sorted by name. Free with free(). */

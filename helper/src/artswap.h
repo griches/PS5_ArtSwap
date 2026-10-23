@@ -89,6 +89,10 @@ const char *config_key_source(void); /* "user" or "none" */
 /* The key's last four characters, to tell one key from another on screen */
 bool config_key_hint(char *out, size_t size);
 bool config_set_key(const char *key);
+/* The title's own choices (/data/artswap/prefs.txt, "key<TAB>value" lines): a key of letters and digits, a
+ * value of up to 63 printable characters */
+bool config_pref(const char *key, char *value, size_t size);
+bool config_set_pref(const char *key, const char *value);
 /* PlayStation Store logos: off unless the person turns them on (/data/artswap/store-logos) */
 bool config_store_logos(void);
 bool config_set_store_logos(bool on);

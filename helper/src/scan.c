@@ -173,8 +173,15 @@ static bool name_from_param_sfo(const char *path, char *name, size_t size)
 static void home_entries(sqlite3 *db, app_t *apps, int count)
 {
     sqlite3_stmt *rows = NULL;
+    /* lastAccessIndex, the home screen's own order, where the firmware has it */
     if (sqlite3_prepare_v2(db,
-                           "SELECT c.titleId, c.conceptId, m.logoImageInfo, c.titleName FROM tbl_contentinfo c "
+                           "SELECT c.titleId, c.conceptId, m.logoImageInfo, c.titleName, c.lastAccessIndex "
+                           "FROM tbl_contentinfo c "
+                           "LEFT JOIN tbl_conceptmetadata m ON m.localConceptId = c.localConceptId",
+                           -1, &rows, NULL) != SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+                           "SELECT c.titleId, c.conceptId, m.logoImageInfo, c.titleName, 0 "
+                           "FROM tbl_contentinfo c "
                            "LEFT JOIN tbl_conceptmetadata m ON m.localConceptId = c.localConceptId",
                            -1, &rows, NULL) != SQLITE_OK) {
         log_line("app.db: no home-screen entries (%s)", sqlite3_errmsg(db));
@@ -193,6 +200,7 @@ static void home_entries(sqlite3 *db, app_t *apps, int count)
                 apps[i].concept = concept > 0 && concept != strtol(id + 4, NULL, 10) ? concept : 0;
                 apps[i].logo = logo != NULL && logo[0] != 0;
                 copy_str(apps[i].home_name, sizeof(apps[i].home_name), home_name ? home_name : "");
+                apps[i].recent = (long)sqlite3_column_int64(rows, 4);
                 listed++;
                 store += apps[i].concept > 0;
                 logos += apps[i].logo;

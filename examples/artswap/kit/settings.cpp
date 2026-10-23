@@ -249,9 +249,9 @@ void App::update_settings(const hui::InputFrame &input, float dt, ui::Feedback &
         page_age_ = 0.0f;
         feedback.play(Cue::tab, 1.08f - 0.06f * static_cast<float>(next));
     };
-    if (input.is_pressed(Action::page_prev) || input.is_pressed(Action::jump_prev))
+    if (input.is_pressed(Action::page_prev))
         change_category(settings_category_ - 1);
-    else if (input.is_pressed(Action::page_next) || input.is_pressed(Action::jump_next))
+    else if (input.is_pressed(Action::page_next))
         change_category(settings_category_ + 1);
     else if (!settings_in_rows_)
     {

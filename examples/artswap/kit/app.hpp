@@ -100,6 +100,14 @@ class App
         restore,
         refresh, // Rename: the new name, then installing the game again so the home screen shows it
         apply,   // Apply changes: the home screen restarts to show every change
+        menu,    // OPTIONS: Rename, Restore originals, Settings, Close Art Swap
+    };
+    // The order of the games on the shelf (L2)
+    enum class Sort
+    {
+        name,    // A to Z
+        home,    // the home screen's own order: the most recently used first
+        changed, // those Art Swap changed first, then A to Z
     };
     enum class Refresh
     {
@@ -124,6 +132,9 @@ class App
 
     // ---- the titles ----
     void load_titles(bool rescan);
+    void order_titles();                      // titles_ in sort_'s order
+    void set_sort(Sort sort, bool keep);      // the shelf in another order, the focus on the same game; keep: remember it
+    static const char *sort_label(Sort sort);
     void request_icon(Title &title);
     void request_background(Title &title);
     Title *focused_title();
@@ -175,6 +186,15 @@ class App
     void start_apply();
     void check_last_home();
     void open_search(const std::string &term);
+    // OPTIONS on the games: what is not a picture of the focused game
+    struct MenuItem
+    {
+        std::string label, note;
+        bool enabled = true;
+    };
+    std::vector<MenuItem> menu_items() const;
+    void open_menu();
+    void menu_select(hui::ui::Feedback &feedback);
     void choose_game(int row);
     void open_refresh(bool rename = false);
     void type_name();
@@ -252,6 +272,8 @@ class App
     // the titles
     std::vector<std::unique_ptr<Title>> titles_;
     bool titles_loading_ = false;
+    Sort sort_ = Sort::name;
+    bool sort_loaded_ = false; // the order chosen last time, asked of the helper once
     std::string titles_error_;
     int focus_ = 0;
     int shown_ = -1;      // the title whose background shows

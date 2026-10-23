@@ -105,14 +105,15 @@ def make_console(base: Path):
     db.execute("INSERT INTO tbl_appbrowse_0507646227 VALUES ('PPSA05678', 'Astro Bot', '/user/appmeta/external/PPSA05678')")
     # the home screen's entries, as the console's: a homebrew title's concept is its own number, a store game's
     # is the store's; Burnout 3 is not on the home screen
-    db.execute("CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT, conceptId INT, localConceptId TEXT)")
+    db.execute("CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT, conceptId INT, localConceptId TEXT, "
+               "lastAccessIndex INT)")
     db.execute("CREATE TABLE tbl_conceptmetadata (localConceptId TEXT NOT NULL, conceptId INT, conceptName TEXT, "
                "logoImageInfo TEXT, PRIMARY KEY(localConceptId))")
     for title, name, concept in (("PPSA99314", "Eternal Darkness™", 99314), ("CUSA00001", "Bloodborne", 10000176),
                                  ("PPSA05678", "Astro Bot", 10002691), ("PPSA26525", "Heretic + Hexen", 10012903),
                                  ("PPSA99131", "PSP5", 99131)):
         local = f"cid:scp:{concept:016x}"
-        db.execute("INSERT INTO tbl_contentinfo VALUES (?, ?, ?, ?)", (title, name, concept, local))
+        db.execute("INSERT INTO tbl_contentinfo VALUES (?, ?, ?, ?, ?)", (title, name, concept, local, concept % 1000))
         db.execute("INSERT INTO tbl_conceptmetadata VALUES (?, ?, '', NULL)", (local, concept))
     db.commit()
     db.close()
@@ -216,6 +217,15 @@ def main() -> int:
         check(ed[11:14] == ["0", "-", "1"], f"APPS: homebrew on the home screen, no store concept, no logo ({ed[11:14]})")
         check(apps["PPSA26525"][11] == "10012903", "APPS: a store game's concept")
         check(apps["PPSA99316"][13] == "0", "APPS: a title the home screen does not list")
+        check(apps["PPSA99314"][15] == "314" and apps["PPSA99316"][15] == "0", "APPS: the home screen's order")
+        check(h.rows("PREF", "sort")[0] == ["pref", "sort", ""], "PREF: nothing chosen yet")
+        h.rows("PREF", "sort", "home screen")
+        check(h.rows("PREF", "sort")[0][2] == "home screen", "PREF keeps a choice")
+        try:
+            h.rows("PREF", "so rt", "x")
+            check(False, "PREF refuses a key that is not letters and digits")
+        except HelperError:
+            check(True, "PREF refuses a key that is not letters and digits")
         info = {r[0]: r for r in h.rows("SMP", "PPSA26525")}
         check(info["can"][1] == "0" and "disk image" in info["can"][2], f"SMP: an image cannot be renamed ({info['can']})")
 
