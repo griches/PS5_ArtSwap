@@ -1,5 +1,5 @@
 /*
- * Art Swap helper - the phone page: a SteamGridDB key, or music, sent from a phone.
+ * Art Swap helper - the phone page: a SteamGridDB key, music or pictures, sent from a phone.
  *
  * Typing a 32-character key on the console's keyboard is slow, so the title
  * offers a page instead: while its "From your phone" sheet is open (PHONE
@@ -12,13 +12,19 @@
  *
  * Opened for music (PHONE <code> music), the page instead sends the files
  * chosen on the phone, one PUT each, into /data/artswap/music (music.c), where
- * the title lists them. The code goes with each.
+ * the title lists them. The code goes with each. Opened for pictures (PHONE
+ * <code> pictures), it sends pictures the same way into
+ * /data/artswap/pictures (pictures.c), for the picker: PNG and JPEG as they
+ * are, and anything else the phone's browser can draw (WebP, HEIC, GIF)
+ * turned into a PNG on the phone first. A file that arrives and is not a PNG
+ * or a JPEG is deleted. A computer's browser opens the same page.
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "phone.h"
 #include "music.h"
+#include "pictures.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -43,7 +49,7 @@ static uint64_t g_until;
 static int g_wrong;
 static bool g_running;
 static int g_port;
-static bool g_music; /* the page sends music, not a key */
+static phone_mode_t g_mode; /* what the page is for */
 
 /* ---- the console's address ---- */
 
@@ -169,6 +175,57 @@ static void page_music(buf_t *out, const char *code)
                     "</script></body></html>");
 }
 
+/* Sends the pictures chosen, one PUT each: PNG and JPEG as they are, anything else the browser can draw as a PNG
+ * (no bigger than 4096 a side, which no icon, background or logo needs) */
+static void page_pictures(buf_t *out, const char *code)
+{
+    buf_printf(out, "<!doctype html><html><head><meta charset=utf-8><title>Art Swap: send pictures</title>%s</head><body><main>",
+               kStyle);
+    buf_printf(out, "<div class=brand><span></span>Art Swap on your PS5</div>"
+                    "<h1>Send pictures to your PS5</h1>"
+                    "<p>Choose pictures on this phone or computer: icons, backgrounds or logos (a logo needs a PNG "
+                    "with a transparent background). They go to your PS5, where Art Swap shows them first in its "
+                    "picker. Use pictures that are yours to use.</p>"
+                    "<div class=card>");
+    if (code && code[0])
+        buf_printf(out, "<input type=hidden id=code value='%s'>", code);
+    else
+        buf_printf(out, "<label for=code>The code on your TV</label>"
+                        "<input class=code id=code inputmode=numeric maxlength=4 autocomplete=off required>");
+    buf_printf(out, "<label for=files>Your pictures</label>"
+                    "<input id=files type=file multiple accept='image/*'>"
+                    "<button id=send>Send to my PS5</button><div id=list></div></div>"
+                    "<p class=small>PNG and JPEG pictures go as they are; others (WebP, HEIC, GIF) are sent as PNG. "
+                    "They stay on your PS5, in /data/artswap/pictures. This page closes when you leave the "
+                    "pictures screen on your TV.</p></main>"
+                    "<script>"
+                    "const list=document.getElementById('list');"
+                    "function row(t){const p=document.createElement('p');p.textContent=t;list.appendChild(p);return p}"
+                    "function base(n){return n.replace(/\\.[^.]*$/,'')||'picture'}"
+                    "async function asPng(f){const b=await createImageBitmap(f);"
+                    "const s=Math.min(1,4096/Math.max(b.width,b.height));"
+                    "const c=document.createElement('canvas');c.width=Math.round(b.width*s);c.height=Math.round(b.height*s);"
+                    "c.getContext('2d').drawImage(b,0,0,c.width,c.height);"
+                    "return await new Promise((ok,no)=>c.toBlob(x=>x?ok(x):no(),'image/png'))}"
+                    "function put(f,name,note,code){return new Promise(done=>{const p=row(name+note+': 0%%');"
+                    "const x=new XMLHttpRequest();"
+                    "x.open('PUT','/upload?code='+encodeURIComponent(code)+'&name='+encodeURIComponent(name));"
+                    "x.upload.onprogress=e=>{if(e.lengthComputable)p.textContent=name+note+': '+Math.round(e.loaded*100/e.total)+'%%'};"
+                    "x.onload=()=>{p.textContent=name+note+(x.status==200?': on your PS5 \u2713':': '+x.responseText);"
+                    "p.className=x.status==200?'':'err';done()};"
+                    "x.onerror=()=>{p.textContent=name+': the PS5 did not answer';p.className='err';done()};"
+                    "x.send(f)})}"
+                    "document.getElementById('send').onclick=async()=>{"
+                    "const code=document.getElementById('code').value.trim();"
+                    "for(const f of document.getElementById('files').files){"
+                    "if(f.type=='image/png'){await put(f,/\\.png$/i.test(f.name)?f.name:base(f.name)+'.png','',code);continue}"
+                    "if(f.type=='image/jpeg'){await put(f,/\\.jpe?g$/i.test(f.name)?f.name:base(f.name)+'.jpg','',code);continue}"
+                    "let png=null;try{png=await asPng(f)}catch(e){}"
+                    "if(!png){const p=row(f.name+': this browser cannot read it. Send a PNG or a JPEG.');p.className='err';continue}"
+                    "await put(png,base(f.name)+'.png',' (sent as PNG)',code)}};"
+                    "</script></body></html>");
+}
+
 static void page_done(buf_t *out)
 {
     buf_printf(out, "<!doctype html><html><head><meta charset=utf-8><title>Art Swap: key saved</title>%s</head><body><main>"
@@ -183,7 +240,8 @@ static void page_closed(buf_t *out)
     buf_printf(out, "<!doctype html><html><head><meta charset=utf-8><title>Art Swap</title>%s</head><body><main>"
                     "<div class=brand><span></span>Art Swap on your PS5</div>"
                     "<h1>This page has closed</h1><p>Open it again in Art Swap on your PS5 (the key in its "
-                    "settings, or Music's <b>From your phone</b>), and scan the new code.</p></main></body></html>",
+                    "settings, Music's <b>From your phone</b>, or the picker's <b>Your pictures</b>), and scan the "
+                    "new code.</p></main></body></html>",
                kStyle);
 }
 
@@ -333,11 +391,17 @@ static bool reader_copy(reader_t *r, FILE *out, size_t n, char *buffer, size_t b
     return true;
 }
 
-/* PUT /upload?code=&name=: a music file into the music folder. Its size is announced (Content-Length), or, as
- * some phones' browsers send a file, it comes in chunks, each announcing its own (Transfer-Encoding: chunked). */
-static void upload(int fd, const char *code, const char *query, const char *first, size_t have, size_t length,
-                   bool chunked)
+/* PUT /upload?code=&name=: a music file into the music folder, or a picture into the pictures folder. Its size
+ * is announced (Content-Length), or, as some phones' browsers send a file, it comes in chunks, each announcing its
+ * own (Transfer-Encoding: chunked). A picture that is not a PNG or a JPEG once it is whole is deleted. */
+static void upload(int fd, phone_mode_t mode, const char *code, const char *query, const char *first, size_t have,
+                   size_t length, bool chunked)
 {
+    const bool pictures = mode == PHONE_PICTURES;
+    const size_t max = pictures ? PICTURE_MAX_BYTES : UPLOAD_MAX;
+    const char *kinds = pictures ? "Art Swap reads PNG and JPEG pictures." : "Art Swap reads MP3, FLAC, WAV and AIFF files.";
+    const char *too_big = pictures ? "That picture is too big for Art Swap (40 MB at most)."
+                                   : "That file is too big for Art Swap (400 MB at most).";
     char sent_code[16], wanted[256], name[200], folder[512], partial[800], path[800];
     form_value(query, "code", sent_code, sizeof(sent_code));
     form_value(query, "name", wanted, sizeof(wanted));
@@ -346,16 +410,18 @@ static void upload(int fd, const char *code, const char *query, const char *firs
         answer(fd, 403, "That is not the code on your TV.");
         return;
     }
-    if (!music_upload_name(wanted, name, sizeof(name))) {
-        answer(fd, 400, "Art Swap reads MP3, FLAC, WAV and AIFF files.");
+    if (!(pictures ? pictures_upload_name(wanted, name, sizeof(name)) : music_upload_name(wanted, name, sizeof(name)))) {
+        answer(fd, 400, kinds);
         return;
     }
-    if (!chunked && (length == 0 || length > UPLOAD_MAX)) {
-        answer(fd, length == 0 ? 400 : 413,
-               length == 0 ? "The file came empty: try again." : "That file is too big for Art Swap (400 MB at most).");
+    if (!chunked && (length == 0 || length > max)) {
+        answer(fd, length == 0 ? 400 : 413, length == 0 ? "The file came empty: try again." : too_big);
         return;
     }
-    music_folder(folder, sizeof(folder));
+    if (pictures)
+        pictures_folder(folder, sizeof(folder));
+    else
+        music_folder(folder, sizeof(folder));
     snprintf(partial, sizeof(partial), "%s/.%s.partial", folder, name);
     snprintf(path, sizeof(path), "%s/%s", folder, name);
     FILE *out = fopen(partial, "wb");
@@ -364,7 +430,7 @@ static void upload(int fd, const char *code, const char *query, const char *firs
     char *buffer = malloc(buffer_size);
     reader_t reader = {fd, first, have};
     size_t done = 0;
-    bool ok = out != NULL && buffer != NULL, too_big = false;
+    bool ok = out != NULL && buffer != NULL, over = false;
     if (ok && !chunked) {
         ok = reader_copy(&reader, out, length, buffer, buffer_size);
         done = ok ? length : 0;
@@ -375,8 +441,8 @@ static void upload(int fd, const char *code, const char *query, const char *firs
         const size_t size = ok ? strtoul(line, NULL, 16) : 0;
         if (!ok || size == 0)
             break;
-        if (done + size > UPLOAD_MAX) {
-            too_big = true;
+        if (done + size > max) {
+            over = true;
             ok = false;
             break;
         }
@@ -391,13 +457,21 @@ static void upload(int fd, const char *code, const char *query, const char *firs
     free(buffer);
     if (out != NULL && fclose(out) != 0)
         ok = false;
+    /* a picture is what it says it is, or it goes */
+    int w = 0, h = 0;
+    bool alpha = false;
+    if (ok && pictures && !pictures_probe(partial, &w, &h, &alpha)) {
+        unlink(partial);
+        log_line("phone: %s is not a PNG or a JPEG: deleted", name);
+        answer(fd, 400, kinds);
+        return;
+    }
     if (ok && rename(partial, path) != 0)
         ok = false;
     if (!ok) {
         unlink(partial);
         log_line("phone: %s did not arrive whole (%zu bytes%s)", name, done, chunked ? ", in chunks" : "");
-        answer(fd, too_big ? 413 : 500,
-               too_big ? "That file is too big for Art Swap (400 MB at most)." : "It did not arrive whole: try again.");
+        answer(fd, over ? 413 : 500, over ? too_big : "It did not arrive whole: try again.");
         return;
     }
     log_line("phone: received %s (%zu bytes%s)", name, done, chunked ? ", in chunks" : "");
@@ -440,7 +514,7 @@ static void serve(int fd)
     sscanf(request, "%*s %299s", path);
     const bool post = strncmp(request, "POST ", 5) == 0;
     pthread_mutex_lock(&g_lock);
-    const bool music = g_music;
+    const phone_mode_t mode = g_mode;
     pthread_mutex_unlock(&g_lock);
     if (!session_open(code, sizeof(code))) {
         page_closed(&page);
@@ -449,8 +523,8 @@ static void serve(int fd)
         const char *query = strchr(path, '?');
         const char *encoding = header_value(request, "Transfer-Encoding");
         const bool chunked = encoding != NULL && strstr(encoding, "chunked") != NULL;
-        if (music && strncmp(path, "/upload?", 8) == 0 && body)
-            upload(fd, code, query + 1, body, (size_t)(request + used - body), content_length, chunked);
+        if (mode != PHONE_KEY && strncmp(path, "/upload?", 8) == 0 && body)
+            upload(fd, mode, code, query + 1, body, (size_t)(request + used - body), content_length, chunked);
         else
             answer(fd, 404, "Nothing to send here.");
     } else if (!post) {
@@ -459,13 +533,15 @@ static void serve(int fd)
         if (strcmp(path, "/favicon.ico") == 0) {
             respond(fd, 404, &page);
         } else {
-            if (music)
+            if (mode == PHONE_MUSIC)
                 page_music(&page, with_code ? code : NULL);
+            else if (mode == PHONE_PICTURES)
+                page_pictures(&page, with_code ? code : NULL);
             else
                 page_form(&page, with_code ? code : NULL, NULL);
             respond(fd, 200, &page);
         }
-    } else if (music) {
+    } else if (mode != PHONE_KEY) {
         answer(fd, 404, "Nothing to send here.");
     } else {
         char sent_code[16], key[96];
@@ -546,7 +622,7 @@ static void *listen_thread(void *argument)
     return NULL;
 }
 
-bool phone_start(const char *code, bool music, char *err, size_t errlen)
+bool phone_start(const char *code, phone_mode_t mode, char *err, size_t errlen)
 {
     if (strlen(code) != 4) {
         snprintf(err, errlen, "the code is four digits");
@@ -569,7 +645,7 @@ bool phone_start(const char *code, bool music, char *err, size_t errlen)
     }
     pthread_mutex_lock(&g_lock);
     copy_str(g_code, sizeof(g_code), code);
-    g_music = music;
+    g_mode = mode;
     g_until = now_ms() + SESSION_MS;
     g_wrong = 0;
     if (start)

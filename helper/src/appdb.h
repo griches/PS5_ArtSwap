@@ -15,6 +15,8 @@ sqlite3 *appdb_open(int flags, char *err, size_t errlen);
 /* Before this run's first change: a copy of the database as it was (app.db.backup), and the first copy ever
  * (app.db.first), kept for good */
 bool appdb_backup(sqlite3 *db, char *err, size_t errlen);
+/* Whether the table has the column (firmware versions differ) */
+bool appdb_has_column(sqlite3 *db, const char *table, const char *column);
 
 /* What the home screen has of a title: the name it shows, and the background and music its entry names
  * (each "" for none; art_known is false where the firmware's table has no such columns) */

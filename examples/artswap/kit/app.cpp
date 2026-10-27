@@ -220,16 +220,6 @@ void palette_of(const Picture &p, Color &dark, Color &mid, Color &accent)
 } // namespace
 
 
-struct App::Art
-{
-    std::string url, thumb, style, author, mime;
-    bool store = false; // the game's own logo, from PlayStation Store
-    int w = 0, h = 0;
-    std::uint32_t texture = 0;
-    int tw = 0, th = 0;
-    bool asked = false, failed = false, tried_full = false;
-};
-
 App::App(const ui::Fonts &fonts, Helper &helper, TextureSink &textures, Keyboard *keyboard, Speaker *speaker)
     : fonts_(fonts), helper_(helper), textures_(textures), keyboard_(keyboard), speaker_(speaker)
 {
@@ -680,10 +670,12 @@ void App::set_tab(int tab)
         load_current_art();
     }
     art_focus_ = 0;
+    art_moved_ = false;
     page_ = 0;
     total_ = 0;
     hidden_ = 0;
     store_arts_ = 0;
+    mine_arts_ = 0;
     store_asked_ = false;
     list_error_.clear();
     grid_scroll_.position.snap(0.0f);
@@ -692,7 +684,7 @@ void App::set_tab(int tab)
     preview_serial_++;
     preview_loading_ = false;
     cell_ring_.snap(cell_rect(0));
-    match_and_list();
+    load_mine(); // the person's own pictures, then SteamGridDB's (match_and_list)
 }
 
 void App::match_and_list()
@@ -731,8 +723,8 @@ void App::match_and_list()
                 load_page();
                 return;
             }
-        list_error_ = "SteamGridDB has no game called \xE2\x80\x9C" + name +
-                      "\xE2\x80\x9D. Choose Another game to look for it under another name.";
+        list_error_ = "SteamGridDB has no game called \"" + name +
+                      "\". Choose Another game to look for it under another name.";
         // a store game's own logo can show all the same
         for (auto &t : titles_)
             if (t->id == id && slot_ == "logo" && t->store_concept > 0 && store_logos_)
@@ -776,6 +768,11 @@ void App::load_page()
                     arts_.push_back(std::move(art));
                     store_arts_++;
                 }
+            if (store_arts_ > 0 && !art_moved_)
+            {
+                art_focus_ = mine_arts_;
+                preview_due_ = 0.0f;
+            }
             request_thumbs();
             if (!arts_.empty())
                 cell_ring_.snap(cell_rect(art_focus_));
@@ -794,7 +791,7 @@ void App::load_page()
                         list_error_ = reply.error;
                         return;
                     }
-                    const bool first = static_cast<int>(arts_.size()) == store_arts_;
+                    const bool first = static_cast<int>(arts_.size()) == mine_arts_ + store_arts_;
                     for (const auto &row : reply.rows())
                     {
                         if (row.size() >= 4 && row[0] == "P")
@@ -815,6 +812,9 @@ void App::load_page()
                         }
                     }
                     page_++;
+                    // SteamGridDB's first takes the focus from the add cell, unless the person has moved
+                    if (first && !art_moved_ && static_cast<int>(arts_.size()) > mine_arts_)
+                        art_focus_ = mine_arts_;
                     request_thumbs();
                     if (first && !arts_.empty())
                     {
@@ -903,8 +903,8 @@ void App::request_preview()
 {
     const Art *art = focused_art();
     preview_loading_ = false;
-    // a logo is written as it is: its own thumbnail shows what it makes
-    if (art == nullptr || picker_title_ < 0 || slot_ == "logo")
+    // a logo is written as it is: its own thumbnail shows what it makes; the add cell is no picture
+    if (art == nullptr || art->add || picker_title_ < 0 || slot_ == "logo")
         return;
     const int serial = ++preview_serial_;
     preview_loading_ = true;
@@ -1371,13 +1371,15 @@ void App::load_pending()
         pending_.clear();
         renamed_.clear();
         installs_.clear();
+        arranged_.clear();
         for (const auto &row : reply.rows())
             if (row.size() >= 2 && row[0] == "P")
             {
                 const std::string kind = row.size() >= 3 ? row[2] : "art";
-                note_pending(row[1], kind == "install" ? Pending::install
-                                     : kind == "name"  ? Pending::name
-                                                       : Pending::art);
+                note_pending(row[1], kind == "install"  ? Pending::install
+                                     : kind == "name"   ? Pending::name
+                                     : kind == "layout" ? Pending::layout
+                                                        : Pending::art);
             }
     }, true);
 }
@@ -1386,7 +1388,7 @@ void App::note_pending(const std::string &id, Pending kind)
 {
     if (!is_pending(id))
         pending_.push_back(id);
-    auto &list = kind == Pending::install ? installs_ : renamed_;
+    auto &list = kind == Pending::install ? installs_ : kind == Pending::layout ? arranged_ : renamed_;
     if (kind != Pending::art && std::find(list.begin(), list.end(), id) == list.end())
         list.push_back(id);
 }
@@ -1679,6 +1681,7 @@ std::vector<App::MenuItem> App::menu_items() const
         {"Music", music ? "what its tile plays, from a song of yours" : "homebrew installed from a folder only", music},
         {"Rename", rename ? "the name on the home screen" : "homebrew installed from a folder only", rename},
         {"Restore originals", restore ? "the art and name it came with" : "nothing changed", restore},
+        {"Home screen", "Games or Media, hidden tiles, the order", true},
         {"Settings", "SteamGridDB key, game list, store logos, log", true},
         {"Close Art Swap", "", true},
     };
@@ -1721,6 +1724,11 @@ void App::menu_select(ui::Feedback &feedback)
     case 3:
         feedback.play(Cue::open);
         sheet_ = Sheet::none;
+        open_home();
+        break;
+    case 4:
+        feedback.play(Cue::open);
+        sheet_ = Sheet::none;
         open_settings();
         break;
     default:
@@ -1753,7 +1761,7 @@ void App::open_search(const std::string &term)
             if (row.size() >= 5 && row[0] == "G")
                 results_.push_back(row);
         if (results_.empty())
-            search_error_ = "Nothing on SteamGridDB is called \xE2\x80\x9C" + term + "\xE2\x80\x9D";
+            search_error_ = "Nothing on SteamGridDB is called \"" + term + "\"";
         else
             sheet_focus_ = 1;
     }, true);
@@ -1877,6 +1885,8 @@ void App::update(const hui::InputFrame &pad, float dt, ui::Feedback &feedback)
         update_frame(input, dt, feedback);
     else if (screen_ == Screen::settings)
         update_settings(input, dt, feedback);
+    else if (screen_ == Screen::home)
+        update_home(input, dt, feedback);
     else if (screen_ == Screen::music)
         update_music(input, dt, feedback);
     else
@@ -2098,6 +2108,15 @@ void App::update_picker(const hui::InputFrame &input, float dt, ui::Feedback &fe
     }
     if (input.is_pressed(Action::west))
     {
+        // with no key, □ adds one; the picker opens again after it
+        if (key_state_ != "user")
+        {
+            feedback.play(Cue::open);
+            const std::string slot = slot_;
+            close_picker();
+            open_connect(slot);
+            return;
+        }
         feedback.play(Cue::modal_open);
         const Title &title = *titles_[static_cast<std::size_t>(picker_title_)];
         open_search(title.name);
@@ -2130,6 +2149,7 @@ void App::update_picker(const hui::InputFrame &input, float dt, ui::Feedback &fe
             if (next >= 0 && next < count)
             {
                 art_focus_ = next;
+                art_moved_ = true;
                 reset_framing();
                 preview_due_ = 0.18f;
                 preview_serial_++;
@@ -2140,9 +2160,19 @@ void App::update_picker(const hui::InputFrame &input, float dt, ui::Feedback &fe
                 feedback.play(Cue::error, 1.0f, 0.0f, 0.5f);
         }
         // more from SteamGridDB when the last row is reached
-        if (art_focus_ / cols >= (count - 1) / cols && count - store_arts_ < total_ && !listing_)
+        if (art_focus_ / cols >= (count - 1) / cols && count - store_arts_ - mine_arts_ < total_ && !listing_)
             load_page();
         const Art *art = focused_art();
+        // the add cell: the phone page's QR code
+        if (art && art->add)
+        {
+            if (input.is_pressed(Action::confirm))
+            {
+                feedback.play(Cue::modal_open);
+                open_pictures_phone();
+            }
+            return;
+        }
         // a logo is written whole: nothing to frame
         const bool framed = slot_ != "logo";
         if (input.is_pressed(Action::north) && art && framed)
@@ -2207,6 +2237,12 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
     case Sheet::music_phone:
     case Sheet::music_confirm:
         update_music_sheet(input, 0.0f, feedback);
+        return;
+    case Sheet::pictures_phone:
+        update_pictures_sheet(input, feedback);
+        return;
+    case Sheet::place:
+        update_place_sheet(input, feedback);
         return;
     case Sheet::menu:
     {
@@ -2349,6 +2385,8 @@ void App::draw(hui::app::Frame &frame) const
         draw_starting(list);
     else if (screen_ == Screen::settings)
         draw_settings(list);
+    else if (screen_ == Screen::home)
+        draw_home(list);
     else if (screen_ == Screen::connect)
         draw_connect(list);
     else
@@ -2467,7 +2505,8 @@ void App::draw_top_bar(gfx::DrawList &list) const
     if (!pending_.empty() && screen_ == Screen::library)
     {
         const int n = static_cast<int>(pending_.size());
-        const std::string label = "Apply changes  \xC2\xB7  " + std::to_string(n) + (n == 1 ? " game" : " games");
+        const std::string label = "Apply changes  \xC2\xB7  " + std::to_string(n) +
+                                  (arranged_.empty() ? (n == 1 ? " game" : " games") : (n == 1 ? " change" : " changes"));
         const float cw = fonts_.semibold.measure(label, 22) + 96;
         const Rect chip{1824 - tw - 60 - cw, 60, cw, 48};
         list.bordered_rect(chip, 24, kAmber.with_alpha(0.14f), 1.5f, kAmber.with_alpha(0.75f));
@@ -2683,7 +2722,10 @@ void App::draw_picker(gfx::DrawList &list) const
              kMargin, 168, 20, title.accent, gfx::Align::left, 4.0f);
     ui::text(list, fonts_.display, fonts_.display.font->fit(title.name, 60, 1100), kMargin - 3, 234, 60, kWhite);
     std::string game;
-    if (matching_)
+    const bool keyed = key_state_ == "user";
+    if (!keyed)
+        game = "Your own pictures: no SteamGridDB key";
+    else if (matching_)
         game = "Finding " + title.name + " on SteamGridDB\xE2\x80\xA6";
     else if (!title.sgdb_name.empty())
         game = "SteamGridDB: " + title.sgdb_name;
@@ -2692,7 +2734,8 @@ void App::draw_picker(gfx::DrawList &list) const
     {
         const ui::GlyphStyle dark = ui::GlyphStyle::dark();
         ui::draw_button(list, fonts_, dark, ui::Button::square, kMargin + gw + 22, 268, 28);
-        ui::text(list, fonts_.regular, "Another game", kMargin + gw + 60, 276, 21, kWhite.with_alpha(0.55f));
+        ui::text(list, fonts_.regular, keyed ? "Another game" : "Add your key", kMargin + gw + 60, 276, 21,
+                 kWhite.with_alpha(0.55f));
     }
 
     // the tabs
@@ -2719,6 +2762,11 @@ void App::draw_picker(gfx::DrawList &list) const
             continue;
         const Art &art = *arts_[static_cast<std::size_t>(i)];
         const bool focused = i == art_focus_;
+        if (art.add)
+        {
+            draw_add_cell(list, r, focused);
+            continue;
+        }
         // dimmed, not see-through: a dark card under each picture
         if (art.texture)
             list.rounded_rect(r, 14, logo ? gfx::mix(kNight, title.dark, 0.5f) : kNight);
@@ -2742,6 +2790,14 @@ void App::draw_picker(gfx::DrawList &list) const
             list.rounded_rect(tag, 13, kNight.with_alpha(0.78f));
             ui::text(list, fonts_.semibold, "4K", tag.cx(), tag.y + 19, 15, kWhite, gfx::Align::center);
         }
+        // the person's own, sent from a phone or computer
+        if (art.mine)
+        {
+            const float tw = fonts_.semibold.measure("YOURS", 14) + 24;
+            const Rect tag{r.x + 10, r.y + 10, tw, 26};
+            list.rounded_rect(tag, 13, title.accent.with_alpha(0.9f));
+            ui::text(list, fonts_.semibold, "YOURS", tag.cx(), tag.y + 18, 14, kInk, gfx::Align::center, 1.0f);
+        }
         // the game's own, from PlayStation Store
         if (art.store)
         {
@@ -2752,39 +2808,51 @@ void App::draw_picker(gfx::DrawList &list) const
                      1.0f);
         }
     }
-    if (!arts_.empty())
-        list.bordered_rect(cell_ring_.value().inset(-5), 18, Color::rgb(0x000000, 0.0f), 4, kWhite);
-    list.pop_clip();
-
-    // the grid's own messages
-    if (arts_.empty())
+    // the grid's own messages, under the person's own pictures: about SteamGridDB's
+    if (static_cast<int>(arts_.size()) <= mine_arts_ + store_arts_ && !mine_loading_)
     {
-        if (listing_ || matching_)
+        const float my = arts_.empty() ? kGridTop + 60
+                                       : cell_rect(static_cast<int>(arts_.size()) - 1).y + cell_size().h + 70;
+        if (key_state_ != "user")
         {
-            draw_spinner(list, kGridX + 40, kGridTop + 60, 22);
-            ui::text(list, fonts_.regular, "Asking SteamGridDB\xE2\x80\xA6", kGridX + 84, kGridTop + 70, 26,
+            const float py = ui::paragraph(list, fonts_.regular,
+                                           "SteamGridDB has art for most games, made by its community. Add your own "
+                                           "free key to see it here.",
+                                           kGridX, my, 27, 1050, 40, kWhite.with_alpha(0.85f), 3);
+            ui::draw_button(list, fonts_, ui::GlyphStyle::dark(), ui::Button::square, kGridX, py + 22, 30);
+            ui::text(list, fonts_.regular, "Add your key", kGridX + 42, py + 30, 22, kWhite.with_alpha(0.7f));
+        }
+        else if (listing_ || matching_)
+        {
+            draw_spinner(list, kGridX + 40, my - 10, 22);
+            ui::text(list, fonts_.regular, "Asking SteamGridDB\xE2\x80\xA6", kGridX + 84, my, 26,
                      kWhite.with_alpha(0.8f));
         }
         else if (!list_error_.empty())
-        {
-            ui::paragraph(list, fonts_.regular, list_error_, kGridX, kGridTop + 60, 27, 1050, 40, kWhite, 4);
-            ui::draw_button(list, fonts_, ui::GlyphStyle::dark(), ui::Button::cross, kGridX, kGridTop + 222, 30);
-            ui::text(list, fonts_.regular, "Try again", kGridX + 42, kGridTop + 230, 22, kWhite.with_alpha(0.7f));
-        }
+            ui::paragraph(list, fonts_.regular, list_error_, kGridX, my, 27, 1050, 40, kWhite, 4);
         else
         {
             const std::string what = icon ? "icons" : logo ? "logos" : "backgrounds";
             ui::paragraph(list, fonts_.regular,
                           "SteamGridDB has no " + what + " for this game yet. If it is listed under another "
                               "name, choose Another game.",
-                          kGridX, kGridTop + 60, 27, 1050, 40, kWhite.with_alpha(0.85f), 4);
+                          kGridX, my, 27, 1050, 40, kWhite.with_alpha(0.85f), 4);
         }
     }
-    else if (listing_)
+    if (!arts_.empty())
+        list.bordered_rect(cell_ring_.value().inset(-5), 18, Color::rgb(0x000000, 0.0f), 4, kWhite);
+    list.pop_clip();
+    if (listing_ && static_cast<int>(arts_.size()) > mine_arts_ + store_arts_)
         draw_spinner(list, kPanelX - 70, kGridBottom - 10, 16);
 
     // ---- the preview: what would be written, beside what is there ----
     const Art *art = focused_art();
+    if (art && art->add)
+    {
+        draw_add_panel(list);
+        list.pop_opacity();
+        return;
+    }
     if (logo)
     {
         // as the game's page shows it, then what it has now
@@ -2800,10 +2868,19 @@ void App::draw_picker(gfx::DrawList &list) const
             std::snprintf(line, sizeof(line), "%d\xC3\x97%d  \xC2\xB7  %s", art->w, art->h, art->style.c_str());
             ui::text(list, fonts_.regular, line, page.x, ly, 22, kWhite.with_alpha(0.8f));
             ui::text(list, fonts_.regular,
-                     art->store ? std::string("PlayStation Store: the game's own")
-                                : "by " + fonts_.regular.font->fit(art->author, 20, kPanelW - 40),
+                     art->store  ? std::string("PlayStation Store: the game's own")
+                     : art->mine ? "Yours: " + fonts_.regular.font->fit(art->author, 20, kPanelW - 100)
+                                 : "by " + fonts_.regular.font->fit(art->author, 20, kPanelW - 40),
                      page.x, ly + 28, 20, kWhite.with_alpha(0.55f));
             ly += 64;
+            // a picture with nothing see-through shows as a box on the page
+            if (art->mine && !art->alpha)
+            {
+                list.circle(page.x + 6, ly - 8, 5, kAmber);
+                ui::text(list, fonts_.regular, "Nothing in it is see-through: it shows as a box", page.x + 22, ly, 20,
+                         kAmber);
+                ly += 36;
+            }
         }
         const Rect now{page.x, ly, 192, 108};
         draw_logo_page(list, now, current_art_, current_w_, current_h_, 8.0f);
@@ -2830,8 +2907,10 @@ void App::draw_picker(gfx::DrawList &list) const
         char line[160];
         std::snprintf(line, sizeof(line), "%d\xC3\x97%d  \xC2\xB7  %s", art->w, art->h, art->style.c_str());
         ui::text(list, fonts_.regular, line, left, y, 22, kWhite.with_alpha(0.8f));
-        ui::text(list, fonts_.regular, "by " + fonts_.regular.font->fit(art->author, 20, kPanelW - 40), left, y + 28,
-                 20, kWhite.with_alpha(0.55f));
+        ui::text(list, fonts_.regular,
+                 art->mine ? "Yours: " + fonts_.regular.font->fit(art->author, 20, kPanelW - 100)
+                           : "by " + fonts_.regular.font->fit(art->author, 20, kPanelW - 40),
+                 left, y + 28, 20, kWhite.with_alpha(0.55f));
         // the framing, changed on the frame page
         ui::draw_button(list, fonts_, dark, ui::Button::triangle, left, y + 62, 28);
         ui::text(list, fonts_.semibold, framing_label(), left + 40, y + 70, 21, kWhite.with_alpha(0.9f));
@@ -2908,9 +2987,9 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
 {
     const float t = sheet_open_.value;
     const bool tall = sheet_ == Sheet::search || sheet_ == Sheet::log || sheet_ == Sheet::apply ||
-                      sheet_ == Sheet::music_phone ||
+                      sheet_ == Sheet::music_phone || sheet_ == Sheet::pictures_phone ||
                       (sheet_ == Sheet::refresh && (refresh_ == Refresh::ready || refresh_ == Refresh::starting));
-    const float h = tall ? 760.0f : sheet_ == Sheet::menu ? 600.0f : 470.0f;
+    const float h = tall ? 760.0f : sheet_ == Sheet::menu ? 660.0f : sheet_ == Sheet::place ? 600.0f : 470.0f;
     const Rect panel{360, (1080 - h) * 0.5f + 40.0f * (1.0f - t), 1200, h};
     list.push_opacity(tween::clamp01(t * 1.4f));
     list.shadow({panel.x, panel.y + 20, panel.w, panel.h}, 44, 60, Color::rgb(0x000000, 0.5f));
@@ -3016,9 +3095,10 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
     case Sheet::apply:
     {
         const int changed = static_cast<int>(pending_.size());
-        heading("APPLY CHANGES", changed == 0   ? std::string("Show your changes")
-                                 : changed == 1 ? std::string("1 game changed")
-                                                : std::to_string(changed) + " games changed");
+        const char *unit = arranged_.empty() ? " game" : " change";
+        heading("APPLY CHANGES", changed == 0 ? std::string("Show your changes")
+                                              : std::to_string(changed) + unit + (changed == 1 ? "" : "s") +
+                                                    (arranged_.empty() ? " changed" : " waiting"));
         const float width = panel.w - 128;
         const Color tint = Color::rgb(0x9fd8ff);
         y = ui::paragraph(list, fonts_.regular,
@@ -3041,7 +3121,9 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
             steps.push_back(renamed + (renamed_.size() == 1 ? " gets its new name." : " get their new names."));
         if (!installed.empty())
             steps.push_back("ShadowMountPlus installs " + installed + " again, for the background or music added.");
-        if (renamed.empty() && installed.empty())
+        if (!arranged_.empty())
+            steps.push_back("The home screen's rows are arranged as you set them.");
+        if (renamed.empty() && installed.empty() && arranged_.empty())
         {
             steps.push_back("The home screen goes dark for a few seconds.");
             steps.push_back("It comes back with your new art.");
@@ -3172,7 +3254,7 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         if (searching_)
         {
             draw_spinner(list, x + 22, y + 40, 18);
-            ui::text(list, fonts_.regular, "Searching for \xE2\x80\x9C" + search_term_ + "\xE2\x80\x9D\xE2\x80\xA6",
+            ui::text(list, fonts_.regular, "Searching for \"" + search_term_ + "\"\xE2\x80\xA6",
                      x + 60, y + 50, 24, kWhite.with_alpha(0.8f));
         }
         else if (!search_error_.empty())
@@ -3182,6 +3264,12 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
     case Sheet::music_phone:
     case Sheet::music_confirm:
         draw_music_sheet(list, panel, x, y);
+        break;
+    case Sheet::pictures_phone:
+        draw_pictures_sheet(list, panel, x, y);
+        break;
+    case Sheet::place:
+        draw_place_sheet(list, panel, x, y);
         break;
     case Sheet::menu:
     {
@@ -3276,6 +3364,35 @@ void App::draw_hints(gfx::DrawList &list) const
         hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Select"}, {ui::Button::circle, "Close"}};
     else if (sheet_ == Sheet::music_phone)
         hints = {{ui::Button::circle, songs_arrived_.empty() ? "Done" : "Choose its clip"}};
+    else if (sheet_ == Sheet::pictures_phone)
+        hints = {{ui::Button::circle, pictures_arrived_.empty() ? "Done" : "Show them"}};
+    else if (sheet_ == Sheet::place)
+        hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Move here"}, {ui::Button::circle, "Cancel"}};
+    else if (screen_ == Screen::home)
+    {
+        if (moving_)
+            hints = {{ui::Button::dpad, "Move"}, {ui::Button::cross, "Put it here"}, {ui::Button::circle, "Cancel"}};
+        else
+        {
+            hints.push_back({ui::Button::dpad, "Choose"});
+            if (home_in_rows_)
+                hints.push_back({ui::Button::cross, home_category_ < 3 ? "Move to\xE2\x80\xA6" : "Select"});
+            else
+                hints.push_back({ui::Button::cross, "Open"});
+            // a game on the Games row can be moved along it
+            if (home_in_rows_ && home_category_ == 0)
+            {
+                const std::vector<int> rows = home_rows(0);
+                const int row = home_row_[0];
+                if (row < static_cast<int>(rows.size()) &&
+                    tiles_[static_cast<std::size_t>(rows[static_cast<std::size_t>(row)])].kind != "system")
+                    hints.push_back({ui::Button::square, "Reorder"});
+            }
+            hints.push_back({ui::Button::l1, "Category", ui::Button::r1});
+            hints.push_back({ui::Button::r2, "Apply changes"});
+            hints.push_back({ui::Button::circle, home_in_rows_ ? "Back" : "Close"});
+        }
+    }
     else if (sheet_ == Sheet::music_confirm)
     {
         if (!music_applying_)
@@ -3346,13 +3463,16 @@ void App::draw_hints(gfx::DrawList &list) const
                  {ui::Button::cross, "Use this"}, {ui::Button::circle, "Back"}};
     else
     {
-        if (focused_art())
+        const Art *art = focused_art();
+        if (art && art->add)
+            hints.push_back({ui::Button::cross, "Send pictures"});
+        else if (art)
         {
             hints.push_back({ui::Button::cross, "Use this"});
             if (slot_ != "logo")
                 hints.push_back({ui::Button::triangle, "Frame"});
         }
-        hints.push_back({ui::Button::square, "Another game"});
+        hints.push_back({ui::Button::square, key_state_ == "user" ? "Another game" : "Add your key"});
         hints.push_back({ui::Button::circle, "Back"});
     }
     if (hints.empty())

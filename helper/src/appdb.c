@@ -94,7 +94,7 @@ bool appdb_backup(sqlite3 *db, char *err, size_t errlen)
     return true;
 }
 
-static bool has_column(sqlite3 *db, const char *table, const char *column)
+bool appdb_has_column(sqlite3 *db, const char *table, const char *column)
 {
     sqlite3_stmt *st = NULL;
     bool has = false;
@@ -113,7 +113,7 @@ int appdb_title(const char *id, appdb_title_t *out, char *err, size_t errlen)
     sqlite3 *db = appdb_open(SQLITE_OPEN_READONLY, err, errlen);
     if (db == NULL)
         return -1;
-    out->art_known = has_column(db, "tbl_contentinfo", "pic0Info") && has_column(db, "tbl_contentinfo", "snd0Info");
+    out->art_known = appdb_has_column(db, "tbl_contentinfo", "pic0Info") && appdb_has_column(db, "tbl_contentinfo", "snd0Info");
     sqlite3_stmt *st = NULL;
     int found = -1;
     if (sqlite3_prepare_v2(db,
@@ -497,7 +497,7 @@ bool appdb_rename(const char *id, const names_t *names, char *err, size_t errlen
             ok = false;
         }
     }
-    if (ok && has_column(db, "tbl_contentinfo", "AppInfoJson") &&
+    if (ok && appdb_has_column(db, "tbl_contentinfo", "AppInfoJson") &&
         (info = one_text(db, "SELECT AppInfoJson FROM tbl_contentinfo WHERE titleId = ?1", id)) != NULL &&
         info[0] != 0) {
         new_info = json_renamed(info, false, names, &titles);
@@ -517,7 +517,7 @@ bool appdb_rename(const char *id, const names_t *names, char *err, size_t errlen
         own = count != NULL && strcmp(count, "1") == 0;
         free(count);
     }
-    if (ok && own && has_column(db, "tbl_conceptmetadata", "ConceptInfoJson") &&
+    if (ok && own && appdb_has_column(db, "tbl_conceptmetadata", "ConceptInfoJson") &&
         (concept = one_text(db, "SELECT ConceptInfoJson FROM tbl_conceptmetadata WHERE localConceptId = ?1", local)) !=
             NULL &&
         concept[0] != 0) {
@@ -527,7 +527,7 @@ bool appdb_rename(const char *id, const names_t *names, char *err, size_t errlen
             ok = false;
         }
     }
-    if (ok && own && has_column(db, "tbl_conceptmetadata", "conceptName"))
+    if (ok && own && appdb_has_column(db, "tbl_conceptmetadata", "conceptName"))
         ok = new_concept ? run(db,
                                "UPDATE tbl_conceptmetadata SET conceptName = ?1, ConceptInfoJson = ?2 "
                                "WHERE localConceptId = ?3",
@@ -551,18 +551,18 @@ bool appdb_rename(const char *id, const names_t *names, char *err, size_t errlen
     for (int i = 0; ok && i < ntables; i++) {
         char sql[200];
         const bool icons = strncmp(tables[i], "tbl_concepticoninfo_", 20) != 0;
-        if (icons && has_column(db, tables[i], "titleName") && has_column(db, tables[i], "titleId")) {
+        if (icons && appdb_has_column(db, tables[i], "titleName") && appdb_has_column(db, tables[i], "titleId")) {
             snprintf(sql, sizeof(sql), "UPDATE \"%s\" SET titleName = ?1 WHERE titleId = ?2", tables[i]);
             ok = run(db, sql, name, id, NULL);
             users++;
         }
-        if (!icons && has_column(db, tables[i], "primaryTitleName") && has_column(db, tables[i], "primaryTitleId")) {
+        if (!icons && appdb_has_column(db, tables[i], "primaryTitleName") && appdb_has_column(db, tables[i], "primaryTitleId")) {
             snprintf(sql, sizeof(sql), "UPDATE \"%s\" SET primaryTitleName = ?1 WHERE primaryTitleId = ?2", tables[i]);
             ok = run(db, sql, name, id, NULL);
             users++;
         }
-        if (ok && !icons && own && has_column(db, tables[i], "conceptName") &&
-            has_column(db, tables[i], "localConceptId")) {
+        if (ok && !icons && own && appdb_has_column(db, tables[i], "conceptName") &&
+            appdb_has_column(db, tables[i], "localConceptId")) {
             snprintf(sql, sizeof(sql), "UPDATE \"%s\" SET conceptName = ?1 WHERE localConceptId = ?2", tables[i]);
             ok = run(db, sql, name, local, NULL);
         }

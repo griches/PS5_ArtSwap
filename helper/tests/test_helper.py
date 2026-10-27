@@ -9,7 +9,10 @@
 # /data/homebrew with a registered and an unregistered title. The PS5 title's
 # art is a real one of ours (Eternal Darkness: icon0.png, BC7 pic0/pic1.dds).
 # Then runs the host helper on it and checks every request, the files written
-# (format, size, header, levels), the .old originals, and restoring them.
+# (format, size, header, levels), the .old originals, and restoring them; the
+# person's own pictures; and, on a console of its own, the home screen's
+# layout (a made-up database with two users, then a copy of Gary's real one
+# when this machine has it).
 # Needs network access and a SteamGridDB key: SGDB_KEY in .env goes into the
 # made-up console's /data/artswap/apikey.txt, as a person's own key would.
 #
@@ -265,6 +268,444 @@ def dds_info(path):
     return data[:148], len(data)
 
 
+def pictures_tests(h, base, work):
+    """The person's own pictures: the folder, mine: pictures in the picker's requests, and sent from a phone"""
+    folder = base / "data/artswap/pictures"
+    rows = h.rows("PICTURES")
+    check(rows and rows[0] == ["folder", str(folder)] and not [r for r in rows if r[0] == "F"],
+          f"PICTURES: the folder, empty at first ({rows[:2]})")
+    # an icon with a transparent background, a photo, a PNG made see-through by tRNS, and what is not a picture
+    Image.new("RGBA", (600, 400), (255, 255, 255, 0)).save(folder / "Logo art.png")
+    Image.linear_gradient("L").resize((1600, 900)).convert("RGB").save(folder / "photo.jpg", quality=90)
+    Image.new("RGB", (300, 300), (0, 0, 0)).save(folder / "keyed.png", transparency=(0, 0, 0))
+    Image.new("RGB", (256, 256), (10, 200, 90)).save(folder / "plain.PNG")
+    (folder / "notes.txt").write_text("not a picture")
+    (folder / "fake.png").write_bytes(b"\x89PNG but not really")
+    Image.new("RGB", (64, 64)).save(folder / ".hidden.png")
+    (folder / ".upload.png.partial").write_bytes(b"half")
+    now = time.time()
+    for age, name in enumerate(("keyed.png", "photo.jpg", "plain.PNG", "Logo art.png")):
+        os.utime(folder / name, (now - 100 * (age + 1), now - 100 * (age + 1)))
+    found = [r for r in h.rows("PICTURES") if r[0] == "F"]
+    check([r[1] for r in found] == ["keyed.png", "photo.jpg", "plain.PNG", "Logo art.png"],
+          f"PICTURES: PNG and JPEG only, newest first ({[r[1] for r in found]})")
+    info = {r[1]: r[2:] for r in found}
+    check(info.get("photo.jpg", [""])[1:] == ["1600", "900", "0"], f"PICTURES: a JPEG's size, no alpha ({info.get('photo.jpg')})")
+    check(info.get("Logo art.png", [""])[1:] == ["600", "400", "1"], "PICTURES: a PNG with an alpha channel")
+    check(info.get("keyed.png", [""])[3] == "1" and info.get("plain.PNG", [""])[3] == "0",
+          "PICTURES: tRNS counts as transparent, a plain RGB PNG does not")
+    check(info.get("photo.jpg", ["0"])[0] == str((folder / "photo.jpg").stat().st_size), "PICTURES: the size in bytes")
+
+    w, hh, _ = h.ask("THUMB", "mine:photo.jpg", "160", "160")
+    check((w, hh) == (160, 90), f"THUMB takes one of the person's pictures ({w}x{hh})")
+    w, hh, _ = h.ask("PREVIEW", "mine:photo.jpg", "icon", "cover", "0", "0", "512", "512")
+    check((w, hh) == (512, 512), f"PREVIEW frames one as an icon ({w}x{hh})")
+    for bad in ("mine:../apikey.txt", "mine:.hidden.png", "mine:missing.png", "mine:", "mine:a\\b.png"):
+        try:
+            h.ask("THUMB", bad, "64", "64")
+            check(False, f"{bad} is refused")
+        except HelperError as e:
+            check(True, f"{bad} is refused ({e})")
+    cache = base / "data/artswap/cache"
+    before = len(list(cache.glob("*"))) if cache.exists() else 0
+    icon = base / "user/appmeta/PPSA99314/icon0.png"
+    report = h.rows("APPLY", "PPSA99314", "icon", "mine:photo.jpg", "cover", "0", "0")
+    check(sum(r[0] == "W" for r in report) >= 2 and Image.open(icon).size == (512, 512),
+          f"APPLY writes one of the person's pictures as the icon ({sum(r[0] == 'W' for r in report)} files)")
+    check((len(list(cache.glob("*"))) if cache.exists() else 0) == before, "the person's pictures are never cached")
+    report = h.rows("LOGO", "PPSA99314", "mine:Logo art.png")
+    check(any(r[0] == "W" for r in report) and logo_info(base, "PPSA99314").startswith("/user/appmeta/PPSA99314/logo.png"),
+          "LOGO takes a transparent PNG of the person's")
+    report = h.rows("LOGO", "PPSA99314", "mine:photo.jpg")
+    logo = Image.open(base / "user/appmeta/PPSA99314/logo.png")
+    check(logo.format == "PNG", f"LOGO turns a JPEG of the person's into a PNG ({logo.format} {logo.size})")
+    h.rows("RESTORE", "PPSA99314", "logo")
+    h.rows("RESTORE", "PPSA99314", "icon")
+
+    check(h.ask("PICDEL", "plain.PNG") == "" and not (folder / "plain.PNG").exists(), "PICDEL deletes a picture")
+    check("plain.PNG" not in [r[1] for r in h.rows("PICTURES") if r[0] == "F"], "... and PICTURES no longer lists it")
+    for bad in ("../apikey.txt", ".hidden.png", "missing.png"):
+        try:
+            h.ask("PICDEL", bad)
+            check(False, f"PICDEL {bad} is refused")
+        except HelperError as e:
+            check(True, f"PICDEL {bad} is refused ({e})")
+    check((base / "data/artswap/apikey.txt").exists() and (folder / ".hidden.png").exists(),
+          "PICDEL leaves anything else alone")
+
+    # sent from a phone
+    rows = dict(r[:2] for r in h.rows("PHONE", "5151", "pictures"))
+    check(rows.get("port") == str(PHONE_PORT), f"PHONE ... pictures opens the page ({rows})")
+    page = f"http://127.0.0.1:{PHONE_PORT}"
+    time.sleep(0.5)
+    html = urllib.request.urlopen(page + "/5151", timeout=5).read().decode()
+    check("Send pictures to your PS5" in html and "value='5151'" in html and "accept='image/*'" in html,
+          "the pictures page carries the code")
+    check("createImageBitmap" in html and "(sent as PNG)" in html and "/\\.png$/i" in html,
+          "the pictures page turns other pictures into PNGs on the phone")
+    (work / "shots/phone-pictures.html").write_text(html)
+
+    def put(code, name, body):
+        req = urllib.request.Request(f"{page}/upload?code={code}&name={urllib.parse.quote(name)}", data=body, method="PUT")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, e.read().decode()
+            except OSError:  # answered before the body was read, and closed
+                return e.code, ""
+
+    import io
+    png = io.BytesIO()
+    Image.new("RGBA", (512, 512), (200, 40, 40, 128)).save(png, "PNG")
+    png = png.getvalue()
+    status, _ = put("5151", "From my phone.png", png)
+    check(status == 200 and (folder / "From my phone.png").read_bytes() == png, f"a phone sends a picture ({status})")
+    jpg = (folder / "photo.jpg").read_bytes()
+    import http.client
+    conn = http.client.HTTPConnection("127.0.0.1", PHONE_PORT, timeout=30)
+    conn.putrequest("PUT", "/upload?code=5151&name=" + urllib.parse.quote("IMG_0001.JPG"))
+    conn.putheader("Transfer-Encoding", "chunked")
+    conn.endheaders()
+    for at in range(0, len(jpg), 30000):
+        piece = jpg[at:at + 30000]
+        conn.send(b"%x\r\n" % len(piece) + piece + b"\r\n")
+    conn.send(b"0\r\n\r\n")
+    status = conn.getresponse().status
+    conn.close()
+    check(status == 200 and (folder / "IMG_0001.JPG").read_bytes() == jpg, f"a picture sent in chunks arrives whole ({status})")
+    status, text = put("5151", "sneaky.png", b"<html>not a picture</html>")
+    check(status == 400 and "PNG and JPEG" in text and not (folder / "sneaky.png").exists(),
+          f"a file that is not a PNG or a JPEG is deleted ({status} {text})")
+    status, _ = put("5151", "song.mp3", png)
+    check(status == 400, "only .png, .jpg and .jpeg names")
+    status, _ = put("5151", "../../apikey.png", png)
+    check(status == 200 and (folder / "apikey.png").exists() and not (base / "apikey.png").exists(),
+          "a name with folders in it lands in the pictures folder")
+    check(put("1111", "x.png", png)[0] == 403, "a wrong code sends no picture")
+    conn = http.client.HTTPConnection("127.0.0.1", PHONE_PORT, timeout=30)
+    conn.putrequest("PUT", "/upload?code=5151&name=huge.png")
+    conn.putheader("Content-Length", str(41 << 20))
+    conn.endheaders()
+    response = conn.getresponse()
+    check(response.status == 413 and "40 MB" in response.read().decode(), f"a picture over 40 MB is refused ({response.status})")
+    conn.close()
+    check(not list(folder.glob(".*partial")) or [p.name for p in folder.glob(".*partial")] == [".upload.png.partial"],
+          "no partial picture is left")
+    names = [r[1] for r in h.rows("PICTURES") if r[0] == "F"]
+    check(names[:2] == ["apikey.png", "IMG_0001.JPG"] or set(names[:3]) >= {"apikey.png", "IMG_0001.JPG"},
+          f"what a phone sent comes first ({names[:4]})")
+    try:
+        urllib.request.urlopen(page + "/upload?code=5151&name=x.png", data=b"x", timeout=5)
+        check(False, "a POST sends nothing to the pictures page")
+    except urllib.error.HTTPError as e:
+        check(e.code == 404, f"a POST sends nothing to the pictures page ({e.code})")
+    h.ask("PHONE")
+    time.sleep(1.0)
+
+
+# ---- the home screen's layout (layout.c), on a console of its own ----
+
+LAYOUT_PORT = 19317
+U1, U2 = "0349465199", "0123456789"
+TIME_COLUMNS = ("lastAccessTime", "lastPlayedDate", "lastPlayedDateOnConsole", "recentActivityDatePlayedOrPurchased",
+                "recentActivityDatePlayedOrInstalled")
+
+
+def make_layout_db(path):
+    """A home-screen database with the layout's tables, as 13.60's: two users (the second with fewer tiles), games,
+    a media tool, the system's tiles (two in MyHome, one hidden, a disc placeholder) and an uninstalled leftover"""
+    db = sqlite3.connect(path)
+    for user in (U1, U2):
+        db.execute(f"CREATE TABLE tbl_iconinfo_{user} (titleId TEXT NOT NULL, titleName TEXT COLLATE NOCASE, "
+                   "localConceptId TEXT, lastAccessTime DATETIME, lastAccessIndex INT, lastPlayedDate DATETIME, "
+                   "lastPlayedIndex INT, lastPlayedDateOnConsole DATETIME, recentActivityDatePlayedOrPurchased DATETIME, "
+                   "recentActivityDatePlayedOrInstalled DATETIME, installStatus INT, dispLocation INT, visible INT, "
+                   "PRIMARY KEY(titleId))")
+        db.execute(f"CREATE TABLE tbl_concepticoninfo_{user} (localConceptId TEXT NOT NULL, conceptName TEXT, "
+                   "lastAccessIndex INT, lastPlayedDate DATETIME, lastPlayedDateOnConsole DATETIME, "
+                   "lastInteractedTime DATETIME, dispLocation INT, PRIMARY KEY(localConceptId))")
+        db.execute(f"CREATE TABLE tbl_group_{user} (itemId TEXT NOT NULL, groupName TEXT NOT NULL, type TEXT NOT NULL, "
+                   "idx INT, lastModifiedDate TEXT, PRIMARY KEY(itemId, groupName))")
+        db.execute(f"INSERT INTO tbl_group_{user} VALUES ('NPXS40047', 'MyHome', 'title', 1, NULL)")
+        db.execute(f"INSERT INTO tbl_group_{user} VALUES ('NPXS40071', 'MyHome', 'title', 2, NULL)")
+        db.execute(f"INSERT INTO tbl_group_{user} VALUES ('NPXS40071', 'Other', 'title', 1, NULL)")
+    db.execute("CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT, localConceptId TEXT, lastAccessTime DATETIME, "
+               "lastAccessIndex INT, dispLocation INT, installStatus INT)")
+    db.execute("CREATE TABLE tbl_conceptmetadata (localConceptId TEXT NOT NULL, conceptName TEXT, lastAccessTime DATETIME, "
+               "lastAccessIndex INT, dispLocation INT, installStatus INT, PRIMARY KEY(localConceptId))")
+    db.execute("CREATE TABLE tbl_version (category TEXT, status INT)")
+    db.executemany("INSERT INTO tbl_version VALUES (?, ?)", [("access_index", 900), ("played_index", 300)])
+    # id, title name, concept name, index, played, install, dispLocation, visible
+    tiles = [("PPSA00001", "game one (old)", "Game One", 880, None, 2, 138, 1),
+             ("PPSA00002", "Game Two", "Game Two", 870, None, 2, 138, 1),
+             ("PPSA00003", "Game Three", "Game Three", 860, "2026-10-20 10:00:00.000", 2, 138, 1),
+             ("ORBT00001", "Orbit Store", "Orbit Store", 850, None, 2, 188, 1),
+             ("PPSA00009", "Gone", "Gone", 840, None, 0, 138, 0),
+             ("NPXS40047", "PlayStation Store", "PlayStation Store", 2, None, 2, 146, 1),
+             ("NPXS40071", "Game Library", "Game Library", 4, None, 2, 146, 1),
+             ("NPXS40053", "Discover", "Discover", 0, None, 2, 149, 0),
+             ("NPXS40140", "Disc Player", "Disc Player", 0, None, 2, 157, 0)]
+    for i, (tid, name, concept_name, index, played, install, disp, visible) in enumerate(tiles):
+        local = f"cid:local:{tid}"
+        when = f"2026-10-2{i % 3} 1{i}:00:00.000"
+        for user in (U1, U2):
+            if user == U2 and tid == "PPSA00003":
+                continue
+            db.execute(f"INSERT INTO tbl_iconinfo_{user} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (tid, name, local, when, index, played, 690 if played else None, played, played, when, install,
+                        disp, visible))
+            db.execute(f"INSERT INTO tbl_concepticoninfo_{user} VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (local, concept_name, index, played, played, when, disp + 2048))
+        db.execute("INSERT INTO tbl_contentinfo VALUES (?, ?, ?, ?, ?, ?, ?)", (tid, name, local, when, index, disp, install))
+        db.execute("INSERT INTO tbl_conceptmetadata VALUES (?, ?, ?, ?, ?, ?)", (local, concept_name, when, index, disp, install))
+    db.commit()
+    db.close()
+
+
+def home_restart(h, what):
+    """Apply changes, with Art Swap already closed; the HOMESTATE line at the end"""
+    title = subprocess.Popen(["true"])
+    title.wait()
+    h.rows("HOME", str(title.pid))
+    end = time.time() + 15
+    state = None
+    while time.time() < end:
+        state = next(r for r in h.rows("HOMESTATE") if r[0] == "home")
+        if state[1] in ("done", "failed"):
+            break
+        time.sleep(0.2)
+    check(state is not None and state[1] == "done", f"{what}: Apply changes finishes ({state})")
+    h.rows("HOMESTATE", "seen")
+    return state
+
+
+def table_rows(path, table, key):
+    db = sqlite3.connect(path)
+    db.row_factory = sqlite3.Row
+    rows = {r[key]: dict(r) for r in db.execute(f"SELECT * FROM \"{table}\"")}
+    db.close()
+    return rows
+
+
+def run_layout_helper(base, env_extra=None):
+    env = dict(os.environ, ARTSWAP_ROOT=str(base), ARTSWAP_PORT=str(LAYOUT_PORT), ARTSWAP_PHONE_PORT="19318",
+               ARTSWAP_LAN="127.0.0.1", ARTSWAP_SMP_PORT="19301")
+    log = open(base.parent / f"{base.name}.out", "w")
+    proc = subprocess.Popen([str(ROOT / "build/helper-host/artswapd")], env=env, stdout=log, stderr=subprocess.STDOUT)
+    check(wait_port(LAYOUT_PORT), f"the helper listens on {base.name}")
+    return proc, log, Helper(port=LAYOUT_PORT)
+
+
+def layout_tests(work):
+    base = work / "layout-console"
+    db_path = base / "system_data/priv/mms/app.db"
+    db_path.parent.mkdir(parents=True)
+    (base / "data/artswap").mkdir(parents=True)
+    make_layout_db(db_path)
+    proc, log, h = run_layout_helper(base)
+    try:
+        rows = h.rows("LAYOUT")
+        check(rows[0] == ["order", "none"], f"LAYOUT: no order of Art Swap's ({rows[0]})")
+        tiles = [r for r in rows if r[0] == "T"]
+        check([r[1] for r in tiles] == ["PPSA00001", "PPSA00002", "PPSA00003", "ORBT00001", "NPXS40047", "NPXS40071",
+                                        "NPXS40053"],
+              f"LAYOUT: the games by recency, then the system's tiles, MyHome first; no disc placeholder or leftover "
+              f"({[r[1] for r in tiles]})")
+        by_id = {r[1]: r for r in tiles}
+        check(by_id["PPSA00001"][2:] == ["games", "games", "game", "Game One"], f"LAYOUT: a game, by its concept's name ({by_id['PPSA00001']})")
+        check(by_id["ORBT00001"][2:4] == ["media", "media"], "LAYOUT: a tool on the Media row")
+        check(by_id["NPXS40047"][2:5] == ["games", "games", "system"] and by_id["NPXS40053"][2:4] == ["hidden", "hidden"],
+              "LAYOUT: a system tile in MyHome is on Games; one not shown is hidden")
+
+        answer = h.rows("PLACE", "PPSA00002", "media")
+        check(answer == [["T", "PPSA00002", "media", "games", "game", "Game Two"]],
+              f"PLACE: the wish, where != now until Apply changes ({answer})")
+        h.rows("PLACE", "ORBT00001", "hidden")
+        h.rows("PLACE", "NPXS40053", "games")
+        h.rows("PLACE", "NPXS40047", "media")
+        for bad, why in ((("PPSA12345", "games"), "no such tile"), (("NPXS40140", "games"), "no such tile"),
+                         (("PPSA00001", "sideways"), "games, media or hidden")):
+            try:
+                h.ask("PLACE", *bad)
+                check(False, f"PLACE {bad} is refused")
+            except HelperError as e:
+                check(why in str(e), f"PLACE {bad} is refused ({e})")
+        h.rows("PLACE", "PPSA00003", "media")
+        h.rows("PLACE", "PPSA00003", "games")
+        layout_txt = (base / "data/artswap/layout.txt").read_text()
+        check("PPSA00003" not in layout_txt, "PLACE back where it is clears the wish")
+        pend = sorted(tuple(r[1:]) for r in h.rows("PENDING") if r[0] == "P")
+        check(pend == [("NPXS40047", "layout"), ("NPXS40053", "layout"), ("ORBT00001", "layout"), ("PPSA00002", "layout")],
+              f"PENDING: each tile moved waits for Apply changes ({pend})")
+
+        ids = ["PPSA00003", "PPSA00001"] + [f"FAKE{i:05d}" for i in range(148)]
+        answer = h.rows("ORDER", "locked", *ids)
+        check(answer == [["order", "locked"]], f"ORDER locked with {len(ids)} ids ({answer})")
+        check("\t".join(["seq"] + ids) in (base / "data/artswap/layout.txt").read_text(), "every id of the order is kept")
+        games = [r[1] for r in h.rows("LAYOUT") if r[0] == "T" and r[4] == "game"]
+        check(games[:2] == ["PPSA00003", "PPSA00001"] and h.rows("LAYOUT")[0] == ["order", "locked"],
+              f"LAYOUT: the order wished, locked ({games})")
+        check(("order", "layout") in [tuple(r[1:]) for r in h.rows("PENDING") if r[0] == "P"], "PENDING: the order waits")
+        try:
+            h.ask("ORDER", "sideways")
+            check(False, "ORDER with an unknown mode is refused")
+        except HelperError as e:
+            check(True, f"ORDER with an unknown mode is refused ({e})")
+
+        home_restart(h, "the layout")
+        check((base / "data/artswap/app.db.backup").exists(), "the database is copied aside before the layout is written")
+        db = sqlite3.connect(db_path)
+        check(db.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "the database passes its check")
+        db.close()
+        for user in (U1, U2):
+            icon = table_rows(db_path, f"tbl_iconinfo_{user}", "titleId")
+            concept = table_rows(db_path, f"tbl_concepticoninfo_{user}", "localConceptId")
+            group = [r[0] for r in sqlite3.connect(db_path).execute(
+                f"SELECT itemId FROM tbl_group_{user} WHERE groupName = 'MyHome' ORDER BY idx")]
+            check(icon["PPSA00002"]["dispLocation"] == 140 and icon["PPSA00002"]["visible"] == 1 and
+                  concept["cid:local:PPSA00002"]["dispLocation"] == 140 + 2048,
+                  f"user {user}: a game moved to Media (the Games bit off, the Media bit on, nothing else)")
+            check(icon["ORBT00001"]["visible"] == 0 and icon["ORBT00001"]["dispLocation"] == 188,
+                  f"user {user}: a tool hidden, its row left as it was")
+            check(icon["NPXS40053"]["visible"] == 1 and icon["NPXS40053"]["dispLocation"] & 0x06 == 0x02,
+                  f"user {user}: a hidden system tile shown on Games")
+            check(group == ["NPXS40053", "NPXS40071"],
+                  f"user {user}: MyHome: the Store out, Discover in before Game Library ({group})")
+            check(icon["NPXS40047"]["dispLocation"] & 0x06 == 0x04, f"user {user}: the Store on the Media row")
+            if user == U1:
+                check(icon["PPSA00003"]["lastAccessIndex"] == 1000000000 and
+                      icon["PPSA00003"]["lastAccessTime"] == "2099-12-31 12:00:00.000" and
+                      icon["PPSA00003"]["lastPlayedDate"] == "2099-12-31 12:00:00.000",
+                      f"locked: the first game far in the future ({icon['PPSA00003']['lastAccessIndex']})")
+            check(icon["PPSA00001"]["lastAccessIndex"] == 999999999 and
+                  icon["PPSA00001"]["lastAccessTime"] == "2099-12-31 11:59:00.000" and
+                  icon["PPSA00001"]["lastPlayedDate"] is None and icon["PPSA00001"]["lastPlayedIndex"] is None,
+                  f"user {user}: the second a minute before; a game never played stays never played")
+            check(icon["PPSA00002"]["lastAccessIndex"] == 870, f"user {user}: a game moved to Media keeps its recency")
+            check(group == ["NPXS40053", "NPXS40071"] and sqlite3.connect(db_path).execute(
+                f"SELECT count(*) FROM tbl_group_{user} WHERE groupName = 'Other'").fetchone()[0] == 1,
+                f"user {user}: other groups left alone")
+        content = table_rows(db_path, "tbl_contentinfo", "titleId")
+        meta = table_rows(db_path, "tbl_conceptmetadata", "localConceptId")
+        check(content["PPSA00002"]["dispLocation"] == 140 and meta["cid:local:PPSA00002"]["dispLocation"] == 140 and
+              content["PPSA00003"]["lastAccessIndex"] == 1000000000 and
+              meta["cid:local:PPSA00001"]["lastAccessTime"] == "2099-12-31 11:59:00.000",
+              "tbl_contentinfo and tbl_conceptmetadata too")
+        version = dict(sqlite3.connect(db_path).execute("SELECT category, status FROM tbl_version").fetchall())
+        check(version == {"access_index": 900, "played_index": 300}, f"locked: the console's counters untouched ({version})")
+        check(not [r for r in h.rows("PENDING") if r[0] == "P"], "nothing waits after Apply changes")
+        check("place\tPPSA00002\tmedia\tgames" in (base / "data/artswap/layout.txt").read_text(),
+              "the wishes are kept, for the next Apply changes")
+        tiles = {r[1]: r for r in h.rows("LAYOUT") if r[0] == "T"}
+        check(tiles["PPSA00002"][2:4] == ["media", "media"] and tiles["NPXS40047"][2:4] == ["media", "media"],
+              "LAYOUT: where == now once written")
+
+        # something put a tile back (a firmware update): the next Apply changes puts it right
+        db = sqlite3.connect(db_path)
+        db.execute(f"UPDATE tbl_iconinfo_{U1} SET dispLocation = 138 WHERE titleId = 'PPSA00002'")
+        db.execute(f"UPDATE tbl_iconinfo_{U1} SET lastAccessIndex = 901 WHERE titleId = 'PPSA00001'")
+        db.commit()
+        db.close()
+        pend = sorted(tuple(r[1:]) for r in h.rows("PENDING") if r[0] == "P")
+        check(pend == [("PPSA00002", "layout"), ("order", "layout")], f"PENDING: a tile put back, a locked game played ({pend})")
+        home_restart(h, "the layout again")
+        icon = table_rows(db_path, f"tbl_iconinfo_{U1}", "titleId")
+        check(icon["PPSA00002"]["dispLocation"] == 140 and icon["PPSA00001"]["lastAccessIndex"] == 999999999,
+              "Apply changes writes the layout again")
+
+        # unlocked: written once in the order it has, now, with the console's counters raised
+        check(h.rows("ORDER", "none") == [["order", "free"]], "ORDER none after locked: written once more, free")
+        check(("order", "layout") in [tuple(r[1:]) for r in h.rows("PENDING") if r[0] == "P"], "PENDING: the order waits")
+        home_restart(h, "the order freed")
+        icon = table_rows(db_path, f"tbl_iconinfo_{U1}", "titleId")
+        version = dict(sqlite3.connect(db_path).execute("SELECT category, status FROM tbl_version").fetchall())
+        games = 2  # on the Games row: Game Three and Game One (Game Two is on Media)
+        check(version == {"access_index": 900 + games, "played_index": 300 + games},
+              f"free: the console's counters go on from the new order ({version})")
+        check(icon["PPSA00003"]["lastAccessIndex"] == 902 and icon["PPSA00001"]["lastAccessIndex"] == 901 and
+              icon["PPSA00003"]["lastAccessTime"].startswith(time.strftime("%Y-", time.gmtime())),
+              f"free: the same order, as now ({icon['PPSA00003']['lastAccessIndex']}, {icon['PPSA00001']['lastAccessIndex']})")
+        check(h.rows("LAYOUT")[0] == ["order", "none"] and "dirty" not in (base / "data/artswap/layout.txt").read_text() and
+              "order\tnone" in (base / "data/artswap/layout.txt").read_text(), "free goes back to none once written")
+        check(not [r for r in h.rows("PENDING") if r[0] == "P"], "nothing waits")
+
+        # back where it began: kept until written, then forgotten
+        h.rows("PLACE", "PPSA00002", "games")
+        check(("PPSA00002", "layout") in [tuple(r[1:]) for r in h.rows("PENDING") if r[0] == "P"],
+              "PLACE back to where it began waits until the home screen shows it")
+        home_restart(h, "a tile put back")
+        check(table_rows(db_path, f"tbl_iconinfo_{U1}", "titleId")["PPSA00002"]["dispLocation"] == 138 and
+              "PPSA00002" not in (base / "data/artswap/layout.txt").read_text(),
+              "... then the wish is forgotten")
+        h.ask("BYE")
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        log.close()
+
+    # a console's own database (ARTSWAP_REAL_APPDB, a copy of /system_data/priv/mms/app.db; 13.60's was used):
+    # only the layout's cells change
+    real = Path(os.environ.get("ARTSWAP_REAL_APPDB", ""))
+    if not os.environ.get("ARTSWAP_REAL_APPDB") or not real.is_file():
+        print("skip the real database: set ARTSWAP_REAL_APPDB to a copy of a console's app.db")
+        return
+    base = work / "layout-real"
+    db_path = base / "system_data/priv/mms/app.db"
+    db_path.parent.mkdir(parents=True)
+    (base / "data/artswap").mkdir(parents=True)
+    shutil.copy(real, db_path)
+    before = sqlite3.connect(db_path)
+    tables = [r[0] for r in before.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+    snapshot = {t: before.execute(f"SELECT rowid, * FROM \"{t}\"").fetchall() for t in tables}
+    columns = {t: ["rowid"] + [r[1] for r in before.execute(f"PRAGMA table_info(\"{t}\")")] for t in tables}
+    before.close()
+    proc, log, h = run_layout_helper(base)
+    try:
+        tiles = [r for r in h.rows("LAYOUT") if r[0] == "T"]
+        check(len(tiles) == 48, f"the real database: LAYOUT lists its tiles ({len(tiles)})")
+        h.rows("PLACE", "PPSA99318", "media")
+        h.rows("PLACE", "NPXS40047", "hidden")
+        h.rows("ORDER", "locked", "PPSA99000", "PPSA01325")
+        home_restart(h, "the real database")
+        h.ask("BYE")
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        log.close()
+    after = sqlite3.connect(db_path)
+    check(after.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "the real database passes its check")
+    allowed = {"dispLocation", "visible", "lastAccessIndex", "lastPlayedIndex", "lastInteractedTime", *TIME_COLUMNS}
+    changed = {}
+    for t in tables:
+        now = after.execute(f"SELECT rowid, * FROM \"{t}\"").fetchall()
+        if t.startswith("tbl_group_"):
+            others = lambda rows: sorted(r for r in rows if r[2] != "MyHome")  # noqa: E731
+            if others(now) != others(snapshot[t]):
+                changed.setdefault(t, set()).add("groups other than MyHome")
+            continue
+        old = {r[0]: r for r in snapshot[t]}
+        if len(now) != len(old):
+            changed.setdefault(t, set()).add("rows added or removed")
+        for row in now:
+            was = old.get(row[0])
+            for i, column in enumerate(columns[t]):
+                if was is None or was[i] != row[i]:
+                    changed.setdefault(t, set()).add(column)
+    myhome = [r[0] for r in after.execute(f"SELECT itemId FROM tbl_group_{U1} WHERE groupName = 'MyHome' ORDER BY idx")]
+    after.close()
+    stray = {t: c - allowed for t, c in changed.items() if c - allowed}
+    check(not stray, f"the real database: only the layout's cells change ({stray or sorted(set().union(*changed.values()))})")
+    check(myhome == ["NPXS40037", "NPXS40071"], f"the real database: the Store taken out of MyHome ({myhome})")
+    icon = table_rows(db_path, f"tbl_iconinfo_{U1}", "titleId")
+    check(icon["PPSA99318"]["dispLocation"] == 140 and icon["PPSA99000"]["lastAccessIndex"] == 1000000000 and
+          icon["PPSA01325"]["lastAccessIndex"] == 999999999 and icon["PPSA99203"]["lastAccessIndex"] == 999999998,
+          "the real database: Art Swap on Media, the Games row locked from ProsperoStore")
+
+
 def main() -> int:
     work = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(tempfile.mkdtemp(prefix="artswap-test-"))
     if work.exists():
@@ -302,7 +743,7 @@ def main() -> int:
         h = Helper(port=PORT)
 
         hello = dict(r[:2] for r in h.rows("HELLO"))
-        check(hello.get("artswapd") == "0.5.1", f"HELLO names the version ({hello})")
+        check(hello.get("artswapd") == "0.6.0", f"HELLO names the version ({hello})")
         check(hello.get("store") == "off", "PlayStation Store logos start off")
         check(hello.get("key") == "user", "the person's key (apikey.txt) is in")
         check(hello.get("lan") == "127.0.0.1", "HELLO gives the console's address")
@@ -856,6 +1297,8 @@ def main() -> int:
         h.ask("PHONE")
         time.sleep(1.0)
 
+        pictures_tests(h, base, work)
+
         # the key
         try:
             h.ask("KEY", "0123456789abcdef0123456789abcdef")
@@ -941,6 +1384,7 @@ def main() -> int:
         if proc.poll() is None:
             proc.kill()
         log.close()
+    layout_tests(work)
     print(f"\n{len(failures)} failed" if failures else "\nall passed")
     print(f"work folder: {work}")
     return 1 if failures else 0

@@ -5,7 +5,8 @@
 [![licence](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](LICENSE)
 
 **Change the icon, background, logo and music of any title on your PS5's home
-screen, with art from [SteamGridDB](https://www.steamgriddb.com) and songs of your own.**
+screen, with art from [SteamGridDB](https://www.steamgriddb.com), pictures and
+songs of your own, and arrange the home screen itself.**
 
 Art Swap lists every title on the console that has home-screen art, finds each
 one on SteamGridDB, shows you that game's art, and writes the one you pick over
@@ -13,9 +14,12 @@ the title's own `icon0` or `pic0`/`pic1`. The original is kept beside it as an
 `.old` file, so Restore can put it back. **Apply changes** (R2) then restarts
 the home screen, and every change shows at once, whatever installed the game:
 a folder, a disk image or a package. A **logo** (□) goes on the game's page in
-place of its name in plain text, and shows straight away.
+place of its name in plain text, and shows straight away. Pictures of your own,
+sent from a phone or computer, sit first in every tab, and the **Home screen**
+page moves tiles between the Games and Media homes, hides them, and locks the
+order of your games.
 
-Title `PPSA99318`, version 1.3.1. Tested on a PS5 with firmware 13.60.
+Title `PPSA99318`, version 1.4.0. Tested on a PS5 with firmware 13.60.
 
 ## What it does
 
@@ -68,6 +72,14 @@ Title `PPSA99318`, version 1.3.1. Tested on a PS5 with firmware 13.60.
   songs from your phone or copy them over FTP, choose the clip to keep, hear it
   as the home screen will, and Art Swap makes the `snd0.at9` on the console:
   see [Music](#music).
+- **Your own pictures**: icons, backgrounds and logos sent from a phone or a
+  computer (the first cell of the picker shows a QR code), or copied into
+  `/data/artswap/pictures`, come first in every tab, for every game, and need
+  no SteamGridDB key: see [Your own pictures](#your-own-pictures).
+- **Arranges the home screen** (OPTIONS, Home screen): any tile on the Games
+  home or the Media home, or hidden from both, and the Games row in an order
+  of your own, locked if you like, so playing a game no longer moves it first:
+  see [The home screen's layout](#the-home-screens-layout).
 - **Renames homebrew** (OPTIONS, Rename) that ShadowMountPlus installed from a folder: the
   new name goes into the title's `param.json` (every language) and, at Apply
   changes, into the home screen's database, which holds the names it shows. No
@@ -101,14 +113,14 @@ L1 R1 L2 R2, OPTIONS, then ○.
 | | □ | change the logo on its page (a game the home screen lists) |
 | | L2 | the order of the games: the home screen's own (most recently used first, to begin with), A to Z, or the games Art Swap changed first; kept for next time, and the shelf starts again at its first game |
 | | R2 | apply changes: restart the home screen so it shows them all (asks first) |
-| | OPTIONS | Music, Rename (homebrew ShadowMountPlus installed from a folder), Restore originals, Settings, Close Art Swap |
+| | OPTIONS | Music, Rename (homebrew ShadowMountPlus installed from a folder), Restore originals, Home screen, Settings, Close Art Swap |
 | | hold OPTIONS | close Art Swap |
 | Pictures | L1 R1 | the Icons, Backgrounds and Logos tabs |
 | | D-pad, left stick | choose a picture |
 | | right stick | slide the part kept, when Fill cuts the picture |
-| | ✕ | use it (asks first) |
+| | ✕ | use it (asks first); on the first cell, send pictures of your own from a phone or computer (a QR code) |
 | | △ | the frame page: which part of the picture is kept (not for a logo, which is used whole) |
-| | □ | another game, or search by name with the keyboard |
+| | □ | another game, or search by name with the keyboard (with no SteamGridDB key: add one) |
 | | ○ | back to the games |
 | Frame | left stick, D-pad | move the part kept |
 | | ✕ | use it (asks first) |
@@ -123,6 +135,11 @@ L1 R1 L2 R2, OPTIONS, then ○.
 | | L1 R1 | move the starting position ten seconds |
 | | L2 R2 | make the clip five seconds shorter, longer |
 | | ○ | back to the games |
+| Home screen | L1 R1, D-pad | Games, Media, Hidden, Order, and the tiles in one |
+| | ✕ | move the tile: Games, Media or Hidden; on Order, lock the order or sort A to Z |
+| | □ | on Games, pick a game up; ↑ ↓ carry it along the row, ✕ puts it down, ○ puts it back |
+| | R2 | apply changes |
+| | ○ | back |
 | Settings | L1 R1, D-pad | the categories, and the rows in one |
 | | ✕ | select |
 | | ○ | back |
@@ -284,13 +301,58 @@ an install registers one, so, for homebrew ShadowMountPlus installed from a
 folder, Art Swap adds `snd0.at9` to the game's `sce_sys` and Apply changes
 installs it again, as for a background it never had; Restore deletes it.
 
+## Your own pictures
+
+The picker's first cell, in every tab, sends pictures of your own: ✕ shows a
+QR code, the console's address and a four-digit code. A phone, or a computer
+on the same network, opens a small page served by the helper (on port 9118,
+as for the key and music), and the pictures chosen on it go straight into
+`/data/artswap/pictures`; the sheet ticks each one off as it arrives. PNG and
+JPEG go as they are; anything else the browser can show (WebP, HEIC on an
+iPhone) is turned into a PNG on the phone first. Copying files into the folder
+over FTP works too.
+
+They come first in the Icons, Backgrounds and Logos tabs, tagged YOURS, newest
+first, for every game, and go through the same frame page and preview as
+SteamGridDB's art. A logo wants a PNG with a see-through background: the page
+says when a picture has none. Without a SteamGridDB key the picker opens all
+the same, with your own pictures, and □ adds a key. Use pictures that are
+yours to use.
+
+## The home screen's layout
+
+OPTIONS, then Home screen, shows the home screen's tiles as the console lists
+them: on the **Games** home, on the **Media** home beside it, or **Hidden**
+from both. ✕ on a tile moves it; tools, players and stores sit well on Media,
+out of the way of your games. Art Swap itself can move to Media, but not be
+hidden, as there would be no way back to it. The system's own tiles
+(PlayStation Store, Game Library) can move or hide too.
+
+**Order** locks the Games row: the home screen puts the game played last
+first, and a locked row stays as it is. □ on a game on the Games page picks it
+up, ↑ ↓ carry it along the row, and ✕ puts it down; Order can also sort the
+games A to Z. Without the lock, the order you set holds until you next play a
+game.
+
+Nothing changes until **Apply changes** (R2), which writes the layout into the
+home screen's database just before the home screen restarts. Art Swap keeps
+what you chose (`/data/artswap/layout.txt`) and writes it again at each Apply
+changes, so an install or a firmware update that put a tile back is put
+right the next time. The database is copied aside first, as for a rename.
+
+This follows elripalda's [psgfx](https://github.com/elripalda/psgfx), whose
+Home layout found which fields the home screen reads: each tile's
+`dispLocation` (Games or Media) and `visible`, the system tiles' places in the
+`MyHome` group, and the dates and counters the Games row is sorted by.
+
 ## The SteamGridDB API key
 
 SteamGridDB's API needs a key, and each person registers their own: it is free,
 and SteamGridDB's terms do not cover sharing one. No key is built into Art Swap.
 
-When Art Swap has no key it says so: on the first start, when ✕ or △ would need
-SteamGridDB, and at the top of the screen. It explains what the key is and how
+When Art Swap has no key it says so: on the first start, in the picker (which
+still has your own pictures; □ there adds a key), and at the top of the
+screen. It explains what the key is and how
 to get one (steamgriddb.com, sign in, Preferences, API), and offers two ways to
 add it:
 
@@ -471,6 +533,8 @@ at `b577e950`, with its UI module. Art Swap's code is in `examples/artswap/kit/`
 - The way to set a logo (the PNG beside the art, `logoImageInfo` in `app.db`)
   was found by ensamvarg360's [Spela](https://github.com/ensamvarg360/spela)
   (GPL-3.0).
+- The **home screen's layout** (`helper/src/layout.c`) follows elripalda's
+  [psgfx](https://github.com/elripalda/psgfx) Home layout (GPL-3.0-or-later).
 - Art Swap's own icon and background were generated for this project
   (sources in `ps5/art/`).
 

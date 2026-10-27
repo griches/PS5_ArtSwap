@@ -4,12 +4,15 @@
  * The API's answers are turned into the TSV lines of protocol.md here, so the
  * title never parses JSON. Pictures are only ever fetched from SteamGridDB's
  * own hosts (and Sony's image server, for PlayStation Store logos, when they
- * are on: store.c), and kept in /data/artswap/cache (trimmed at start-up).
+ * are on: store.c), and kept in /data/artswap/cache (trimmed at start-up). A
+ * picture named mine:<name> is one of the person's own, read from
+ * /data/artswap/pictures (pictures.c), never cached.
  *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "artswap.h"
+#include "pictures.h"
 #include "store.h"
 
 #include "../third_party/cJSON.h"
@@ -216,6 +219,9 @@ static bool allowed(const char *url)
 bool sgdb_fetch(const char *url, buf_t *out, char *err, size_t errlen)
 {
     out->len = 0;
+    /* one of the person's own pictures */
+    if (strncmp(url, PICTURE_SCHEME, strlen(PICTURE_SCHEME)) == 0)
+        return pictures_read(url + strlen(PICTURE_SCHEME), out, err, errlen);
     const bool store = store_picture(url);
     if (!allowed(url) && !(store && config_store_logos())) {
         snprintf(err, errlen, store ? "PlayStation Store logos are off: turn them on in Settings, Games"

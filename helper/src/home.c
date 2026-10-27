@@ -21,6 +21,10 @@
  * renamed titles again too, and the console's uninstall deleted their download
  * data, where some homebrew keeps its saves.)
  *
+ * The layout the person chose (layout.c: the row each tile is on, a locked
+ * order) is written into the database last, every time, just before the
+ * restart.
+ *
  * pending.txt keeps the titles changed since the last restart, one a line: the
  * id, then a tab and "name" for a title waiting for more than a restart (a new
  * name, or an added background or music).
@@ -31,6 +35,7 @@
 #include "home.h"
 #include "appdb.h"
 #include "art.h"
+#include "layout.h"
 #include "logo.h"
 #include "smp.h"
 
@@ -343,6 +348,16 @@ static void *restart_job(void *argument)
     free(job->renamed);
     free(job);
 
+    /* the layout chosen: written at every Apply changes, so one a firmware update put back is put right */
+    char layout_why[300] = "";
+    bool arranged = true;
+    if (layout_waiting()) {
+        set_phase("arranging", "Arranging the home screen");
+        pthread_mutex_lock(&g_apply_lock);
+        arranged = layout_arrange(layout_why, sizeof(layout_why));
+        pthread_mutex_unlock(&g_apply_lock);
+    }
+
     set_phase("restarting", "Restarting the home screen");
 #ifdef ARTSWAP_HOST
     /* the tests' console has no home screen: a file says it would have restarted */
@@ -388,8 +403,11 @@ static void *restart_job(void *argument)
     pending_write(list, kept);
     pthread_mutex_unlock(&g_lock);
     if (failures > 0)
-        set_phase("failed", "The home screen restarted, but %s did not get %s new name, background or music. %s",
-                  failed_names, failures == 1 ? "its" : "their", why);
+        set_phase("failed", "The home screen restarted, but %s did not get %s new name, background or music. %s%s%s",
+                  failed_names, failures == 1 ? "its" : "their", why, arranged ? "" : " It was not arranged either: ",
+                  arranged ? "" : layout_why);
+    else if (!arranged)
+        set_phase("failed", "The home screen restarted, but it was not arranged as you chose. %s", layout_why);
     else
         set_phase("done", ok ? "The home screen restarted with every change" : "");
     return NULL;

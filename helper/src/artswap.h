@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ARTSWAP_VERSION "0.5.1"
+#define ARTSWAP_VERSION "0.6.0"
 #define ARTSWAP_PORT 9117
 
 /* Held while art is written, and while the refresh works in a game's folder as its owner
@@ -103,6 +103,6 @@ bool sgdb_search(const char *term, buf_t *out, char *err, size_t errlen);
 bool sgdb_list(long game, const char *kind, int page, buf_t *out, char *err, size_t errlen);
 bool sgdb_check_key(const char *key, char *err, size_t errlen);
 /* A picture from SteamGridDB's servers (or, with PlayStation Store logos on, Sony's image server), through the
- * download cache */
+ * download cache, or, named mine:<name>, one of the person's own (pictures.c) */
 bool sgdb_fetch(const char *url, buf_t *out, char *err, size_t errlen);
 void sgdb_cache_trim(void);

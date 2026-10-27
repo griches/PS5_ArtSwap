@@ -31,7 +31,7 @@
 namespace artswap
 {
 
-constexpr const char *kVersion = "0.1.0";
+constexpr const char *kVersion = "1.4.0";
 
 struct TextureSink
 {
@@ -100,6 +100,7 @@ class App
         settings, // full page: a rail of categories, a panel (settings.cpp)
         connect,  // full page: adding the SteamGridDB key, the QR code showing (settings.cpp)
         music,    // the music the tile plays: a clip of a song of the person's (music.cpp)
+        home,     // full page: where each tile goes on the home screen, and the order (home.cpp)
     };
     enum class Sheet
     {
@@ -111,9 +112,11 @@ class App
         restore,
         refresh, // Rename: the new name, then installing the game again so the home screen shows it
         apply,   // Apply changes: the home screen restarts to show every change
-        menu,    // OPTIONS: Music, Rename, Restore originals, Settings, Close Art Swap
+        menu,    // OPTIONS: Music, Rename, Restore originals, Home screen, Settings, Close Art Swap
         music_phone,   // sending music from a phone: the QR code
         music_confirm, // the clip as the game's music?
+        pictures_phone, // sending pictures from a phone or computer: the QR code (pictures.cpp)
+        place,          // the home screen page: Games, Media or hidden, for one tile (home.cpp)
     };
     // The order of the games on the shelf (L2)
     enum class Sort
@@ -198,7 +201,8 @@ class App
     {
         art,
         name,
-        install
+        install,
+        layout // a tile moved between Games, Media and hidden, or the order: written at the restart
     };
     void load_pending();
     void note_pending(const std::string &id, Pending kind = Pending::art);
@@ -239,6 +243,36 @@ class App
     void draw_music(hui::gfx::DrawList &list) const;
     void draw_music_sheet(hui::gfx::DrawList &list, const hui::gfx::Rect &panel, float x, float y) const;
     bool can_have_music(const Title &title) const;
+
+    // ---- the person's own pictures, first in the picker (pictures.cpp) ----
+    void load_mine();                // PICTURES, then SteamGridDB's art after them
+    void open_pictures_phone();
+    void update_pictures_sheet(const hui::InputFrame &input, hui::ui::Feedback &feedback);
+    void draw_pictures_sheet(hui::gfx::DrawList &list, const hui::gfx::Rect &panel, float x, float y) const;
+    void draw_add_cell(hui::gfx::DrawList &list, const hui::gfx::Rect &r, bool focused) const;
+    void draw_add_panel(hui::gfx::DrawList &list) const; // the picker's right side, on the add cell
+    void draw_qr(hui::gfx::DrawList &list, const hui::gfx::Rect &plate) const; // the phone page's address
+
+    // ---- the home screen's layout: a full page (home.cpp) ----
+    struct Tile
+    {
+        std::string id, where, now, kind, name; // where: wished; now: what the home screen shows
+    };
+    void open_home();
+    void load_layout();
+    std::vector<int> home_rows(int category) const; // tiles_ shown in a category (Games, Media, Hidden)
+    int home_row_count(int category) const;
+    hui::gfx::Rect home_rail_rect(int category) const;
+    hui::gfx::Rect home_row_rect(int category, int row) const; // where it is now, scrolled
+    void update_home(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
+    void home_select(hui::ui::Feedback &feedback);
+    void place_tile(const std::string &id, const std::string &where);
+    void send_order(const std::string &mode, const std::vector<std::string> &ids);
+    std::vector<std::string> games_order() const; // the Games row's own tiles, in their order now
+    void update_place_sheet(const hui::InputFrame &input, hui::ui::Feedback &feedback);
+    void draw_home(hui::gfx::DrawList &list) const;
+    void draw_place_sheet(hui::gfx::DrawList &list, const hui::gfx::Rect &panel, float x, float y) const;
+    const Tile *tile(const std::string &id) const;
 
     // ---- settings and adding the key: full pages (settings.cpp) ----
     void open_settings();
@@ -410,6 +444,7 @@ class App
     std::vector<std::string> pending_; // ids changed since the home screen last restarted (the helper's PENDING)
     std::vector<std::string> renamed_;  // of those, renamed: Apply changes writes their new names first
     std::vector<std::string> installs_; // of those, with added art: Apply changes installs them again first
+    std::vector<std::string> arranged_; // of those, tiles moved on the home screen ("order": the order too)
     bool applying_ = false;            // Apply changes asked the helper; Art Swap closes on its answer
     bool home_checked_ = false;        // the last restart's end, asked for once at the start
     bool keyboard_up_ = false;         // the console's keyboard is open
@@ -448,6 +483,29 @@ class App
 
     bool renaming_ = false;     // the sheet was opened by Rename: whether the title can be renamed
     std::string renamed_to_;    // the refresh follows a rename to this name
+
+    // the person's own pictures in the picker: the add cell first, then theirs, newest first
+    int mine_arts_ = 0;             // how many of arts_ are those (the add cell among them)
+    bool mine_loading_ = false;
+    bool art_moved_ = false;        // the person has moved in the grid since the tab opened
+    std::string mine_folder_;       // where they are kept: /data/artswap/pictures
+    std::string mine_focus_;        // a picture to focus once the grid has it (one just sent)
+    std::vector<std::string> pictures_seen_, pictures_arrived_; // the phone sheet: before it, and since
+    float pictures_poll_ = 0.0f;
+
+    // the home screen page
+    std::vector<Tile> tiles_;
+    std::string layout_order_ = "none"; // none, locked, or free (an order waiting to be written once)
+    bool layout_loading_ = false;
+    std::string layout_error_;
+    int home_category_ = 0;          // Games, Media, Hidden, Order
+    bool home_in_rows_ = false;
+    int home_row_[4] = {0, 0, 0, 0};
+    hui::ui::Scroller home_scroll_;  // the list of tiles, scrolled to keep the focus in view
+    bool moving_ = false;            // a game picked up on the Games row, moved with the D-pad
+    std::vector<Tile> moving_before_; // the tiles before the move, for ○
+    std::string place_id_;           // the tile the place sheet is for
+    std::string home_focus_id_;      // a tile to focus once the page has its list
 };
 
 } // namespace artswap

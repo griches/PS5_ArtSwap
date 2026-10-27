@@ -11,10 +11,12 @@
  */
 #include "art.h"
 #include "home.h"
+#include "layout.h"
 #include "logo.h"
 #include "music.h"
 #include "name.h"
 #include "phone.h"
+#include "pictures.h"
 #include "smp.h"
 #include "store.h"
 
@@ -30,7 +32,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define MAX_FIELDS 10
+/* ORDER names every tile of the Games row: up to 512 ids */
+#define MAX_FIELDS 520
 
 static pthread_mutex_t g_apps_lock = PTHREAD_MUTEX_INITIALIZER;
 static app_t *g_apps;
@@ -291,11 +294,14 @@ static bool handle(int fd, char **field, int n)
         key_line(&text);
         ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "PHONE") == 0) {
-        /* PHONE code: open the key page for that code; PHONE alone closes it */
+        /* PHONE code [music|pictures]: open the phone page for that code; PHONE alone closes it */
+        const phone_mode_t mode = n > 2 && strcmp(field[2], "music") == 0      ? PHONE_MUSIC
+                                  : n > 2 && strcmp(field[2], "pictures") == 0 ? PHONE_PICTURES
+                                                                               : PHONE_KEY;
         if (n < 2 || field[1][0] == 0) {
             phone_stop();
             ok = reply_text(fd, &text);
-        } else if (!phone_start(field[1], n > 2 && strcmp(field[2], "music") == 0, err, sizeof(err))) {
+        } else if (!phone_start(field[1], mode, err, sizeof(err))) {
             ok = reply_error(fd, err);
         } else {
             char lan[64];
@@ -511,6 +517,31 @@ static bool handle(int fd, char **field, int n)
                 home_note(app.id);
             ok = done ? reply_text(fd, &text) : reply_error(fd, err);
         }
+    } else if (strcmp(cmd, "PICTURES") == 0) {
+        /* PICTURES: the person's own pictures, in /data/artswap/pictures, newest first */
+        char folder[512];
+        buf_printf(&text, "folder\t%s\n", pictures_folder(folder, sizeof(folder)));
+        pictures_list(&text);
+        ok = reply_text(fd, &text);
+    } else if (strcmp(cmd, "PICDEL") == 0) {
+        /* PICDEL name: one of them deleted */
+        if (!want(fd, n, 2))
+            return true;
+        ok = pictures_delete(field[1], err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
+    } else if (strcmp(cmd, "LAYOUT") == 0) {
+        /* LAYOUT: the home screen's tiles, the row each is on and the one wished, and the order */
+        ok = layout_list(&text, err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
+    } else if (strcmp(cmd, "PLACE") == 0) {
+        /* PLACE id where: the row wished for a tile (games, media or hidden), written at Apply changes */
+        if (!want(fd, n, 3))
+            return true;
+        ok = layout_place(field[1], field[2], &text, err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
+    } else if (strcmp(cmd, "ORDER") == 0) {
+        /* ORDER mode [id...]: the Games row's order, locked, written once (free) or left alone (none) */
+        if (!want(fd, n, 2))
+            return true;
+        ok = layout_order(field[1], field + 2, n - 2, &text, err, sizeof(err)) ? reply_text(fd, &text)
+                                                                               : reply_error(fd, err);
     } else if (strcmp(cmd, "PREF") == 0) {
         /* PREF key [value]: one of the title's own choices (the sort order), kept in /data/artswap/prefs.txt */
         if (!want(fd, n, 2))
@@ -620,6 +651,7 @@ static bool handle(int fd, char **field, int n)
         ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "PENDING") == 0) {
         home_pending(&text);
+        layout_pending(&text);
         ok = reply_text(fd, &text);
     } else if (strcmp(cmd, "LOG") == 0) {
         char path[512];

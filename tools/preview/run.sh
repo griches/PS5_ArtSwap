@@ -31,7 +31,8 @@ make -s -C "$root/helper" host HOST_OUT="$work/helper" >/dev/null
 sources=("$root/tools/preview/preview_main.cpp" "$root/tools/preview/platform_host.cpp"
     "$root/examples/artswap/kit/app.cpp" "$root/examples/artswap/kit/helper_client.cpp"
     "$root/examples/artswap/kit/keyboard.cpp" "$root/examples/artswap/kit/qrcodegen.cpp"
-    "$root/examples/artswap/kit/settings.cpp" "$root/examples/artswap/kit/music.cpp")
+    "$root/examples/artswap/kit/settings.cpp" "$root/examples/artswap/kit/music.cpp"
+    "$root/examples/artswap/kit/pictures.cpp" "$root/examples/artswap/kit/home.cpp")
 while IFS= read -r -d '' source; do
     sources+=("$source")
 done < <(find "$kit/src" -type f \( -name '*.cpp' -o -name '*.c' \) ! -path "$kit/src/platform/*" \
@@ -43,7 +44,7 @@ for source in "${sources[@]}"; do
     object="$work/obj/$(echo "${source#"$root/"}" | tr / _).o"
     objects+=("$object")
     if [[ ! -f $object || $source -nt $object || $root/examples/artswap/kit/app.hpp -nt $object || $root/examples/artswap/kit/title.hpp -nt $object ||
-            $root/examples/artswap/kit/helper_client.hpp -nt $object ]]; then
+            $root/examples/artswap/kit/helper_client.hpp -nt $object || $root/examples/artswap/kit/page.hpp -nt $object ]]; then
         if [[ $source == *.c ]]; then
             clang -std=c11 -O1 -w -I"$kit/src" -c "$source" -o "$object" &
         else

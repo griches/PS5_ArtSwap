@@ -12,7 +12,8 @@ ROOT := $(abspath $(CURDIR)/..)
 OUT := $(ROOT)/build/helper
 HOST_OUT := $(ROOT)/build/helper-host
 
-SOURCES := src/artswapd.c src/appdb.c src/art.c src/home.c src/logo.c src/music.c src/name.c src/phone.c src/scan.c src/sgdb.c src/smp.c \
+SOURCES := src/artswapd.c src/appdb.c src/art.c src/home.c src/layout.c src/logo.c src/music.c src/name.c src/phone.c \
+	src/pictures.c src/scan.c src/sgdb.c src/smp.c \
 	src/store.c src/at9.c src/at9_tables.c src/image.c src/bc7enc.c src/config.c src/util.c
 THIRD := src/stb_impl.c third_party/cJSON.c
 SQLITE := third_party/sqlite3.c
