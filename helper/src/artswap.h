@@ -60,8 +60,15 @@ bool file_exists(const char *path);
 bool dir_exists(const char *path);
 bool file_read(const char *path, buf_t *out);
 /* Writes path.new, flushes it, renames it over path; keeps mode and owner of
- * like (when not NULL) */
+ * like (when not NULL). In a folder whose owner alone may write there (the
+ * console refuses even root), as that owner: see act_as. */
 bool file_write_replace(const char *path, const void *data, size_t len, const char *like);
+/* rename and unlink, as the folder's owner when the console refuses root */
+bool file_rename(const char *from, const char *to);
+bool file_unlink(const char *path);
+/* The whole process's effective uid set to uid. A game's folders can belong to the user it runs as, and only
+ * that user may write there; Art Swap writes there as them, only under g_apply_lock. */
+bool act_as(unsigned uid);
 bool file_copy(const char *from, const char *to);
 bool mkdirs(const char *path);
 

@@ -342,16 +342,9 @@ void smp_info(const app_t *app, smp_info_t *out)
 
 /* A game's own files (its saves among them) belong to the user it ran as, in
  * folders only that user may open: the console refuses even root there. Such
- * a folder is read and written as its owner. The effective uid is the whole
- * process's, so this happens only under g_apply_lock, which art writes hold. */
-static bool act_as(uid_t uid)
-{
-#ifdef ARTSWAP_HOST
-    return seteuid(uid) == 0;
-#else
-    return kernel_set_ucred_uid(getpid(), uid) == 0;
-#endif
-}
+ * a folder is read and written as its owner (act_as, util.c). The effective
+ * uid is the whole process's, so this happens only under g_apply_lock, which
+ * art writes hold. */
 
 /* opendir, or, when refused, opendir as the folder's owner: *as is then the uid to go back to */
 static DIR *open_dir(const char *path, int *as)

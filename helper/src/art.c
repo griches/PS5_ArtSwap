@@ -156,7 +156,7 @@ int art_remove_added(const char *id, const char *what, buf_t *report)
         }
         char real[512];
         const char *file = line + idlen + 1;
-        if (unlink(cpath(file, real, sizeof(real))) == 0 || !file_exists(real)) {
+        if (file_unlink(cpath(file, real, sizeof(real))) || !file_exists(real)) {
             buf_printf(report, "R\t%s\n", file);
             removed++;
         } else {
@@ -176,7 +176,7 @@ int art_remove_added(const char *id, const char *what, buf_t *report)
         snprintf(copy, sizeof(copy), copies[i], id, what);
         snprintf(old, sizeof(old), "%s.old", copy);
         if (file_exists(cpath(copy, real, sizeof(real))) && !file_exists(cpath(old, real_old, sizeof(real_old))) &&
-            unlink(real) == 0) {
+            file_unlink(real)) {
             buf_printf(report, "R\t%s\n", copy);
             removed++;
         }
@@ -353,7 +353,7 @@ bool art_restore(const app_t *app, const char *slot, buf_t *report, char *err, s
         cpath(old, real_old, sizeof(real_old));
         if (!file_exists(real_old))
             continue;
-        if (rename(real_old, real) == 0) {
+        if (file_rename(real_old, real)) {
             buf_printf(report, "R\t%s\n", file->path);
             restored++;
         } else {

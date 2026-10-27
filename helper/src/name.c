@@ -156,7 +156,7 @@ int name_restore(const app_t *app, buf_t *report)
         snprintf(old, sizeof(old), "%s.old", paths[i]);
         if (!file_exists(cpath(old, real_old, sizeof(real_old))))
             continue;
-        if (rename(real_old, real) == 0) {
+        if (file_rename(real_old, real)) {
             buf_printf(report, "R\t%s\n", paths[i]);
             restored++;
         } else {

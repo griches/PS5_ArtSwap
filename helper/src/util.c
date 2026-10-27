@@ -16,6 +16,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef ARTSWAP_HOST
+#include <ps5/kernel.h>
+#endif
+
 /* ---- buffers ---- */
 
 void buf_free(buf_t *b)
@@ -208,7 +212,79 @@ static bool write_all(int fd, const void *data, size_t len)
     return true;
 }
 
+bool act_as(unsigned uid)
+{
+#ifdef ARTSWAP_HOST
+    return seteuid((uid_t)uid) == 0;
+#else
+    return kernel_set_ucred_uid(getpid(), (uid_t)uid) == 0;
+#endif
+}
+
+/* After EACCES or EPERM in path's folder: acts as the folder's owner and gives the uid to go back to, or -1
+ * when that cannot help (the folder is the helper's own, or the uid cannot be taken) */
+static int as_folder_owner(const char *path)
+{
+    if (errno != EACCES && errno != EPERM)
+        return -1;
+    char folder[600];
+    copy_str(folder, sizeof(folder), path);
+    char *slash = strrchr(folder, '/');
+    if (slash == NULL)
+        return -1;
+    *slash = 0;
+    struct stat st;
+    const uid_t self = geteuid();
+    if (stat(folder[0] ? folder : "/", &st) != 0 || st.st_uid == self || !act_as(st.st_uid))
+        return -1;
+    return (int)self;
+}
+
+static bool write_replace(const char *path, const void *data, size_t len, const char *like, bool quiet);
+
 bool file_write_replace(const char *path, const void *data, size_t len, const char *like)
+{
+    if (write_replace(path, data, len, like, true))
+        return true;
+    const int self = as_folder_owner(path);
+    if (self < 0)
+        return write_replace(path, data, len, like, false); /* again, to log why */
+    const bool ok = write_replace(path, data, len, like, false);
+    act_as((unsigned)self);
+    if (ok)
+        log_line("write %s: as the folder's owner", path);
+    return ok;
+}
+
+bool file_rename(const char *from, const char *to)
+{
+    if (rename(from, to) == 0)
+        return true;
+    const int self = as_folder_owner(from);
+    if (self < 0)
+        return false;
+    const bool ok = rename(from, to) == 0;
+    const int why = errno;
+    act_as((unsigned)self);
+    errno = why;
+    return ok;
+}
+
+bool file_unlink(const char *path)
+{
+    if (unlink(path) == 0)
+        return true;
+    const int self = as_folder_owner(path);
+    if (self < 0)
+        return false;
+    const bool ok = unlink(path) == 0;
+    const int why = errno;
+    act_as((unsigned)self);
+    errno = why;
+    return ok;
+}
+
+static bool write_replace(const char *path, const void *data, size_t len, const char *like, bool quiet)
 {
     char temp[600];
     snprintf(temp, sizeof(temp), "%s.new", path);
@@ -219,7 +295,8 @@ bool file_write_replace(const char *path, const void *data, size_t len, const ch
         mode = st.st_mode & 07777;
     const int fd = open(temp, O_WRONLY | O_CREAT | O_TRUNC, mode);
     if (fd < 0) {
-        log_line("write %s: %s", temp, strerror(errno));
+        if (!quiet)
+            log_line("write %s: %s", temp, strerror(errno));
         return false;
     }
     bool ok = write_all(fd, data, len) && fsync(fd) == 0;
@@ -229,11 +306,19 @@ bool file_write_replace(const char *path, const void *data, size_t len, const ch
             log_line("%s: mode or owner not kept: %s", path, strerror(errno));
     }
     if (ok && rename(temp, path) != 0) {
-        log_line("rename %s: %s", path, strerror(errno));
+        const int why = errno;
+        if (!quiet)
+            log_line("rename %s: %s", path, strerror(why));
         ok = false;
-    }
-    if (!ok)
         unlink(temp);
+        errno = why;
+        return false;
+    }
+    if (!ok) {
+        const int why = errno;
+        unlink(temp);
+        errno = why;
+    }
     return ok;
 }
 
