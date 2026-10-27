@@ -21,6 +21,8 @@
 
 #define ARTSWAP_VERSION "0.6.0"
 #define ARTSWAP_PORT 9117
+/* The Art Swap title's own id */
+#define ARTSWAP_ID "PPSA99318"
 
 /* Held while art is written, and while the refresh works in a game's folder as its owner
  * (which changes the effective uid of the whole helper) */

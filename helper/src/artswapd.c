@@ -108,7 +108,9 @@ static void rescan(void)
 {
     app_t *apps = NULL;
     int count = 0;
-    /* first, Art Swap's logos the home screen has lost (an install since), so the scan sees them shown */
+    /* first, Art Swap's own logo the first time, and Art Swap's logos the home screen has lost (an install
+     * since), so the scan sees them shown */
+    logo_own();
     logo_keep(NULL, 0);
     scan_apps(&apps, &count);
     /* a title Art Swap renamed whose new name the home screen does not show (its install failed, or the rename

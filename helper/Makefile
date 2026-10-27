@@ -22,6 +22,8 @@ SQLITE_FLAGS := -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION=1 -DSQLITE_DE
 	-DSQLITE_DQS=0
 WARN := -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 HEADERS := $(wildcard src/*.h)
+# Art Swap's own logo, built into the helper (logo.c)
+OWN_LOGO := $(OUT)/own_logo.h
 
 .PHONY: all host clean
 all: $(OUT)/artswapd.elf
@@ -34,9 +36,13 @@ endif
 $(OUT) $(HOST_OUT):
 	mkdir -p $@
 
+$(OWN_LOGO): res/artswap-logo.png | $(OUT)
+	cd res && xxd -i artswap-logo.png > $@
+
 # ---- the payload ----
 $(OUT)/%.o: src/%.c $(HEADERS) | $(OUT)
 	$(CC) -std=gnu11 -O2 -g $(WARN) -I$(OUT) -c -o $@ $<
+$(OUT)/logo.o: $(OWN_LOGO)
 $(OUT)/cJSON.o: third_party/cJSON.c | $(OUT)
 	$(CC) -std=gnu11 -O2 -w -c -o $@ $<
 $(OUT)/sqlite3.o: $(SQLITE) | $(OUT)
@@ -73,7 +79,7 @@ smptest: $(OUT)/smptest.elf
 # ---- the host build, for tests ----
 HOST_CC ?= cc
 HOST_FLAGS := -std=gnu11 -O2 -g -DARTSWAP_HOST -I$(OUT)
-$(HOST_OUT)/artswapd: $(SOURCES) src/http_host.c $(HEADERS) | $(HOST_OUT)
+$(HOST_OUT)/artswapd: $(SOURCES) src/http_host.c $(HEADERS) $(OWN_LOGO) | $(HOST_OUT)
 	$(HOST_CC) $(HOST_FLAGS) -w -c -o $(HOST_OUT)/sqlite3.o $(SQLITE_FLAGS) $(SQLITE)
 	$(HOST_CC) $(HOST_FLAGS) -w -c -o $(HOST_OUT)/cJSON.o third_party/cJSON.c
 	$(HOST_CC) $(HOST_FLAGS) -w -c -o $(HOST_OUT)/stb_impl.o src/stb_impl.c

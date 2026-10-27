@@ -17,11 +17,17 @@
  * empties its folder in /user/appmeta: logo_keep puts the logo back from the
  * copy. The database is copied aside before Art Swap changes it (appdb.c).
  *
+ * Art Swap's own logo is built into the helper (own_logo.h, made from
+ * helper/res/artswap-logo.png by the Makefile) and given to Art Swap's page
+ * the first time the helper finds it with none; logos/PPSA99318.given says it
+ * was, so a Restore is not undone at the next start.
+ *
  * Copyright (C) 2026 Gary Riches
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "logo.h"
 #include "appdb.h"
+#include "own_logo.h" /* artswap_logo_png, artswap_logo_png_len */
 
 #include <dirent.h>
 #include <stdio.h>
@@ -292,6 +298,45 @@ int logo_keep(const char *id, int wait_s)
     }
     if (db == NULL)
         log_line("logo: %s", err);
+    sqlite3_close(db);
+    pthread_mutex_unlock(&g_apply_lock);
+    return put;
+}
+
+bool logo_own(void)
+{
+    char given[512], own[512], orig[512], folder[512];
+    if (file_exists(own_path(ARTSWAP_ID, "given", given, sizeof(given))))
+        return false;
+    mkdirs(data_path("logos", folder, sizeof(folder)));
+    if (logo_kept(ARTSWAP_ID)) {
+        /* chosen in Art Swap already */
+        file_write_replace(given, "", 0, NULL);
+        return false;
+    }
+    pthread_mutex_lock(&g_apply_lock);
+    char err[300] = "", value[512] = "", meta[400];
+    sqlite3 *db = appdb_open(SQLITE_OPEN_READWRITE, err, sizeof(err));
+    const int found = db ? db_get(db, ARTSWAP_ID, value, sizeof(value)) : -1;
+    bool put = false;
+    /* no entry yet, or no folder for the art: again at the next scan */
+    if (found == 1 && value[0]) {
+        log_line("logo %s: its page has a logo already, so Art Swap's own is not put there", ARTSWAP_ID);
+        file_write_replace(given, "", 0, NULL);
+    } else if (found == 1 && logo_folder(ARTSWAP_ID, meta, sizeof(meta))) {
+        own_path(ARTSWAP_ID, "png", own, sizeof(own));
+        own_path(ARTSWAP_ID, "orig", orig, sizeof(orig));
+        put = file_write_replace(own, artswap_logo_png, artswap_logo_png_len, NULL) &&
+              file_write_replace(orig, "", 0, NULL) && show(db, ARTSWAP_ID, NULL, err, sizeof(err));
+        if (put) {
+            file_write_replace(given, "", 0, NULL);
+            log_line("logo %s: Art Swap's own logo put on its page", ARTSWAP_ID);
+        } else {
+            unlink(own);
+            unlink(orig);
+            log_line("logo %s: Art Swap's own logo not put on its page: %s", ARTSWAP_ID, err[0] ? err : "not written");
+        }
+    }
     sqlite3_close(db);
     pthread_mutex_unlock(&g_apply_lock);
     return put;

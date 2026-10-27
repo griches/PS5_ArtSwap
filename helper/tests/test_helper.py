@@ -706,6 +706,63 @@ def layout_tests(work):
           "the real database: Art Swap on Media, the Games row locked from ProsperoStore")
 
 
+def own_logo_tests(work):
+    """Art Swap's own logo, built into the helper, on Art Swap's page: once, and never over another logo"""
+    base = work / "own-logo-console"
+    make_console(base)
+    meta = base / "user/appmeta/PPSA99318"
+    meta.mkdir(parents=True)
+    Image.new("RGB", (512, 512), (60, 30, 120)).save(meta / "icon0.png")
+    (meta / "param.json").write_text(param_json("PPSA99318", "Art Swap"))
+    db_path = base / "system_data/priv/mms/app.db"
+    local = f"cid:scp:{99318:016x}"
+    db = sqlite3.connect(db_path)
+    db.execute("INSERT INTO tbl_contentinfo VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+               ("PPSA99318", "Art Swap", 99318, local, 318, app_info("PPSA99318", "Art Swap", 99318, {"01": "Art Swap"}), "", ""))
+    db.execute("INSERT INTO tbl_conceptmetadata VALUES (?, ?, ?, '', ?)",
+               (local, 99318, "Art Swap", concept_info("PPSA99318", "Art Swap", 99318, {"01": "Art Swap"})))
+    db.commit()
+    db.close()
+    logos = base / "data/artswap/logos"
+    given = logos / "PPSA99318.given"
+    logo = meta / "logo.png"
+    proc, log, h = run_layout_helper(base)
+    try:
+        h.rows("APPS")
+        check(logo_info(base, "PPSA99318").startswith("/user/appmeta/PPSA99318/logo.png?ts=") and
+              logo.read_bytes() == (ROOT / "helper/res/artswap-logo.png").read_bytes() and given.exists(),
+              f"Art Swap's own logo on its page as the helper starts ({logo_info(base, 'PPSA99318')})")
+        check(logo_info(base, "PPSA99314") is None, "... and on no other title's")
+        h.rows("RESTORE", "PPSA99318", "logo")
+        check(logo_info(base, "PPSA99318") in ("", None) and not logo.exists(), "RESTORE takes it away")
+        h.ask("BYE")
+        proc.wait(timeout=10)
+        log.close()
+        proc, log, h = run_layout_helper(base)
+        h.rows("APPS")
+        check(logo_info(base, "PPSA99318") in ("", None) and not logo.exists(), "... for good: not put back at the next start")
+        h.ask("BYE")
+        proc.wait(timeout=10)
+        log.close()
+        # a page with a logo of its own (Spela's, say): left as it is
+        given.unlink()
+        db = sqlite3.connect(db_path)
+        db.execute("UPDATE tbl_conceptmetadata SET logoImageInfo = '/user/appmeta/PPSA99318/logo.png?ts=1' "
+                   "WHERE localConceptId = ?", (local,))
+        db.commit()
+        db.close()
+        proc, log, h = run_layout_helper(base)
+        h.rows("APPS")
+        check(logo_info(base, "PPSA99318") == "/user/appmeta/PPSA99318/logo.png?ts=1" and given.exists() and
+              not (logos / "PPSA99318.png").exists(), "a logo the page has already is left as it is")
+        h.ask("BYE")
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        log.close()
+
+
 def main() -> int:
     work = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(tempfile.mkdtemp(prefix="artswap-test-"))
     if work.exists():
@@ -1385,6 +1442,7 @@ def main() -> int:
             proc.kill()
         log.close()
     layout_tests(work)
+    own_logo_tests(work)
     print(f"\n{len(failures)} failed" if failures else "\nall passed")
     print(f"work folder: {work}")
     return 1 if failures else 0

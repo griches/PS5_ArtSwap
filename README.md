@@ -261,6 +261,12 @@ time Art Swap starts it puts back any of its logos that went missing. Restore
 takes the logo off and puts back what the page had before (most often
 nothing). A title the home screen does not list has no page, so no logo.
 
+Art Swap has a logo of its own, built into the helper: the first time Art Swap
+starts and finds its page with no logo, it puts its own there, and from then
+on it is a logo like any other. Choose another in the Logos tab, or Restore
+it to have the name back for good. A page that already has a logo is left
+as it is.
+
 **PlayStation Store logos** (Settings, Games; off until you turn them on): for
 a store game (one whose store concept is not just its own number, as
 homebrew's is), the Logos tab starts with the game's own logo from
