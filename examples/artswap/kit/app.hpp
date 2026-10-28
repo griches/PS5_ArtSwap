@@ -116,6 +116,7 @@ class App
         music_phone,   // sending music from a phone: the QR code
         music_confirm, // the clip as the game's music?
         pictures_phone, // sending pictures from a phone or computer: the QR code (pictures.cpp)
+        picture_delete, // one of the person's own pictures deleted? (pictures.cpp)
         place,          // the home screen page: Games, Media or hidden, for one tile (home.cpp)
     };
     // The order of the games on the shelf (L2)
@@ -247,6 +248,7 @@ class App
     // ---- the person's own pictures, first in the picker (pictures.cpp) ----
     void load_mine();                // PICTURES, then SteamGridDB's art after them
     void open_pictures_phone();
+    void delete_picture(); // PICDEL the focused picture of theirs, then the grid again
     void update_pictures_sheet(const hui::InputFrame &input, hui::ui::Feedback &feedback);
     void draw_pictures_sheet(hui::gfx::DrawList &list, const hui::gfx::Rect &panel, float x, float y) const;
     void draw_add_cell(hui::gfx::DrawList &list, const hui::gfx::Rect &r, bool focused) const;

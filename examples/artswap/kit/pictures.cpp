@@ -123,6 +123,33 @@ void App::load_mine()
     }, true, gen);
 }
 
+// The focused picture of the person's own deleted from the console. The grid is made again, as after pictures
+// arrive (thumbnails on their way find their cells by place), with the next of theirs chosen.
+void App::delete_picture()
+{
+    sheet_ = Sheet::none;
+    const Art *art = focused_art();
+    if (art == nullptr || !art->mine)
+        return;
+    const std::string name = art->url.substr(5);
+    std::string next;
+    const int after = art_focus_ + 1 < mine_arts_ ? art_focus_ + 1 : art_focus_ - 1;
+    if (after >= 0 && after < mine_arts_ && arts_[static_cast<std::size_t>(after)]->mine)
+        next = arts_[static_cast<std::size_t>(after)]->url.substr(5);
+    helper_.ask({"PICDEL", name}, [this, name, next](Reply &reply) {
+        if (!reply.ok)
+        {
+            toast(name + " was not deleted", reply.error, true);
+            return;
+        }
+        toast(name + " is deleted", "Games already using it keep it.");
+        if (screen_ != Screen::picker)
+            return;
+        mine_focus_ = next;
+        set_tab(tab_);
+    }, true);
+}
+
 void App::open_pictures_phone()
 {
     sheet_ = Sheet::pictures_phone;
@@ -306,7 +333,8 @@ void App::draw_add_panel(gfx::DrawList &list) const
     y += 46;
     y = ui::paragraph(list, fonts_.regular,
                       "Send icons, backgrounds or logos from a phone or computer on the same network: they show here, "
-                      "first in every tab, for every game. A logo wants a PNG with a see-through background.",
+                      "first in every tab, for every game. A logo wants a PNG with a see-through background. OPTIONS "
+                      "on one deletes it.",
                       x, y, 24, w, 36, kWhite.with_alpha(0.85f), 6) +
         20;
     ui::draw_button(list, fonts_, ui::GlyphStyle::dark(), ui::Button::cross, x, y, 30);

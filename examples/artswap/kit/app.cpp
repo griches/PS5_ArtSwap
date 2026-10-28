@@ -2173,6 +2173,13 @@ void App::update_picker(const hui::InputFrame &input, float dt, ui::Feedback &fe
             }
             return;
         }
+        // OPTIONS on one of the person's own: deleted, once they say so
+        if (input.is_pressed(Action::menu) && art && art->mine)
+        {
+            feedback.play(Cue::modal_open);
+            sheet_ = Sheet::picture_delete;
+            return;
+        }
         // a logo is written whole: nothing to frame
         const bool framed = slot_ != "logo";
         if (input.is_pressed(Action::north) && art && framed)
@@ -2227,6 +2234,18 @@ void App::update_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
         {
             feedback.play(Cue::select);
             restore();
+        }
+        else if (input.is_pressed(Action::back))
+        {
+            feedback.play(Cue::modal_close);
+            sheet_ = Sheet::none;
+        }
+        return;
+    case Sheet::picture_delete:
+        if (input.is_pressed(Action::confirm))
+        {
+            feedback.play(Cue::erase);
+            delete_picture();
         }
         else if (input.is_pressed(Action::back))
         {
@@ -3070,6 +3089,20 @@ void App::draw_sheet(gfx::DrawList &list, std::uint32_t glass) const
         }
         break;
     }
+    case Sheet::picture_delete:
+    {
+        const Art *art = focused_art();
+        heading("DELETE PICTURE", art ? art->author + "?" : "This picture?");
+        const Rect pic{panel.x + panel.w - 64 - 300, panel.y + 170, 300, 225};
+        list.rounded_rect(pic, 14, kNight);
+        if (art && art->texture)
+            list.image(art->texture, contain(pic, art->tw, art->th), gfx::kFullUv, kWhite, 7.0f);
+        ui::paragraph(list, fonts_.regular,
+                      "Art Swap deletes it from the console, so it leaves every tab, for every game. Games already "
+                      "using it keep it.",
+                      x, y, 25, panel.w - 128 - pic.w - 40, 38, kWhite.with_alpha(0.85f), 6);
+        break;
+    }
     case Sheet::restore:
     {
         heading("RESTORE", "The original art of " + name + "?");
@@ -3356,6 +3389,8 @@ void App::draw_hints(gfx::DrawList &list) const
                  {ui::Button::circle, "Cancel"}};
     else if (sheet_ == Sheet::restore)
         hints = {{ui::Button::cross, "Restore"}, {ui::Button::circle, "Cancel"}};
+    else if (sheet_ == Sheet::picture_delete)
+        hints = {{ui::Button::cross, "Delete"}, {ui::Button::circle, "Cancel"}};
     else if (sheet_ == Sheet::search)
         hints = {{ui::Button::cross, "Choose"}, {ui::Button::circle, "Back"}};
     else if (sheet_ == Sheet::log)
@@ -3471,6 +3506,8 @@ void App::draw_hints(gfx::DrawList &list) const
             hints.push_back({ui::Button::cross, "Use this"});
             if (slot_ != "logo")
                 hints.push_back({ui::Button::triangle, "Frame"});
+            if (art->mine)
+                hints.push_back({ui::Button::options, "Delete"});
         }
         hints.push_back({ui::Button::square, key_state_ == "user" ? "Another game" : "Add your key"});
         hints.push_back({ui::Button::circle, "Back"});

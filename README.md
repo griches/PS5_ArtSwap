@@ -121,6 +121,7 @@ L1 R1 L2 R2, OPTIONS, then ○.
 | | ✕ | use it (asks first); on the first cell, send pictures of your own from a phone or computer (a QR code) |
 | | △ | the frame page: which part of the picture is kept (not for a logo, which is used whole) |
 | | □ | another game, or search by name with the keyboard (with no SteamGridDB key: add one) |
+| | OPTIONS | on a picture of your own: delete it from the console (asks first) |
 | | ○ | back to the games |
 | Frame | left stick, D-pad | move the part kept |
 | | ✕ | use it (asks first) |
@@ -324,6 +325,10 @@ SteamGridDB's art. A logo wants a PNG with a see-through background: the page
 says when a picture has none. Without a SteamGridDB key the picker opens all
 the same, with your own pictures, and □ adds a key. Use pictures that are
 yours to use.
+
+To delete one, choose it in the picker and press OPTIONS: it leaves
+`/data/artswap/pictures`, so it is gone from every tab, for every game. A game
+already using it keeps it.
 
 ## The home screen's layout
 
