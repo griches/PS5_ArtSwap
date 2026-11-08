@@ -345,9 +345,9 @@ moving one moves it on every profile. ✕ on a tile shows what it can do:
 | PS5 and PS4 games | No | Yes | Hide |
 | PS Store | Yes | No (a hub, kept at the front) | Hide |
 | Media Gallery | Yes | Yes | Hide |
-| PS Plus | Yes | No (a hub) | Show (a test), hide |
-| Music, Remote Play, Share Play | Yes | Yes | Show (a test), hide |
-| Welcome | No | No (a hub) | Show (a test), hide, on every profile |
+| PS Plus | Yes | No (a hub) | Show, hide |
+| Music, Remote Play, Share Play | Yes | Yes | Show, hide |
+| Welcome | No | No (a hub) | Show, hide, on every profile |
 | Game Library, App Library | No | No (kept at the end) | No |
 
 □ picks a tile of the row up, ↑ ↓ carry it along, and ✕ puts it down. A

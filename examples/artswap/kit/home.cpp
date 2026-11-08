@@ -533,7 +533,7 @@ void App::home_select(ui::Feedback &feedback)
             if (t.can('h'))
                 sheet_actions_.push_back({"Bring back", "on this profile", "unhide"});
             if (t.can('s') && !t.can('S'))
-                sheet_actions_.push_back({"Show it (a test)", "the system hides it; on every profile", "show"});
+                sheet_actions_.push_back({"Show", "the system hides it; on every profile", "show"});
             if (t.can('m'))
             {
                 const std::string other = t.tab == "games" ? "media" : "games";
@@ -886,9 +886,9 @@ void App::draw_place_sheet(gfx::DrawList &list, const Rect &panel, float x, floa
         ui::text(list, fonts_.regular, a.note, x + width - 8, ry + 39, 22, ink.with_alpha(0.6f), gfx::Align::right);
     }
     y += row_h * static_cast<float>(std::max(n, 3)) + 30;
-    const bool test = t && t->can('s') && !t->can('S') && (t->hidden || t->tab == "none");
+    const bool system_hidden = t && t->can('s') && !t->can('S') && (t->hidden || t->tab == "none");
     ui::paragraph(list, fonts_.regular,
-                  test ? "The system hides this tile, and it may open nothing. Hide it again here if it does. The home "
+                  system_hidden ? "The system hides this tile, and it may open nothing. Hide it again here if it does. The home "
                          "screen shows the change once it restarts: Apply changes (R2)."
                        : "The home screen shows it once it restarts: Apply changes (R2). From then on Art Swap keeps it "
                          "that way through restarts, rest mode and installs.",
