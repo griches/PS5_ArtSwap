@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ARTSWAP_VERSION "0.6.0"
+#define ARTSWAP_VERSION "0.7.0"
 #define ARTSWAP_PORT 9117
 /* The Art Swap title's own id */
 #define ARTSWAP_ID "PPSA99318"

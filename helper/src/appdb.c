@@ -36,7 +36,8 @@
 
 #define APP_DB "/system_data/priv/mms/app.db"
 
-static bool g_backed_up; /* this run has copied the database aside */
+static bool g_backed_up;      /* this run has copied the database aside */
+static bool g_info_backed_up; /* and appinfo.db */
 
 sqlite3 *appdb_open(int flags, char *err, size_t errlen)
 {
@@ -51,15 +52,15 @@ sqlite3 *appdb_open(int flags, char *err, size_t errlen)
     return db;
 }
 
-/* A whole copy of the open database, through SQLite's backup */
-static bool db_copy(sqlite3 *db, const char *to)
+/* A whole copy of one of the open connection's databases (main, or an attached one), through SQLite's backup */
+static bool db_copy(sqlite3 *db, const char *schema, const char *to)
 {
     char partial[520];
     snprintf(partial, sizeof(partial), "%s.new", to);
     unlink(partial);
     sqlite3 *out = NULL;
     bool ok = sqlite3_open(partial, &out) == SQLITE_OK;
-    sqlite3_backup *backup = ok ? sqlite3_backup_init(out, "main", db, "main") : NULL;
+    sqlite3_backup *backup = ok ? sqlite3_backup_init(out, "main", db, schema) : NULL;
     ok = backup != NULL;
     int rc = SQLITE_OK;
     for (int tries = 0; ok && tries < 100; tries++) {
@@ -85,12 +86,28 @@ bool appdb_backup(sqlite3 *db, char *err, size_t errlen)
     char first[512], latest[512];
     data_path("app.db.first", first, sizeof(first));
     data_path("app.db.backup", latest, sizeof(latest));
-    if ((!file_exists(first) && !db_copy(db, first)) || !db_copy(db, latest)) {
+    if ((!file_exists(first) && !db_copy(db, "main", first)) || !db_copy(db, "main", latest)) {
         snprintf(err, errlen, "The home screen's database could not be copied aside first, so it was not changed");
         return false;
     }
     log_line("app.db: copied to %s", latest);
     g_backed_up = true;
+    return true;
+}
+
+bool appdb_backup_info(sqlite3 *db, char *err, size_t errlen)
+{
+    if (g_info_backed_up)
+        return true;
+    char first[512], latest[512];
+    data_path("appinfo.db.first", first, sizeof(first));
+    data_path("appinfo.db.backup", latest, sizeof(latest));
+    if ((!file_exists(first) && !db_copy(db, "info", first)) || !db_copy(db, "info", latest)) {
+        snprintf(err, errlen, "The home screen's appinfo.db could not be copied aside first, so nothing was changed");
+        return false;
+    }
+    log_line("appinfo.db: copied to %s", latest);
+    g_info_backed_up = true;
     return true;
 }
 

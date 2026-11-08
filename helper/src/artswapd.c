@@ -32,7 +32,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-/* ORDER names every tile of the Games row: up to 512 ids */
+/* ROW names every tile of a row: up to 512 ids */
 #define MAX_FIELDS 520
 
 static pthread_mutex_t g_apps_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -530,20 +530,40 @@ static bool handle(int fd, char **field, int n)
         if (!want(fd, n, 2))
             return true;
         ok = pictures_delete(field[1], err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
+    } else if (strcmp(cmd, "PROFILES") == 0) {
+        /* PROFILES: the console's profiles, which each have their own home screen */
+        ok = layout_profiles(&text, err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
     } else if (strcmp(cmd, "LAYOUT") == 0) {
-        /* LAYOUT: the home screen's tiles, the row each is on and the one wished, and the order */
-        ok = layout_list(&text, err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
-    } else if (strcmp(cmd, "PLACE") == 0) {
-        /* PLACE id where: the row wished for a tile (games, media or hidden), written at Apply changes */
+        /* LAYOUT [user]: a profile's tiles, where each is and where it is wished, and what each can do */
+        ok = layout_list(n > 1 ? field[1] : "", &text, err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
+    } else if (strcmp(cmd, "TAB") == 0) {
+        /* TAB user id games|media: a tile's tab, on every profile, written at Apply changes */
+        if (!want(fd, n, 4))
+            return true;
+        ok = layout_tab(field[1], field[2], field[3], err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
+    } else if (strcmp(cmd, "HIDE") == 0 || strcmp(cmd, "SHOW") == 0) {
+        /* HIDE user id 1|0: hidden on that profile, or brought back; SHOW user id 1|0: one the system hides,
+         * shown on every profile, or hidden again */
+        if (!want(fd, n, 4))
+            return true;
+        const bool on = strcmp(field[3], "1") == 0;
+        ok = (cmd[0] == 'H' ? layout_hide(field[1], field[2], on, err, sizeof(err))
+                            : layout_show(field[1], field[2], on, err, sizeof(err)))
+                 ? reply_text(fd, &text)
+                 : reply_error(fd, err);
+    } else if (strcmp(cmd, "ROW") == 0) {
+        /* ROW user games|media id[*]...: a row's order, * pinning a tile at its place */
         if (!want(fd, n, 3))
             return true;
-        ok = layout_place(field[1], field[2], &text, err, sizeof(err)) ? reply_text(fd, &text) : reply_error(fd, err);
-    } else if (strcmp(cmd, "ORDER") == 0) {
-        /* ORDER mode [id...]: the Games row's order, locked, written once (free) or left alone (none) */
+        ok = layout_row(field[1], field[2], field + 3, n - 3, err, sizeof(err)) ? reply_text(fd, &text)
+                                                                                : reply_error(fd, err);
+    } else if (strcmp(cmd, "TABSHIFTER") == 0 || strcmp(cmd, "RESET") == 0) {
+        /* TABSHIFTER 1|0, RESET 1|0: queued for Apply changes, or not */
         if (!want(fd, n, 2))
             return true;
-        ok = layout_order(field[1], field + 2, n - 2, &text, err, sizeof(err)) ? reply_text(fd, &text)
-                                                                               : reply_error(fd, err);
+        ok = layout_queue(cmd[0] == 'T' ? "tabshifter" : "reset", strcmp(field[1], "1") == 0, err, sizeof(err))
+                 ? reply_text(fd, &text)
+                 : reply_error(fd, err);
     } else if (strcmp(cmd, "PREF") == 0) {
         /* PREF key [value]: one of the title's own choices (the sort order), kept in /data/artswap/prefs.txt */
         if (!want(fd, n, 2))
@@ -743,6 +763,13 @@ static bool idle(uint64_t started)
     return quiet;
 }
 
+static void *layout_startup_job(void *argument)
+{
+    (void)argument;
+    layout_startup();
+    return NULL;
+}
+
 int main(void)
 {
     signal(SIGPIPE, SIG_IGN);
@@ -753,6 +780,10 @@ int main(void)
     config_load();
     /* download data a refresh moved aside, if the last helper ended before it was put back */
     smp_recover();
+    /* the home screen's layout: what the console undid put back, beside the requests */
+    pthread_t tiles;
+    if (pthread_create(&tiles, NULL, layout_startup_job, NULL) == 0)
+        pthread_detach(tiles);
     g_http_ok = http_init(g_http_error, sizeof(g_http_error));
     log_line("network: %s %s, key: %s", g_http_ok ? "ready" : "unavailable", g_http_error, config_key_source());
     sgdb_cache_trim();

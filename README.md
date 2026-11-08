@@ -16,8 +16,8 @@ the home screen, and every change shows at once, whatever installed the game:
 a folder, a disk image or a package. A **logo** (□) goes on the game's page in
 place of its name in plain text, and shows straight away. Pictures of your own,
 sent from a phone or computer, sit first in every tab, and the **Home screen**
-page moves tiles between the Games and Media homes, hides them, and locks the
-order of your games.
+page moves tiles between the Games and Media homes, hides them, and orders and
+pins them in their row, and keeps it that way.
 
 Title `PPSA99318`, version 1.4.0. Tested on a PS5 with firmware 13.60.
 
@@ -76,10 +76,11 @@ Title `PPSA99318`, version 1.4.0. Tested on a PS5 with firmware 13.60.
   computer (the first cell of the picker shows a QR code), or copied into
   `/data/artswap/pictures`, come first in every tab, for every game, and need
   no SteamGridDB key: see [Your own pictures](#your-own-pictures).
-- **Arranges the home screen** (OPTIONS, Home screen): any tile on the Games
-  home or the Media home, or hidden from both, and the Games row in an order
-  of your own, locked if you like, so playing a game no longer moves it first:
-  see [The home screen's layout](#the-home-screens-layout).
+- **Arranges the home screen** (OPTIONS, Home screen), for each profile:
+  homebrew and the system's tiles on the Games home or the Media home, tiles
+  hidden, and each row in an order of your own, a tile pinned where you want it
+  so playing a game no longer moves it. It stays that way through restarts,
+  rest mode and installs: see [The home screen's layout](#the-home-screens-layout).
 - **Renames homebrew** (OPTIONS, Rename) that ShadowMountPlus installed from a folder: the
   new name goes into the title's `param.json` (every language) and, at Apply
   changes, into the home screen's database, which holds the names it shows. No
@@ -136,9 +137,9 @@ L1 R1 L2 R2, OPTIONS, then ○.
 | | L1 R1 | move the starting position ten seconds |
 | | L2 R2 | make the clip five seconds shorter, longer |
 | | ○ | back to the games |
-| Home screen | L1 R1, D-pad | Games, Media, Hidden, Order, and the tiles in one |
-| | ✕ | move the tile: Games, Media or Hidden; on Order, lock the order or sort A to Z |
-| | □ | on Games, pick a game up; ↑ ↓ carry it along the row, ✕ puts it down, ○ puts it back |
+| Home screen | L1 R1, D-pad | Games, Media, Hidden, Options, and the tiles in one |
+| | ✕ | what the tile can do: move to the other tab, pin or unpin, hide, bring back, show; on Options, the profile, A to Z, the removals |
+| | □ | on Games or Media, pick a tile up; ↑ ↓ carry it along the row, ✕ puts it down, ○ puts it back |
 | | R2 | apply changes |
 | | ○ | back |
 | Settings | L1 R1, D-pad | the categories, and the rows in one |
@@ -332,29 +333,63 @@ already using it keeps it.
 
 ## The home screen's layout
 
-OPTIONS, then Home screen, shows the home screen's tiles as the console lists
-them: on the **Games** home, on the **Media** home beside it, or **Hidden**
-from both. ✕ on a tile moves it; tools, players and stores sit well on Media,
-out of the way of your games. Art Swap itself can move to Media, but not be
-hidden, as there would be no way back to it. The system's own tiles
-(PlayStation Store, Game Library) can move or hide too.
+OPTIONS, then Home screen, shows a profile's home screen as the console orders
+it: the **Games** home, the **Media** home beside it, and what is **Hidden**.
+Each profile has its own (Options changes the one shown, starting with yours):
+what is hidden and the order are its own; a tile's tab is the console's, so
+moving one moves it on every profile. ✕ on a tile shows what it can do:
 
-**Order** locks the Games row: the home screen puts the game played last
-first, and a locked row stays as it is. □ on a game on the Games page picks it
-up, ↑ ↓ carry it along the row, and ✕ puts it down; Order can also sort the
-games A to Z. Without the lock, the order you set holds until you next play a
-game.
+| Tile | Move between tabs | Order and pin in its row | Hide / show |
+| --- | --- | --- | --- |
+| Homebrew and emulators (Art Swap too) | Yes | Yes | Hide (not Art Swap) |
+| PS5 and PS4 games | No | Yes | Hide |
+| PS Store | Yes | No (a hub, kept at the front) | Hide |
+| Media Gallery | Yes | Yes | Hide |
+| PS Plus | Yes | No (a hub) | Show (a test), hide |
+| Music, Remote Play, Share Play | Yes | Yes | Show (a test), hide |
+| Welcome | No | No (a hub) | Show (a test), hide, on every profile |
+| Game Library, App Library | No | No (kept at the end) | No |
 
-Nothing changes until **Apply changes** (R2), which writes the layout into the
-home screen's database just before the home screen restarts. Art Swap keeps
-what you chose (`/data/artswap/layout.txt`) and writes it again at each Apply
-changes, so an install or a firmware update that put a tile back is put
-right the next time. The database is copied aside first, as for a rename.
+□ picks a tile of the row up, ↑ ↓ carry it along, and ✕ puts it down. A
+pinned tile keeps its place when you play another game; the rest of the row
+still puts the one played last first. One of the first places the home screen
+shows (12 on Games, 11 on Media) stays unpinned, for the app you open last.
+Options also sorts a row A to Z (pinned tiles keep their places).
+
+"Show" is for the system's own tiles it hides: Art Swap clears the bit that
+hides them and shows them on every profile. The system may hide one for a
+reason (a service it no longer offers), and it may open nothing: Hide it again
+and it goes back exactly as the system had it.
+
+Nothing changes until **Apply changes** (R2), which writes the changes into the
+home screen's databases (`app.db` and `appinfo.db`) just before the home
+screen restarts, in one transaction checked before it is kept, after both are
+copied to `/data/artswap` (`app.db.backup`, `appinfo.db.backup`, and the first
+copies, `.first`, kept for good). The console writes a tile's place again at a
+restart, out of rest mode and when something installs it (Game Compressor's
+payload does each time it starts; Art Swap's own tile is written when it opens),
+which is what put a tile back before. So Art Swap keeps what you chose in
+tables of its own in those databases (`artswap_*`), with triggers that put it
+back inside the console's own writes; when Art Swap starts, it puts right
+anything they could not (a profile made since, a database rebuilt without
+them). A trigger is made only on columns the firmware has.
+
+Options can also remove the "TS" tile TabShifter leaves behind (from both
+databases, with its folders), and **remove everything Art Swap changed**: what
+it hid comes back, what it showed is hidden again, its tables and triggers go,
+and moved tiles stay where they are. Do that before a firmware update.
+
+Lineup keeps the same places with triggers of its own, and the two would undo
+each other: while Lineup's changes are in the databases, the page says so and
+changes nothing. In Lineup, Options, More options, Remove pins from every
+profile takes them out. Art Swap 1.4's layout (`layout.txt`) is taken over once
+as changes waiting, and what it wrote (an order locked far in the future, 140
+for an app it moved to Media) is put right at the next Apply changes.
 
 This follows elripalda's [psgfx](https://github.com/elripalda/psgfx), whose
-Home layout found which fields the home screen reads: each tile's
-`dispLocation` (Games or Media) and `visible`, the system tiles' places in the
-`MyHome` group, and the dates and counters the Games row is sorted by.
+Home layout found which fields the home screen reads, and bps2414's
+[Lineup](https://github.com/bps2414/lineup), whose moves, hidden tiles, pins
+and triggers Art Swap's are ported from (`helper/src/tiles.c`).
 
 ## The SteamGridDB API key
 
@@ -545,7 +580,10 @@ at `b577e950`, with its UI module. Art Swap's code is in `examples/artswap/kit/`
   was found by ensamvarg360's [Spela](https://github.com/ensamvarg360/spela)
   (GPL-3.0).
 - The **home screen's layout** (`helper/src/layout.c`) follows elripalda's
-  [psgfx](https://github.com/elripalda/psgfx) Home layout (GPL-3.0-or-later).
+  [psgfx](https://github.com/elripalda/psgfx) Home layout (GPL-3.0-or-later),
+  and its writes (`helper/src/tiles.c`: moves, hidden tiles, pins and the
+  triggers that keep them) are ported from bps2414's
+  [Lineup](https://github.com/bps2414/lineup) (GPL-3.0-or-later).
 - Art Swap's own icon and background were generated for this project
   (sources in `ps5/art/`).
 

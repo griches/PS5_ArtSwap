@@ -15,6 +15,8 @@ sqlite3 *appdb_open(int flags, char *err, size_t errlen);
 /* Before this run's first change: a copy of the database as it was (app.db.backup), and the first copy ever
  * (app.db.first), kept for good */
 bool appdb_backup(sqlite3 *db, char *err, size_t errlen);
+/* The same for appinfo.db, attached to db as info: appinfo.db.backup, and appinfo.db.first kept for good */
+bool appdb_backup_info(sqlite3 *db, char *err, size_t errlen);
 /* Whether the table has the column (firmware versions differ) */
 bool appdb_has_column(sqlite3 *db, const char *table, const char *column);
 

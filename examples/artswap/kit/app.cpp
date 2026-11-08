@@ -3402,7 +3402,7 @@ void App::draw_hints(gfx::DrawList &list) const
     else if (sheet_ == Sheet::pictures_phone)
         hints = {{ui::Button::circle, pictures_arrived_.empty() ? "Done" : "Show them"}};
     else if (sheet_ == Sheet::place)
-        hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Move here"}, {ui::Button::circle, "Cancel"}};
+        hints = {{ui::Button::dpad, "Choose"}, {ui::Button::cross, "Select"}, {ui::Button::circle, "Cancel"}};
     else if (screen_ == Screen::home)
     {
         if (moving_)
@@ -3411,16 +3411,16 @@ void App::draw_hints(gfx::DrawList &list) const
         {
             hints.push_back({ui::Button::dpad, "Choose"});
             if (home_in_rows_)
-                hints.push_back({ui::Button::cross, home_category_ < 3 ? "Move to\xE2\x80\xA6" : "Select"});
+                hints.push_back({ui::Button::cross, home_category_ < 3 ? "Change\xE2\x80\xA6" : "Select"});
             else
                 hints.push_back({ui::Button::cross, "Open"});
-            // a game on the Games row can be moved along it
-            if (home_in_rows_ && home_category_ == 0)
+            // a tile of a row can be moved along it
+            if (home_in_rows_ && home_category_ < 2)
             {
-                const std::vector<int> rows = home_rows(0);
-                const int row = home_row_[0];
+                const std::vector<int> rows = home_rows(home_category_);
+                const int row = home_row_[home_category_];
                 if (row < static_cast<int>(rows.size()) &&
-                    tiles_[static_cast<std::size_t>(rows[static_cast<std::size_t>(row)])].kind != "system")
+                    tiles_[static_cast<std::size_t>(rows[static_cast<std::size_t>(row)])].can('o'))
                     hints.push_back({ui::Button::square, "Reorder"});
             }
             hints.push_back({ui::Button::l1, "Category", ui::Button::r1});
