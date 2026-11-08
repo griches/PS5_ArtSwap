@@ -904,6 +904,34 @@ static bool can_move_app(const char *id, int type, int place)
     return (type == 0 || type == 5) && place == 2 && strncmp(id, "CUSA", 4) != 0 && !is_system(id);
 }
 
+/* The tab an install puts `id` on: its param.json's applicationCategoryType (the Media bit, 65536), from the
+ * install's copy, else the home screen's. 0 when neither says. The database's categoryType is no guide: a tool that
+ * moved the app rewrote it. */
+static int app_home(const char *id)
+{
+    static const char *const where[] = {"/user/app/%s/sce_sys/param.json", "/system_data/priv/appmeta/%s/param.json"};
+    for (size_t i = 0; i < sizeof(where) / sizeof(where[0]); i++) {
+        char path[160], real[600];
+        snprintf(path, sizeof(path), where[i], id);
+        buf_t text = {0};
+        long long value = -1;
+        if (file_read(cpath(path, real, sizeof(real)), &text) && buf_append(&text, "", 1)) {
+            const char *at = strstr((const char *)text.data, "\"applicationCategoryType\"");
+            at = at ? strchr(at + 25, ':') : NULL;
+            if (at) {
+                char *end = NULL;
+                value = strtoll(at + 1, &end, 10);
+                if (end == at + 1 || value < 0)
+                    value = -1;
+            }
+        }
+        buf_free(&text);
+        if (value >= 0)
+            return value & MEDIA_CATEGORY ? MEDIA_TAB : GAMES_TAB;
+    }
+    return 0;
+}
+
 static bool app_movable(sqlite3 *db, const char *id, int *tab)
 {
     if (!has_column(db, "main", "tbl_contentinfo", "appType") ||
@@ -1075,9 +1103,12 @@ static bool record_move(sqlite3 *db, const char *id, int from, int tab, char use
         home = sqlite3_column_int(st, 0);
     }
     sqlite3_finalize(st);
-    /* an app another tool moved is on the tab it was moved to, not its own: the Media bit of the category is the
-     * install's, the better guess at where an install puts it back */
-    if (!recorded && sqlite3_prepare_v2(db, "SELECT categoryType FROM tbl_contentinfo WHERE titleId = ?1", -1, &st,
+    /* an app another tool moved is on the tab it was moved to, not its own: its param.json names the tab an install
+     * puts it back on; without one, the Media bit of the category is the better guess */
+    const int install = recorded ? 0 : app_home(id);
+    if (install)
+        home = install;
+    else if (!recorded && sqlite3_prepare_v2(db, "SELECT categoryType FROM tbl_contentinfo WHERE titleId = ?1", -1, &st,
                                         NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
         if (sqlite3_step(st) == SQLITE_ROW)
@@ -2072,31 +2103,132 @@ int tiles_normalize(sqlite3 *db, int *changed, char *msg, size_t msglen)
 
 /* ---- everything ---- */
 
+/* The apps that move (homebrew, emulators; not TabShifter's tile) on either tab, with the tab each is on */
+static int movable_apps(sqlite3 *db, char ids[][16], int *tabs, int max)
+{
+    if (!has_column(db, "main", "tbl_contentinfo", "appType") ||
+        !has_column(db, "main", "tbl_contentinfo", "contentLocation"))
+        return 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT titleId, appType, contentLocation, dispLocation FROM tbl_contentinfo WHERE "
+                               "dispLocation IN (138, 188)",
+                           -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int n = 0;
+    while (n < max && sqlite3_step(st) == SQLITE_ROW) {
+        const char *id = (const char *)sqlite3_column_text(st, 0);
+        if (id == NULL || strlen(id) != 9 || strcmp(id, TABSHIFTER_ID) == 0 ||
+            !can_move_app(id, sqlite3_column_int(st, 1), sqlite3_column_int(st, 2)))
+            continue;
+        copy_str(ids[n], 16, id);
+        tabs[n++] = sqlite3_column_int(st, 3);
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
+int tiles_adopt(sqlite3 *db, bool create)
+{
+    static char ids[TILES_MAX][16];
+    static int tabs[TILES_MAX];
+    const int n = movable_apps(db, ids, tabs, TILES_MAX);
+    char users[TILES_USERS][16];
+    const int count = n > 0 ? tiles_users(db, users, TILES_USERS) : 0;
+    if (n < 0 || count < 0)
+        return -1;
+    int found = 0;
+    for (int i = 0; i < n; i++) {
+        const int home = app_home(ids[i]);
+        if (!home || home == tabs[i])
+            continue;
+        if (has_object(db, "artswap_moved")) {
+            const int kept = finds_row(db, "SELECT 1 FROM main.artswap_moved WHERE titleId = ?1", ids[i]);
+            if (kept < 0)
+                return -1;
+            if (kept)
+                continue;
+        }
+        found++;
+        if (!create)
+            continue;
+        if (!record_move(db, ids[i], home, tabs[i], users, count) || !write_move(db, ids[i], tabs[i], users, count))
+            return -1;
+        log_line("tiles: %s, moved off its own tab by another tool, kept on %s", ids[i],
+                 tabs[i] == MEDIA_TAB ? "Media" : "Games");
+    }
+    return found;
+}
+
+/* The system's tiles as a console has them before anything moves them: their tab, and whether the system hides them.
+ * Game Library and App Library never move. */
+static const struct {
+    const char *id;
+    int tab;
+    bool hidden;
+} SYSTEM_DEFAULTS[] = {
+    {"NPXS40047", BIT_GAMES, false}, /* PlayStation Store */
+    {"NPXS40075", BIT_GAMES, false}, /* Media Gallery */
+    {WELCOME_ID, BIT_GAMES, true},  {"NPXS40037", BIT_GAMES, true}, /* PlayStation Plus */
+    {"NPXS40054", BIT_MEDIA, true},                                 /* Music */
+    {"NPXS40074", BIT_GAMES, true},                                 /* Remote Play */
+    {"NPXS40099", BIT_GAMES, true},                                 /* Share Play */
+};
+
 int tiles_reset(sqlite3 *db, char *msg, size_t msglen)
 {
     char users[TILES_USERS][16];
     const int count = tiles_users(db, users, TILES_USERS);
-    bool ok = count >= 0 && show_all_hidden(db) && remove_pins(db);
-    /* the tiles Art Swap shows go back to what the system had; moved ones stay where they are */
-    if (ok && has_object(db, "artswap_system")) {
-        static char ids[64][16], concepts[64][96];
-        int n = 0;
-        sqlite3_stmt *st = NULL;
-        ok = sqlite3_prepare_v2(db, "SELECT titleId, ifnull(concept, '') FROM main.artswap_system WHERE shown = 1", -1,
-                                &st, NULL) == SQLITE_OK;
-        while (ok && n < 64 && sqlite3_step(st) == SQLITE_ROW) {
-            copy_str(ids[n], sizeof(ids[0]), (const char *)sqlite3_column_text(st, 0));
-            copy_str(concepts[n++], sizeof(concepts[0]), (const char *)sqlite3_column_text(st, 1));
-        }
-        sqlite3_finalize(st);
-        ok = ok && drop_system(db);
-        for (int i = 0; ok && i < n; i++)
-            ok = write_system(db, ids[i], concepts[i], BIT_HIDDEN, 0, BIT_GAMES | BIT_MEDIA, users, count) &&
-                 system_visible(db, ids[i], false, users, count);
+    /* Art Swap's own tables and triggers first, so none of them puts back what follows */
+    bool ok = count >= 0 && show_all_hidden(db) && remove_pins(db) && drop_system(db) && drop_moves(db);
+    /* installed homebrew another tool hid, back; what the system hides (a placeholder, one not installed) stays */
+    for (int u = 0; ok && u < count; u++) {
+        char table[64], sql[400];
+        snprintf(table, sizeof(table), "tbl_iconinfo_%s", users[u]);
+        if (!has_column(db, "main", table, "visible") || !has_column(db, "main", table, "installStatus") ||
+            !has_column(db, "main", "tbl_contentinfo", "appType") ||
+            !has_column(db, "main", "tbl_contentinfo", "contentLocation"))
+            continue;
+        snprintf(sql, sizeof(sql),
+                 "UPDATE %s SET visible = 1 WHERE visible = 0 AND installStatus = 2 AND titleId IN (SELECT titleId FROM "
+                 "tbl_contentinfo WHERE appType IN (0, 5) AND contentLocation = 2 AND titleId NOT GLOB 'CUSA*' AND "
+                 "titleId NOT GLOB 'NPXS*' AND titleId <> '" TABSHIFTER_ID "')",
+                 table);
+        ok = run_values(db, sql, 0, NULL, NULL) >= 0;
     }
-    ok = ok && drop_moves(db);
+    /* the system's tiles on their own tab, shown or hidden as the system has them */
+    for (size_t i = 0; ok && i < sizeof(SYSTEM_DEFAULTS) / sizeof(SYSTEM_DEFAULTS[0]); i++) {
+        const char *id = SYSTEM_DEFAULTS[i].id;
+        const int tab = SYSTEM_DEFAULTS[i].tab, other = (BIT_GAMES | BIT_MEDIA) & ~tab;
+        long long value = 0;
+        char concept[96] = "";
+        const int found = system_tile(db, id, &value, concept, sizeof(concept));
+        if (found < 0) {
+            ok = false;
+            break;
+        }
+        if (found == 0 || tab_bit(value) == 0)
+            continue;
+        if (tab_bit(value) != tab)
+            ok = write_system(db, id, concept, tab, other, other, users, count) &&
+                 myhome(db, id, tab == BIT_GAMES, users, count);
+        ok = ok && (SYSTEM_DEFAULTS[i].hidden
+                        ? write_system(db, id, concept, BIT_HIDDEN, 0, BIT_GAMES | BIT_MEDIA, users, count) &&
+                              system_visible(db, id, false, users, count)
+                        : write_system(db, id, concept, 0, BIT_HIDDEN, BIT_HIDDEN, users, count) &&
+                              system_visible(db, id, true, users, count));
+    }
+    /* each app on the tab its install puts it on */
+    static char ids[TILES_MAX][16];
+    static int tabs[TILES_MAX];
+    const int n = ok ? movable_apps(db, ids, tabs, TILES_MAX) : 0;
+    ok = ok && n >= 0;
+    for (int i = 0; ok && i < n; i++) {
+        const int home = app_home(ids[i]);
+        if (home && home != tabs[i])
+            ok = write_move(db, ids[i], home, users, count);
+    }
     if (!ok)
-        return snprintf(msg, msglen, "Art Swap's changes could not be removed (%s)", sqlite3_errmsg(db)), -1;
+        return snprintf(msg, msglen, "The home screen could not be put back (%s)", sqlite3_errmsg(db)), -1;
     return 0;
 }
 
@@ -2248,21 +2380,21 @@ void tiles_startup(void)
         return;
     }
     const int pins = ensure_pin_triggers(db, false), hidden = ensure_hidden(db, false), moves = ensure_moves(db, false),
-              system = ensure_system(db, false);
-    if (pins < 0 || hidden < 0 || moves < 0 || system < 0) {
+              system = ensure_system(db, false), adopt = tiles_adopt(db, false);
+    if (pins < 0 || hidden < 0 || moves < 0 || system < 0 || adopt < 0) {
         log_line("tiles: not checked: %s", sqlite3_errmsg(db));
-    } else if (pins + hidden + moves + system > 0) {
+    } else if (pins + hidden + moves + system + adopt > 0) {
         bool ok = tiles_backup(db, err, sizeof(err)) && exec(db, "BEGIN IMMEDIATE");
         const bool began = ok;
         ok = ok && ensure_pin_triggers(db, true) >= 0 && ensure_hidden(db, true) >= 0 && ensure_moves(db, true) >= 0 &&
-             ensure_system(db, true) >= 0;
+             ensure_system(db, true) >= 0 && tiles_adopt(db, true) >= 0;
         char check[128] = "";
         ok = ok && pragma_text(db, "PRAGMA integrity_check", check, sizeof(check)) == 0;
         ok = ok && exec(db, "COMMIT");
         if (!ok && began)
             exec(db, "ROLLBACK");
-        log_line("tiles: %s (pins %d, hidden %d, moves %d, system tiles %d)%s%s",
-                 ok ? "put back what the console undid" : "not put back", pins, hidden, moves, system,
+        log_line("tiles: %s (pins %d, hidden %d, moves %d, system tiles %d, apps other tools moved %d)%s%s",
+                 ok ? "put back what the console undid" : "not put back", pins, hidden, moves, system, adopt,
                  *err ? ": " : "", err);
     }
     sqlite3_close(db);

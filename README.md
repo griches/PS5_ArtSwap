@@ -375,9 +375,17 @@ anything they could not (a profile made since, a database rebuilt without
 them). A trigger is made only on columns the firmware has.
 
 Options can also remove the "TS" tile TabShifter leaves behind (from both
-databases, with its folders), and **remove everything Art Swap changed**: what
-it hid comes back, what it showed is hidden again, its tables and triggers go,
-and moved tiles stay where they are. Do that before a firmware update.
+databases, with its folders), and **put the home screen back as the system has
+it**, whatever changed it (Art Swap, Lineup, Art Swap 1.4): each app goes back
+on the tab its `param.json` names, the system's tiles on their own tab and
+shown or hidden as the system has them (the Media Gallery on Games; Welcome,
+PlayStation Plus, Music, Remote Play and Share Play hidden), installed homebrew
+another tool hid comes back, pins go, and Art Swap's tables and triggers go.
+What the system itself hides stays hidden. Do that before a firmware update.
+
+An app another tool moved off the tab its `param.json` names (Lineup, before
+its changes were removed) is kept where it is at the next Apply changes, as if
+Art Swap had moved it, so an install no longer puts it back.
 
 Lineup keeps the same places with triggers of its own, and the two would undo
 each other: while Lineup's changes are in the databases, the page says so and

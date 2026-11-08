@@ -789,6 +789,14 @@ static int do_reset(sqlite3 *db, const void *arg, char *msg, size_t msglen)
     return tiles_reset(db, msg, msglen);
 }
 
+static int do_adopt(sqlite3 *db, const void *arg, char *msg, size_t msglen)
+{
+    (void)arg;
+    if (tiles_adopt(db, true) < 0)
+        return snprintf(msg, msglen, "%s", sqlite3_errmsg(db)), -1;
+    return 0;
+}
+
 static int do_normalize(sqlite3 *db, const void *arg, char *msg, size_t msglen)
 {
     int changed = 0;
@@ -838,6 +846,9 @@ bool layout_arrange(char *err, size_t errlen)
         ok = change(db, s->shows[i].id, do_show, &s->shows[i], &written);
     for (int i = 0; ok && i < s->nmoves; i++)
         ok = change(db, s->moves[i].id, do_move, &s->moves[i], &written);
+    /* apps another tool moved, kept where they are as Art Swap's own moves: else an install puts them back */
+    if (ok && !s->reset && tiles_adopt(db, false) > 0)
+        ok = change(db, "apps other tools moved", do_adopt, NULL, &written);
     for (int i = 0; ok && i < s->nhides; i++)
         ok = change(db, s->hides[i].id, do_hide, &s->hides[i], &written);
     for (int i = 0; ok && i < s->nrows; i++)

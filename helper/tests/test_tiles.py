@@ -143,6 +143,13 @@ def make_console(base: Path, users=(U1, U2)):
             folder = base / f"user/home/{int(user):08x}"
             folder.mkdir(parents=True, exist_ok=True)
             (folder / "username.dat").write_bytes(name.encode() + b"\0" * 4)
+    # each homebrew app's install copy of its param.json: the tab an install puts it back on
+    for tid, _, app_type, place, category, *_ in TILES:
+        if app_type in (0, 5) and place == 2 and not tid.startswith(("NPXS", "CUSA")):
+            folder = base / f"user/app/{tid}/sce_sys"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "param.json").write_text(json.dumps({"applicationCategoryType": category & 65536,
+                                                           "titleId": tid}, indent=2))
     for folder in ("user/app/TBSH00001/sce_sys", "user/appmeta/TBSH00001", "system_data/priv/appmeta/TBSH00001"):
         (base / folder).mkdir(parents=True, exist_ok=True)
         (base / folder / "icon0.png").write_bytes(b"png")
@@ -443,19 +450,51 @@ def made_up_tests(work):
         refused(h, "a change beside Lineup's", "TAB", U1, "PSGC50001", "media", why="Lineup")
         c.run("DROP TABLE lineup_pin")
 
-        # removing everything: what Art Swap hid and showed back as it was, the rest where it is
+        # an app another tool moved off the tab its param.json names: kept there at the next Apply changes, as
+        # Art Swap's own move, so an install no longer puts it back
+        move_by_another_tool(c, "PLDM00001", 138)
         h.rows("HIDE", U1, "PPSA00001", "1")
         check(apply_changes(h, "a hide")[1] == "done" and c.visible("PPSA00001") == 0, "Game One hidden")
+        check(c.one("SELECT tab FROM artswap_moved WHERE titleId = 'PLDM00001'") == 138,
+              "Payload Manager, moved by another tool, kept on Games")
+        c.run("UPDATE tbl_contentinfo SET dispLocation = 188, categoryType = 65536 WHERE titleId = 'PLDM00001'")
+        check(c.places("PLDM00001")[0] == 138, "... and put back there when an install writes it on Media")
+
+        # Reset: the home screen as the system has it, whatever changed it
+        move_by_another_tool(c, "ORBT00001", 138)
+        c.run(f"UPDATE tbl_iconinfo_{U2} SET visible = 0 WHERE titleId = 'PSGC50001'")  # hidden by another tool
+        c.run("UPDATE tbl_contentinfo SET dispLocation = 146 WHERE titleId = 'NPXS40063';"
+              + "".join(f"UPDATE tbl_iconinfo_{u} SET dispLocation = 146, visible = 1 WHERE titleId = 'NPXS40063';"
+                        for u in (U1, U2)))  # Welcome, shown by another tool
         h.rows("RESET", "1")
-        check(apply_changes(h, "removing everything")[1] == "done", "Apply changes removes everything")
+        check(apply_changes(h, "removing everything")[1] == "done", "Apply changes puts the home screen back")
         check(c.ours() == 0, "nothing of Art Swap's left in either database")
         check(c.visible("PPSA00001") == 1, "Game One back")
+        check(c.visible("PSGC50001", U2) == 1, "the homebrew another tool hid, back")
         check(c.places("NPXS40063")[0] == 147 and c.visible("NPXS40063") == 0 and c.visible("NPXS40063", U2) == 0,
-              f"Welcome hidden again, as the system had it ({c.places('NPXS40063')})")
-        check(c.places("NPXS40075")[0] == 156, "the Gallery left on Media")
+              f"Welcome hidden, as the system has it, though another tool showed it ({c.places('NPXS40063')})")
+        check(c.places("NPXS40075")[0] == 154 and c.visible("NPXS40075") == 1,
+              f"the Gallery back on Games ({c.places('NPXS40075')})")
+        check(c.places("NPXS40054")[0] == 149 and c.visible("NPXS40054") == 0, "Music hidden on Media")
+        check(c.places("ORBT00001")[0] == 188 and c.places("PLDM00001")[0] == 188,
+              f"the apps other tools moved, back on Media ({c.places('ORBT00001')}, {c.places('PLDM00001')})")
+        check(c.places("PPSA99318")[0] == 138, "Art Swap on the tab its param.json names")
         check(c.ok(), "both databases pass their check")
     finally:
         stop_helper(proc, log, h)
+
+
+def move_by_another_tool(c, tid, tab):
+    """`tid` moved as Lineup does: every place, the category's Media bit too, nothing of Art Swap's"""
+    media = tab == 188
+    hub = ("psmediahub:main?titleId=" if media else "pshome:gamehub?titleId=") + tid
+    category = "categoryType | 65536" if media else "categoryType & ~65536"
+    c.run(f"UPDATE tbl_contentinfo SET dispLocation = {tab}, categoryType = {category}, pprHubAppUri = '{hub}' "
+          f"WHERE titleId = '{tid}';"
+          f"UPDATE tbl_conceptmetadata SET dispLocation = {tab} WHERE localConceptId = 'cid:local:{tid}';"
+          + "".join(f"UPDATE tbl_iconinfo_{u} SET dispLocation = {tab}, hubAppUri = '{hub}' WHERE titleId = '{tid}';"
+                    f"UPDATE tbl_concepticoninfo_{u} SET dispLocation = {tab + (2048 if media else 1024)} WHERE "
+                    f"localConceptId = 'cid:local:{tid}';" for u in (U1, U2)))
 
 
 def take_over_tests(work):
@@ -541,6 +580,12 @@ def real_tests(work):
         h.rows("RESET", "1")
         check(apply_changes(h, "removing everything")[1] == "done" and c.ours() == 0 and c.ok(),
               "the real databases: everything removed, both pass their check")
+        for tid, value, shown in (("NPXS40063", 147, 0), ("NPXS40075", 154, 1), ("NPXS40047", 146, 1),
+                                  ("NPXS40054", 149, 0)):
+            if tid in tiles:
+                got = c.places(tid, user)
+                check(got[0] == value and c.visible(tid, user) == shown,
+                      f"the real databases: {tid} as the system has it ({got}, visible {c.visible(tid, user)})")
     finally:
         stop_helper(proc, log, h)
 

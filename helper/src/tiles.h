@@ -76,8 +76,13 @@ int tiles_order(sqlite3 *db, const char *user, int tab, char ids[][16], const bo
 int tiles_tabshifter(sqlite3 *db, int *removed, char *msg, size_t msglen);
 /* After the transaction: TabShifter's folders */
 void tiles_tabshifter_folders(void);
-/* Everything Art Swap added to both databases: what it hid and showed back as it was, the rest where it is */
+/* The home screen put back as the system has it, whatever moved, hid or showed a tile (Art Swap, Lineup, Art Swap
+ * 1.4): Art Swap's tables and triggers removed, installed homebrew shown, the system's tiles on their own tab and
+ * shown or hidden as the system has them, each app on the tab its param.json names */
 int tiles_reset(sqlite3 *db, char *msg, size_t msglen);
+/* The apps on a tab other than the one their param.json names that Art Swap does not keep yet (another tool moved
+ * them): counted (create false), or kept there as Art Swap's own moves (create true). How many, or -1. */
+int tiles_adopt(sqlite3 *db, bool create);
 /* What Art Swap 1.4 and older left: an order locked far in the future, and the 140 and 186 it wrote for an app it
  * moved. *changed counts what was put right. */
 int tiles_normalize(sqlite3 *db, int *changed, char *msg, size_t msglen);

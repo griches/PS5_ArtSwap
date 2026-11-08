@@ -307,10 +307,10 @@ void App::send_queue(const std::string &what, bool on)
                   on ? "Apply changes (R2) takes it out of the home screen's databases and deletes its folders."
                      : "Nothing of it is changed.");
         else
-            toast(on ? "Everything Art Swap changed goes" : "Art Swap's changes stay",
-                  on ? "Apply changes (R2) brings back what it hid, hides again what it showed, and removes its "
-                       "tables from the home screen's databases. Moved tiles stay where they are."
-                     : "Nothing is removed.");
+            toast(on ? "The home screen goes back as the system has it" : "The home screen stays as it is",
+                  on ? "Apply changes (R2) puts every tile back on its own tab, shown or hidden as the system has "
+                       "it, whatever moved it, and removes Art Swap's tables from the home screen's databases."
+                     : "Nothing is changed.");
         load_layout();
         load_pending();
     }, true);
@@ -835,7 +835,7 @@ void App::draw_home(gfx::DrawList &list) const
             {"Remove TabShifter's tile", tabshifter_ == "queued"  ? "At Apply changes"
                                          : tabshifter_ == "found" ? "Found"
                                                                   : "None"},
-            {"Remove everything Art Swap changed", reset_queued_ ? "At Apply changes" : ""},
+            {"Put the home screen back as the system has it", reset_queued_ ? "At Apply changes" : ""},
         };
         rows[3].enabled = tabshifter_ != "none";
         rows[4].danger = true;
@@ -850,8 +850,9 @@ void App::draw_home(gfx::DrawList &list) const
             "Sorts the Media row by name. A pinned tile keeps its place.",
             "TabShifter leaves a \"TS\" tile in the home screen's databases. Apply changes takes it out and deletes its "
             "folders, after both databases are copied aside. Do this after deleting TabShifter.",
-            "Brings back what Art Swap hid, hides again what it showed, and takes its tables and triggers out of the "
-            "home screen's databases at Apply changes. Moved tiles stay where they are."};
+            "Undoes what Art Swap, Lineup or another tool changed: each app back on the tab it installs on, the "
+            "system's tiles on their own tab and shown or hidden as the system has them, homebrew brought back, pins "
+            "gone, and Art Swap's tables and triggers out of the databases at Apply changes."};
         description = layout_conflict_ ? "Lineup's changes are in the home screen's database: open Lineup, then "
                                          "Options, More options, Remove pins from every profile, and come back."
                       : home_in_rows_  ? notes[home_row_[3]]
