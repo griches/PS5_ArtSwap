@@ -105,7 +105,7 @@ std::vector<int> App::home_rows(int category) const
     {
         const Tile &t = tiles_[static_cast<std::size_t>(i)];
         const bool hidden = t.hidden || t.tab == "none";
-        if ((category == 2 && hidden) || (!hidden && t.tab == (category == 0 ? "games" : "media")))
+        if (category == 2 ? hidden : !hidden && t.tab == (category == 0 ? "games" : "media"))
             rows.push_back(i);
     }
     return rows;
