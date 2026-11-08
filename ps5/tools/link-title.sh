@@ -66,7 +66,15 @@ if $platform_has_localeconv && [[ " ${radv_link_flags[*]} " != *" --defsym=local
     printf '{\n    local:\n        localeconv;\n};\n' > "$work/link/localeconv-local.map"
     radv_link_flags+=(--defsym=localeconv=ps5_localeconv --version-script "$work/link/localeconv-local.map")
 fi
+# Mesa names its optional entry points through weak references that read as NULL
+# when nothing defines them. The PS5 target gives external declarations default
+# visibility, and with the SDK's stubs on the line LLD then puts every one in the
+# dynamic symbol table, where the native tool wants an SDK stub for each (no SDK
+# stub exports radv_EnumeratePhysicalDevices). --no-dynamic-linker leaves them out
+# and keeps the real imports, as PS5_Vulkan's tools/check-vulkan-runtime.sh links;
+# -z nodynamic-undefined-weak asks the same of newer LLDs (LLD 18 warns, ignores it).
 "$sdk/bin/prospero-lld" "${radv_linker_script[@]}" --eh-frame-hdr "${radv_link_flags[@]}" \
+    --no-dynamic-linker -z nodynamic-undefined-weak \
     --version-script "$native/app-symbols.map" --exclude-libs=ALL \
     -e _start -o "$work/link/llvm-pie.elf" \
     "$work/link/obj/app_crt.o" "${objects[@]}" \

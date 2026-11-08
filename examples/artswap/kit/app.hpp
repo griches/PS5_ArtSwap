@@ -258,7 +258,20 @@ class App
     // ---- the home screen's layout: a full page (home.cpp) ----
     struct Tile
     {
-        std::string id, where, now, kind, name; // where: wished; now: what the home screen shows
+        // tab and hidden: as wished, on the profile shown; now: what the home screen has
+        std::string id, tab, now;
+        bool hidden = false, now_hidden = false;
+        std::string kind, caps, name; // caps: m moves, h hides, s shows, o ordered, S shown by Art Swap
+        int pin = -1;                 // its place pinned in the row, or -1
+        bool can(char c) const { return caps.find(c) != std::string::npos; }
+    };
+    struct Profile
+    {
+        std::string user, name;
+    };
+    struct TileAction
+    {
+        std::string label, note, action; // action: games, media, hide, unhide, show, unshow, pin, unpin
     };
     void open_home();
     void load_layout();
@@ -268,9 +281,10 @@ class App
     hui::gfx::Rect home_row_rect(int category, int row) const; // where it is now, scrolled
     void update_home(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
     void home_select(hui::ui::Feedback &feedback);
-    void place_tile(const std::string &id, const std::string &where);
-    void send_order(const std::string &mode, const std::vector<std::string> &ids);
-    std::vector<std::string> games_order() const; // the Games row's own tiles, in their order now
+    void change_tile(const std::string &id, const std::string &action);
+    void send_row(const std::string &tab, const std::string &done);
+    void send_queue(const std::string &what, bool on);
+    void sort_row(const std::string &tab);
     void update_place_sheet(const hui::InputFrame &input, hui::ui::Feedback &feedback);
     void draw_home(hui::gfx::DrawList &list) const;
     void draw_place_sheet(hui::gfx::DrawList &list, const hui::gfx::Rect &panel, float x, float y) const;
@@ -497,14 +511,19 @@ class App
 
     // the home screen page
     std::vector<Tile> tiles_;
-    std::string layout_order_ = "none"; // none, locked, or free (an order waiting to be written once)
+    std::vector<Profile> profiles_;
+    std::string profile_;            // the profile whose home screen is shown (its ten digits)
+    std::string tabshifter_ = "none"; // TabShifter's tile: none, found, or queued for Apply changes
+    bool reset_queued_ = false;      // removing everything Art Swap changed, at Apply changes
+    bool layout_conflict_ = false;   // Lineup's changes are in the database: nothing is changed
+    std::vector<TileAction> sheet_actions_; // what the place sheet offers for place_id_
     bool layout_loading_ = false;
     std::string layout_error_;
-    int home_category_ = 0;          // Games, Media, Hidden, Order
+    int home_category_ = 0;          // Games, Media, Hidden, Options
     bool home_in_rows_ = false;
     int home_row_[4] = {0, 0, 0, 0};
     hui::ui::Scroller home_scroll_;  // the list of tiles, scrolled to keep the focus in view
-    bool moving_ = false;            // a game picked up on the Games row, moved with the D-pad
+    bool moving_ = false;            // a tile picked up in its row, moved with the D-pad
     std::vector<Tile> moving_before_; // the tiles before the move, for ○
     std::string place_id_;           // the tile the place sheet is for
     std::string home_focus_id_;      // a tile to focus once the page has its list

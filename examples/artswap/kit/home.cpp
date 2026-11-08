@@ -1,14 +1,17 @@
 /*
- * Art Swap - the home screen page: which home each tile is on, Games or
- * Media, the tiles hidden from both, and the order of the Games row.
+ * Art Swap - the home screen page: which tab each tile is on, Games or Media,
+ * the tiles hidden, a row's order and the tiles pinned in it, for one profile
+ * at a time.
  *
- * The rail has the three places and the order; each place lists its tiles,
- * and ✕ on one moves it (the place sheet). □ picks up a game on the Games row
- * and the D-pad moves it along. The helper keeps what the person chose and
- * writes it into the home screen's database at Apply changes (layout.c),
- * just before the home screen restarts, and again at every Apply changes
- * after, so a firmware update or an install that put a tile back is put right
- * again. A locked order stays as it is when other games are played.
+ * The rail has the two tabs, the tiles hidden, and the page's options; each
+ * tab lists its tiles as the home screen orders them, and ✕ on one opens what
+ * it can do (the place sheet): move to the other tab (on every profile), pin
+ * it at its place, hide it on this profile, or, for one of the system's own
+ * tiles the system hides, show it on every profile. □ picks up a tile of the
+ * row and the D-pad carries it along. The helper keeps what the person chose
+ * and writes it into the home screen's databases at Apply changes (layout.c,
+ * tiles.c), just before the home screen restarts; from then on, triggers in
+ * the databases keep it through restarts, rest mode and installs.
  *
  * The page follows the kit's Settings design (page.hpp).
  *
@@ -24,7 +27,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+
+#if defined(__PROSPERO__)
+extern "C" int sceUserServiceGetInitialUser(int32_t *user);
+#endif
 
 namespace artswap
 {
@@ -43,25 +52,36 @@ using hui::audio::Cue;
 using namespace page;
 
 constexpr int kCategories = 4;
-constexpr const char *kCategoryNames[kCategories] = {"Games", "Media", "Hidden", "Order"};
-constexpr const char *kPlaces[3] = {"games", "media", "hidden"};
+constexpr const char *kCategoryNames[kCategories] = {"Games", "Media", "Hidden", "Options"};
+constexpr int kOptions = 5;
 constexpr float kListTop = kPanel.y + 100.0f;
 constexpr float kListBottom = kPanel.y + kPanel.h - 100.0f;
-constexpr const char *kArtSwap = "PPSA99318";
-
-int place_index(const std::string &where)
-{
-    for (int i = 0; i < 3; ++i)
-        if (where == kPlaces[i])
-            return i;
-    return 0;
-}
 
 std::string lower(std::string text)
 {
     for (char &c : text)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return text;
+}
+
+// The profile that started Art Swap, as the home screen's tables name it (ten digits); "" off the console
+std::string console_user()
+{
+#if defined(__PROSPERO__)
+    int32_t user = 0;
+    if (sceUserServiceGetInitialUser(&user) == 0 && user > 0)
+    {
+        char text[16];
+        std::snprintf(text, sizeof(text), "%010u", static_cast<unsigned>(user));
+        return text;
+    }
+#endif
+    return "";
+}
+
+const char *tab_label(const std::string &tab)
+{
+    return tab == "media" ? "Media" : tab == "games" ? "Games" : "neither";
 }
 
 } // namespace
@@ -82,23 +102,18 @@ std::vector<int> App::home_rows(int category) const
     if (category < 0 || category > 2)
         return rows;
     for (int i = 0; i < static_cast<int>(tiles_.size()); ++i)
-        if (tiles_[static_cast<std::size_t>(i)].where == kPlaces[category])
+    {
+        const Tile &t = tiles_[static_cast<std::size_t>(i)];
+        const bool hidden = t.hidden || t.tab == "none";
+        if (category == 2 ? hidden : !hidden && t.tab == (category == 0 ? "games" : "media"))
             rows.push_back(i);
+    }
     return rows;
 }
 
 int App::home_row_count(int category) const
 {
-    return category == 3 ? 2 : static_cast<int>(home_rows(category).size());
-}
-
-std::vector<std::string> App::games_order() const
-{
-    std::vector<std::string> ids;
-    for (const Tile &t : tiles_)
-        if (t.where == "games" && t.kind != "system")
-            ids.push_back(t.id);
-    return ids;
+    return category == 3 ? kOptions : static_cast<int>(home_rows(category).size());
 }
 
 Rect App::home_rail_rect(int category) const
@@ -109,11 +124,7 @@ Rect App::home_rail_rect(int category) const
 Rect App::home_row_rect(int category, int row) const
 {
     if (category == 3)
-    {
-        // under the page's one row of tiles
-        const float top = kPanel.y + 100.0f + 140.0f + 24.0f;
-        return {kPanel.x + kPanelPad, top + static_cast<float>(row) * kRowPitch, kPanel.w - 2 * kPanelPad, kRowH};
-    }
+        return {kPanel.x + kPanelPad, kListTop + static_cast<float>(row) * kRowPitch, kPanel.w - 2 * kPanelPad, kRowH};
     return {kPanel.x + kPanelPad, kListTop + static_cast<float>(row) * kRowPitch - home_scroll_.offset(),
             kPanel.w - 2 * kPanelPad - 18.0f, kRowH};
 }
@@ -131,6 +142,16 @@ void App::open_home()
     rail_marker_.snap(home_rail_rect(home_category_).y);
     page_focus_.snap(home_rail_rect(home_category_));
     home_scroll_.position.snap(0.0f);
+    if (profile_.empty())
+        profile_ = console_user();
+    helper_.ask({"PROFILES"}, [this](Reply &reply) {
+        if (!reply.ok)
+            return;
+        profiles_.clear();
+        for (const auto &row : reply.rows())
+            if (row.size() >= 3 && row[0] == "U")
+                profiles_.push_back({row[1], row[2]});
+    }, true);
     load_layout();
 }
 
@@ -139,27 +160,53 @@ void App::load_layout()
     if (layout_loading_)
         return;
     layout_loading_ = true;
-    helper_.ask({"LAYOUT"}, [this](Reply &reply) {
+    helper_.ask({"LAYOUT", profile_}, [this](Reply &reply) {
         layout_loading_ = false;
         if (!reply.ok)
         {
+            // a profile the database does not know (one made since): the first one
+            if (!profile_.empty() && reply.error.find("no such profile") != std::string::npos)
+            {
+                profile_.clear();
+                load_layout();
+                return;
+            }
             layout_error_ = reply.error;
             return;
         }
         layout_error_.clear();
+        layout_conflict_ = false;
         std::vector<Tile> list;
         for (const auto &row : reply.rows())
         {
-            if (row.size() >= 2 && row[0] == "order")
-                layout_order_ = row[1];
-            else if (row.size() >= 6 && row[0] == "T")
-                list.push_back({row[1], row[2], row[3], row[4], row[5]});
+            if (row.size() >= 2 && row[0] == "profile")
+                profile_ = row[1];
+            else if (row.size() >= 2 && row[0] == "conflict")
+                layout_conflict_ = true;
+            else if (row.size() >= 2 && row[0] == "tabshifter")
+                tabshifter_ = row[1];
+            else if (row.size() >= 2 && row[0] == "reset")
+                reset_queued_ = row[1] == "queued";
+            else if (row.size() >= 10 && row[0] == "T")
+            {
+                Tile t;
+                t.id = row[1];
+                t.tab = row[2];
+                t.now = row[3];
+                t.hidden = row[4] == "1";
+                t.now_hidden = row[5] == "1";
+                t.kind = row[6];
+                t.caps = row[7];
+                t.pin = row[8] == "-" ? -1 : std::atoi(row[8].c_str());
+                t.name = row[9];
+                list.push_back(std::move(t));
+            }
         }
         tiles_ = std::move(list);
         // the shelf's game: its place opens with it in focus
         if (const Tile *t = tile(home_focus_id_); t && screen_ == Screen::home && !home_in_rows_)
         {
-            home_category_ = place_index(t->where);
+            home_category_ = t->hidden || t->tab == "none" ? 2 : t->tab == "media" ? 1 : 0;
             const std::vector<int> rows = home_rows(home_category_);
             for (int i = 0; i < static_cast<int>(rows.size()); ++i)
                 if (tiles_[static_cast<std::size_t>(rows[static_cast<std::size_t>(i)])].id == home_focus_id_)
@@ -181,62 +228,118 @@ void App::load_layout()
 
 // ================================================================ changes
 
-void App::place_tile(const std::string &id, const std::string &where)
+void App::change_tile(const std::string &id, const std::string &action)
 {
     const Tile *t = tile(id);
-    if (t == nullptr || t->where == where)
+    if (t == nullptr)
         return;
-    const std::string name = t->name;
-    // the tile stays in focus, in its new place
-    for (Tile &each : tiles_)
-        if (each.id == id)
-            each.where = where;
-    helper_.ask({"PLACE", id, where}, [this, id, name, where](Reply &reply) {
+    const std::string name = t->name, tab = t->tab;
+    if (action == "pin" || action == "unpin")
+    {
+        // the row as it is, this tile pinned at its place, or not
+        for (Tile &each : tiles_)
+            if (each.id == id)
+                each.pin = action == "pin" ? 0 : -1;
+        send_row(tab, action == "pin" ? name + " is pinned at its place" : name + " is no longer pinned");
+        return;
+    }
+    std::vector<std::string> request;
+    std::string done;
+    if (action == "games" || action == "media")
+    {
+        request = {"TAB", profile_, id, action};
+        done = name + " goes on " + tab_label(action);
+    }
+    else if (action == "hide" || action == "unhide")
+    {
+        request = {"HIDE", profile_, id, action == "hide" ? "1" : "0"};
+        done = name + (action == "hide" ? " is hidden on this profile" : " comes back on this profile");
+    }
+    else
+    {
+        request = {"SHOW", profile_, id, action == "show" ? "1" : "0"};
+        done = name + (action == "show" ? " is shown, on every profile" : " is hidden again, on every profile");
+    }
+    helper_.ask(request, [this, name, done](Reply &reply) {
         if (!reply.ok)
         {
-            toast(name + " was not moved", reply.error, true);
+            toast(name + " was not changed", reply.error, true);
             load_layout();
             return;
         }
-        for (const auto &row : reply.rows())
-            if (row.size() >= 6 && row[0] == "T")
-                for (Tile &each : tiles_)
-                    if (each.id == row[1])
-                        each = {row[1], row[2], row[3], row[4], row[5]};
-        const Tile *now = tile(id);
-        const bool waits = now && now->where != now->now;
-        toast(name + (where == "hidden" ? " is hidden" : where == "media" ? " goes on Media" : " goes on Games"),
-              waits ? "Apply changes (R2) shows it on the home screen." : "The home screen has it there already.");
+        toast(done, "Apply changes (R2) shows it on the home screen.");
+        load_layout();
         load_pending();
     }, true);
-    for (int c = 0; c < 3; ++c)
-        home_row_[c] = std::clamp(home_row_[c], 0, std::max(0, home_row_count(c) - 1));
 }
 
-void App::send_order(const std::string &mode, const std::vector<std::string> &ids)
+void App::send_row(const std::string &tab, const std::string &done)
 {
-    std::vector<std::string> request = {"ORDER", mode};
-    request.insert(request.end(), ids.begin(), ids.end());
-    helper_.ask(request, [this, mode](Reply &reply) {
+    // the tiles of the row in their order, a pinned one marked
+    std::vector<std::string> request = {"ROW", profile_, tab};
+    for (const Tile &t : tiles_)
+        if (t.tab == tab && !t.hidden && t.can('o'))
+            request.push_back(t.id + (t.pin >= 0 ? "*" : ""));
+    helper_.ask(request, [this, done](Reply &reply) {
         if (!reply.ok)
         {
             toast("The order was not kept", reply.error, true);
             load_layout();
             return;
         }
-        for (const auto &row : reply.rows())
-            if (row.size() >= 2 && row[0] == "order")
-                layout_order_ = row[1];
-        toast(mode == "locked" ? "The order is locked"
-              : mode == "free" ? "The new order is kept"
-                               : "The order is free again",
-              mode == "locked" ? "Apply changes (R2) puts your games in this order, and playing a game no longer "
-                                 "moves it first."
-              : mode == "free" ? "Apply changes (R2) puts your games in this order. Playing a game moves it first, "
-                                 "as before."
-                               : "Apply changes (R2), and playing a game moves it first again.");
+        toast(done, "Apply changes (R2) puts the row in this order. A pinned tile keeps its place when you play "
+                    "another.");
+        load_layout();
         load_pending();
     }, true);
+}
+
+void App::send_queue(const std::string &what, bool on)
+{
+    helper_.ask({what == "tabshifter" ? "TABSHIFTER" : "RESET", on ? "1" : "0"}, [this, what, on](Reply &reply) {
+        if (!reply.ok)
+        {
+            toast("That was not kept", reply.error, true);
+            return;
+        }
+        if (what == "tabshifter")
+            toast(on ? "TabShifter's tile goes" : "TabShifter's tile stays",
+                  on ? "Apply changes (R2) takes it out of the home screen's databases and deletes its folders."
+                     : "Nothing of it is changed.");
+        else
+            toast(on ? "The home screen goes back as the system has it" : "The home screen stays as it is",
+                  on ? "Apply changes (R2) puts every tile back on its own tab, shown or hidden as the system has "
+                       "it, whatever moved it, and removes Art Swap's tables from the home screen's databases."
+                     : "Nothing is changed.");
+        load_layout();
+        load_pending();
+    }, true);
+}
+
+void App::sort_row(const std::string &tab)
+{
+    // A to Z: the row's tiles in the places they had, sorted by name; a pinned tile keeps its place
+    std::vector<int> slots;
+    std::vector<Tile> loose;
+    for (int i = 0; i < static_cast<int>(tiles_.size()); ++i)
+    {
+        const Tile &t = tiles_[static_cast<std::size_t>(i)];
+        if (t.tab == tab && !t.hidden && t.can('o') && t.pin < 0)
+        {
+            slots.push_back(i);
+            loose.push_back(t);
+        }
+    }
+    if (loose.size() < 2)
+    {
+        toast("Nothing to sort", "The row has no tiles to put in order.", true);
+        return;
+    }
+    std::stable_sort(loose.begin(), loose.end(),
+                     [](const Tile &a, const Tile &b) { return lower(a.name) < lower(b.name); });
+    for (std::size_t i = 0; i < slots.size(); ++i)
+        tiles_[static_cast<std::size_t>(slots[i])] = loose[i];
+    send_row(tab, std::string("The ") + tab_label(tab) + " row goes in A to Z order");
 }
 
 // ================================================================ input
@@ -246,14 +349,14 @@ void App::update_home(const hui::InputFrame &input, float dt, ui::Feedback &feed
     const int rows = home_row_count(home_category_);
     if (moving_)
     {
-        // a game on the Games row, carried with the D-pad; ✕ or □ puts it down, ○ puts it back
-        const std::vector<int> list = home_rows(0);
-        int &row = home_row_[0];
+        // a tile of the row, carried with the D-pad; ✕ or □ puts it down, ○ puts it back
+        const std::vector<int> list = home_rows(home_category_);
+        int &row = home_row_[home_category_];
         if (input.nav == Direction::up || input.nav == Direction::down)
         {
             const int next = row + (input.nav == Direction::down ? 1 : -1);
             if (next >= 0 && next < static_cast<int>(list.size()) &&
-                tiles_[static_cast<std::size_t>(list[static_cast<std::size_t>(next)])].kind != "system")
+                tiles_[static_cast<std::size_t>(list[static_cast<std::size_t>(next)])].can('o'))
             {
                 std::swap(tiles_[static_cast<std::size_t>(list[static_cast<std::size_t>(row)])],
                           tiles_[static_cast<std::size_t>(list[static_cast<std::size_t>(next)])]);
@@ -267,14 +370,15 @@ void App::update_home(const hui::InputFrame &input, float dt, ui::Feedback &feed
         {
             moving_ = false;
             feedback.play(Cue::select);
-            send_order(layout_order_ == "locked" ? "locked" : "free", games_order());
+            const Tile *t = tile(place_id_);
+            send_row(home_category_ == 1 ? "media" : "games", (t ? t->name : std::string("It")) + " takes its new place");
         }
         else if (input.is_pressed(Action::back))
         {
             moving_ = false;
             feedback.play(Cue::back);
             tiles_ = moving_before_;
-            const std::vector<int> again = home_rows(0);
+            const std::vector<int> again = home_rows(home_category_);
             for (int i = 0; i < static_cast<int>(again.size()); ++i)
                 if (tiles_[static_cast<std::size_t>(again[static_cast<std::size_t>(i)])].id == place_id_)
                     row = i;
@@ -347,16 +451,22 @@ void App::update_home(const hui::InputFrame &input, float dt, ui::Feedback &feed
             }
             else if (input.is_pressed(Action::confirm))
                 home_select(feedback);
-            else if (input.is_pressed(Action::west) && home_category_ == 0)
+            else if (input.is_pressed(Action::west) && home_category_ < 2)
             {
-                // a game, not one of the system's tiles, which keep their own places at the end of the row
-                const std::vector<int> list = home_rows(0);
+                // a tile of the row, not one of the hubs or libraries, which keep their own places
+                const std::vector<int> list = home_rows(home_category_);
                 const Tile &t = tiles_[static_cast<std::size_t>(list[static_cast<std::size_t>(row)])];
-                if (t.kind == "system")
+                if (!t.can('o'))
                 {
                     feedback.play(Cue::error);
-                    toast(t.name + " keeps its own place", "The system's tiles stay at the end of the Games row.",
+                    toast(t.name + " keeps its own place",
+                          "The home screen puts the system's hubs at the front of the row and the library at its end.",
                           true);
+                }
+                else if (layout_conflict_)
+                {
+                    feedback.play(Cue::error);
+                    toast("Lineup's changes are in the way", "Remove them in Lineup first: see Options.", true);
                 }
                 else
                 {
@@ -394,45 +504,107 @@ void App::home_select(ui::Feedback &feedback)
         if (row >= static_cast<int>(list.size()))
             return;
         const Tile &t = tiles_[static_cast<std::size_t>(list[static_cast<std::size_t>(row)])];
+        if (layout_conflict_)
+        {
+            feedback.play(Cue::error);
+            toast("Lineup's changes are in the way", "Remove them in Lineup first: see Options.", true);
+            return;
+        }
+        // what it can do
+        sheet_actions_.clear();
+        const bool hidden = t.hidden || t.tab == "none";
+        if (!hidden)
+        {
+            if (t.can('m'))
+            {
+                const std::string other = t.tab == "games" ? "media" : "games";
+                sheet_actions_.push_back({std::string("Move to ") + tab_label(other), "on every profile", other});
+            }
+            if (t.can('o'))
+                sheet_actions_.push_back(t.pin >= 0 ? TileAction{"Unpin", "playing other apps can move it", "unpin"}
+                                                    : TileAction{"Pin at this place", "it keeps it as you play", "pin"});
+            if (t.can('h'))
+                sheet_actions_.push_back({"Hide", "on this profile only", "hide"});
+            if (t.can('S'))
+                sheet_actions_.push_back({"Hide again", "as the system had it, on every profile", "unshow"});
+        }
+        else
+        {
+            if (t.can('h'))
+                sheet_actions_.push_back({"Bring back", "on this profile", "unhide"});
+            if (t.can('s') && !t.can('S'))
+                sheet_actions_.push_back({"Show", "the system hides it; on every profile", "show"});
+            if (t.can('m'))
+            {
+                const std::string other = t.tab == "games" ? "media" : "games";
+                sheet_actions_.push_back({std::string("Move to ") + tab_label(other), "on every profile", other});
+            }
+        }
+        if (sheet_actions_.empty())
+        {
+            feedback.play(Cue::error);
+            toast(t.name + " stays as it is",
+                  t.kind == "system" ? "The system keeps this tile where it is." : "Art Swap cannot change this tile.",
+                  true);
+            return;
+        }
         place_id_ = t.id;
         sheet_ = Sheet::place;
-        sheet_focus_ = place_index(t.where);
-        sheet_focus_position_.snap(static_cast<float>(sheet_focus_));
+        sheet_focus_ = 0;
+        sheet_focus_position_.snap(0.0f);
         feedback.play(Cue::modal_open);
         return;
     }
+    // the options
     if (row == 0)
     {
-        // the order locked as it is now, or free again
+        // the next profile
         feedback.play(Cue::toggle);
-        if (layout_order_ == "locked")
-            send_order("none", {});
-        else
-            send_order("locked", games_order());
-        return;
-    }
-    // A to Z: the games on the row, in the places the games had, sorted by name
-    feedback.play(Cue::select);
-    std::vector<int> slots;
-    std::vector<Tile> games;
-    for (int i = 0; i < static_cast<int>(tiles_.size()); ++i)
-        if (tiles_[static_cast<std::size_t>(i)].where == "games" && tiles_[static_cast<std::size_t>(i)].kind != "system")
+        if (profiles_.size() < 2)
         {
-            slots.push_back(i);
-            games.push_back(tiles_[static_cast<std::size_t>(i)]);
+            toast("One profile", "This console has one profile with a home screen.", true);
+            return;
         }
-    std::stable_sort(games.begin(), games.end(),
-                     [](const Tile &a, const Tile &b) { return lower(a.name) < lower(b.name); });
-    for (std::size_t i = 0; i < slots.size(); ++i)
-        tiles_[static_cast<std::size_t>(slots[i])] = games[i];
-    send_order(layout_order_ == "locked" ? "locked" : "free", games_order());
+        std::size_t at = 0;
+        for (std::size_t i = 0; i < profiles_.size(); ++i)
+            if (profiles_[i].user == profile_)
+                at = i;
+        profile_ = profiles_[(at + 1) % profiles_.size()].user;
+        home_row_[0] = home_row_[1] = home_row_[2] = 0;
+        load_layout();
+    }
+    else if (row == 1 || row == 2)
+    {
+        feedback.play(Cue::select);
+        if (layout_conflict_)
+            toast("Lineup's changes are in the way", "Remove them in Lineup first.", true);
+        else
+            sort_row(row == 1 ? "games" : "media");
+    }
+    else if (row == 3)
+    {
+        if (tabshifter_ == "none")
+        {
+            feedback.play(Cue::error);
+            toast("No TabShifter tile", "The home screen's databases have none.", true);
+            return;
+        }
+        feedback.play(Cue::toggle);
+        send_queue("tabshifter", tabshifter_ != "queued");
+    }
+    else
+    {
+        feedback.play(Cue::toggle);
+        send_queue("reset", !reset_queued_);
+    }
 }
 
 void App::update_place_sheet(const hui::InputFrame &input, ui::Feedback &feedback)
 {
+    const int n = static_cast<int>(sheet_actions_.size());
     if (input.nav == Direction::up || input.nav == Direction::down)
     {
-        const int next = std::clamp(sheet_focus_ + (input.nav == Direction::down ? 1 : -1), 0, 2);
+        const int next = std::clamp(sheet_focus_ + (input.nav == Direction::down ? 1 : -1), 0, std::max(0, n - 1));
         if (next != sheet_focus_)
         {
             sheet_focus_ = next;
@@ -441,20 +613,11 @@ void App::update_place_sheet(const hui::InputFrame &input, ui::Feedback &feedbac
         else if (!input.nav_repeat)
             feedback.play(Cue::error, 1.0f, 0.0f, 0.5f);
     }
-    if (input.is_pressed(Action::confirm))
+    if (input.is_pressed(Action::confirm) && sheet_focus_ < n)
     {
-        const std::string where = kPlaces[sheet_focus_];
-        // Art Swap hidden would leave no way back to it from the home screen
-        if (place_id_ == kArtSwap && where == "hidden")
-        {
-            feedback.play(Cue::error);
-            toast("Art Swap stays on the home screen", "Hidden, there would be no way back to it to show it again.",
-                  true);
-            return;
-        }
         feedback.play(Cue::select);
         sheet_ = Sheet::none;
-        place_tile(place_id_, where);
+        change_tile(place_id_, sheet_actions_[static_cast<std::size_t>(sheet_focus_)].action);
     }
     else if (input.is_pressed(Action::back))
     {
@@ -500,9 +663,8 @@ void App::draw_home(gfx::DrawList &list) const
         draw_rail_icon(list, glyphs[i], x + 46, r.cy(), active ? kAccent : kText.with_alpha(0.6f));
         ui::text(list, active ? fonts_.semibold : fonts_.regular, kCategoryNames[i], x + 88, centred(r.cy(), 28), 28,
                  kText.with_alpha(active ? 1.0f : 0.68f));
-        // how many tiles each place has; whether the order is locked
-        const std::string count = i < 3 ? (tiles_.empty() ? "" : std::to_string(home_row_count(i)))
-                                        : (layout_order_ == "locked" ? "Locked" : "");
+        // how many tiles each place has
+        const std::string count = i < 3 ? (tiles_.empty() ? "" : std::to_string(home_row_count(i))) : "";
         ui::text(list, fonts_.regular, count, r.x + r.w - 24, centred(r.cy(), 22), 22,
                  kText.with_alpha(active ? 0.75f : 0.45f), gfx::Align::right);
         list.pop_opacity();
@@ -513,11 +675,17 @@ void App::draw_home(gfx::DrawList &list) const
     const int c = home_category_;
     const float rise = 18.0f;
     const float title_in = tween::stagger(page_age_, 0, 0.05f, 0.3f);
+    std::string profile_name = profile_;
+    for (const Profile &p : profiles_)
+        if (p.user == profile_)
+            profile_name = p.name;
     list.push_opacity(title_in * panel_in);
-    static const char *titles[kCategories] = {"On the Games home", "On the Media home", "Hidden from both",
-                                              "The order of your games"};
-    ui::text(list, fonts_.semibold, titles[c], kPanel.x + kPanelPad + kRowPad, kPanel.y + 66 + rise * (1.0f - title_in),
-             36, kText);
+    static const char *titles[kCategories] = {"On the Games home", "On the Media home", "Hidden", "Options"};
+    const float tw = ui::text(list, fonts_.semibold, titles[c], kPanel.x + kPanelPad + kRowPad,
+                              kPanel.y + 66 + rise * (1.0f - title_in), 36, kText);
+    if (!profile_name.empty())
+        ui::text(list, fonts_.regular, profile_name, kPanel.x + kPanelPad + kRowPad + tw + 20,
+                 kPanel.y + 66 + rise * (1.0f - title_in), 26, kText.with_alpha(0.55f));
     list.pop_opacity();
     auto staggered = [&](int index, const auto &draw) {
         const float t = tween::stagger(page_age_, index, 0.05f, 0.32f);
@@ -577,19 +745,29 @@ void App::draw_home(gfx::DrawList &list) const
                 }
                 const bool carried = moving_ && focused;
                 ui::text(list, focused ? fonts_.semibold : fonts_.regular,
-                         fonts_.regular.font->fit(t.name, 27, r.w * 0.58f), icon.x + icon.w + 22,
+                         fonts_.regular.font->fit(t.name, 27, r.w * 0.56f), icon.x + icon.w + 22,
                          centred(r.cy(), 27), 27, kText.with_alpha(focused ? 1.0f : 0.84f));
-                // where it is now, when that is not where it goes
+                // where it is now, when that is not where it goes; else what it is
                 std::string value;
                 Color ink = kText.with_alpha(focused ? 0.75f : 0.5f);
                 if (carried)
                     value = "Move it with the D-pad";
-                else if (t.where != t.now)
+                else if (t.tab != t.now || t.hidden != t.now_hidden)
                 {
-                    value = "Now on " + std::string(t.now == "hidden" ? "neither" : t.now == "media" ? "Media" : "Games") +
-                            ": Apply changes";
+                    value = t.hidden != t.now_hidden ? (t.now_hidden ? "Hidden now: Apply changes"
+                                                                     : "Shown now: Apply changes")
+                                                     : std::string("Now on ") + tab_label(t.now) + ": Apply changes";
                     ink = kWarn.with_alpha(focused ? 1.0f : 0.8f);
                 }
+                else if (t.pin >= 0)
+                {
+                    value = "Pinned";
+                    ink = kAccent.with_alpha(focused ? 1.0f : 0.85f);
+                }
+                else if (c == 2)
+                    value = t.can('h') ? "Hidden by Art Swap" : "Hidden by the system";
+                else if (t.can('S'))
+                    value = "Shown by Art Swap";
                 else if (t.kind == "system")
                     value = "The system's";
                 else
@@ -623,53 +801,63 @@ void App::draw_home(gfx::DrawList &list) const
         if (rows.empty())
         {
             static const char *empty[3] = {
-                "Nothing is on the Games home. Move a tile here from Media or Hidden.",
-                "Nothing is on the Media home. Choose a tile on Games, then Media: tools and apps sit well there.",
-                "Nothing is hidden. Choose a tile on Games or Media, then Hidden, to take it off the home screen."};
+                "Nothing is on the Games home. Move a tile here from Media.",
+                "Nothing is on the Media home. Choose a tile on Games, then Move to Media: tools and apps sit well "
+                "there.",
+                "Nothing is hidden. Choose a tile on Games or Media, then Hide, to take it off this profile's home "
+                "screen."};
             ui::paragraph(list, fonts_.regular, empty[c], kPanel.x + kPanelPad + kRowPad, kListTop + 40, 25,
                           kPanel.w - 2 * (kPanelPad + kRowPad), 38, kText.with_alpha(0.7f), 3);
         }
         static const char *about[3] = {
-            "The main row. Choose a tile to move it or hide it, or pick a game up to change its place.",
+            "The main row, as the home screen orders it. Choose a tile to move, pin or hide it, or pick it up to "
+            "change its place.",
             "The Media home, beside Games. Tools, players and stores fit here, out of the way of your games.",
-            "Tiles on neither home. They stay installed, and Art Swap can put them back."};
-        description = moving_ ? "Up and down carry it along the row. Put it down where you want it, or go back to "
-                                "leave it where it was."
-                              : about[c];
+            "Tiles off this profile's home screen. They stay installed: bring back what Art Swap hid, or show one the "
+            "system hides."};
+        description = layout_conflict_ ? "Lineup's changes are in the home screen's database, and Art Swap's would "
+                                         "fight them. Open Lineup, then Options, More options, Remove pins from every "
+                                         "profile, and come back."
+                      : moving_        ? "Up and down carry it along the row. Put it down where you want it, or go "
+                                         "back to leave it where it was."
+                                       : about[c];
     }
     else
     {
-        const float tile_w = (kPanel.w - 2 * kPanelPad - 16.0f) * 0.5f;
-        auto tile_rect = [&](int i) {
-            return Rect{kPanel.x + kPanelPad + static_cast<float>(i) * (tile_w + 16.0f), kPanel.y + 100.0f, tile_w,
-                        140.0f};
-        };
-        const bool locked = layout_order_ == "locked";
-        const int games = static_cast<int>(games_order().size());
-        staggered(1, [&] {
-            draw_tile(list, fonts_, tile_rect(0), "THE ORDER", locked ? "Locked" : "As you play",
-                      locked ? "Playing a game leaves it where it is" : "The game you played last comes first",
-                      locked ? kGood : kClear);
-        });
-        staggered(2, [&] {
-            draw_tile(list, fonts_, tile_rect(1), "ON THE GAMES ROW", std::to_string(games),
-                      games == 1 ? "game, beside the system's tiles" : "games, beside the system's tiles");
-        });
         list.push_opacity(tween::stagger(age_, 4, 0.06f, 0.4f) * panel_in);
         if (home_in_rows_)
             draw_focus(list, page_focus_.value(), ui::breathe(clock_));
         list.pop_opacity();
-        const RowInfo rows[2] = {{"Lock the order", locked ? "On" : "Off"},
-                                 {"Put the games in A to Z order", std::to_string(games) + " games"}};
-        for (int i = 0; i < 2; ++i)
-            staggered(3 + i, [&] {
+        RowInfo rows[kOptions] = {
+            {"Profile", profile_name.empty() ? std::string("The first") : profile_name},
+            {"Put the Games row in A to Z order", ""},
+            {"Put the Media row in A to Z order", ""},
+            {"Remove TabShifter's tile", tabshifter_ == "queued"  ? "At Apply changes"
+                                         : tabshifter_ == "found" ? "Found"
+                                                                  : "None"},
+            {"Put the home screen back as the system has it", reset_queued_ ? "At Apply changes" : ""},
+        };
+        rows[3].enabled = tabshifter_ != "none";
+        rows[4].danger = true;
+        for (int i = 0; i < kOptions; ++i)
+            staggered(1 + i, [&] {
                 draw_row(list, fonts_, home_row_rect(3, i), rows[i], home_in_rows_ && i == home_row_[3]);
             });
-        static const char *notes[2] = {
-            "Keeps the Games row in the order it has now, or the one you set by picking games up on Games.",
-            "Sorts the games by name. Locked, they stay that way; otherwise playing one moves it first again."};
-        description = home_in_rows_ ? notes[home_row_[3]]
-                                    : "The Games row puts the game played last first. Lock it to keep your own order.";
+        static const char *notes[kOptions] = {
+            "Each profile has its own home screen: what is hidden and the order are its own. Moving between the "
+            "tabs is on every profile.",
+            "Sorts the Games row by name. A pinned tile keeps its place.",
+            "Sorts the Media row by name. A pinned tile keeps its place.",
+            "TabShifter leaves a \"TS\" tile in the home screen's databases. Apply changes takes it out and deletes its "
+            "folders, after both databases are copied aside. Do this after deleting TabShifter.",
+            "Undoes what Art Swap, Lineup or another tool changed: each app back on the tab it installs on, the "
+            "system's tiles on their own tab and shown or hidden as the system has them, homebrew brought back, pins "
+            "gone, and Art Swap's tables and triggers out of the databases at Apply changes."};
+        description = layout_conflict_ ? "Lineup's changes are in the home screen's database: open Lineup, then "
+                                         "Options, More options, Remove pins from every profile, and come back."
+                      : home_in_rows_  ? notes[home_row_[3]]
+                                       : "The profile shown, a row in A to Z order, and taking out what other tools "
+                                         "or Art Swap left in the home screen's databases.";
     }
     list.push_opacity(tween::stagger(page_age_, 6, 0.05f, 0.36f) * panel_in);
     draw_description(list, fonts_, kPanel, description);
@@ -680,37 +868,30 @@ void App::draw_place_sheet(gfx::DrawList &list, const Rect &panel, float x, floa
 {
     const Tile *t = tile(place_id_);
     const std::string name = t ? t->name : "";
-    ui::text(list, fonts_.semibold, "MOVE", x, y, 19, kAccent, gfx::Align::left, 4.0f);
+    ui::text(list, fonts_.semibold, "CHANGE", x, y, 19, kAccent, gfx::Align::left, 4.0f);
     ui::text(list, fonts_.display, fonts_.display.font->fit(name, 48, panel.w - 128), x - 2, y + 62, 48,
              Color::rgb(0xffffff));
     y += 120;
-    const std::string where = t ? t->where : "";
-    const struct
-    {
-        const char *label, *note, *place;
-    } items[3] = {{"Games", "the main row of the home screen", "games"},
-                  {"Media", "the Media home, beside Games", "media"},
-                  {"Hidden", "on neither; it stays installed", "hidden"}};
     const float row_h = 64, width = panel.w - 128;
+    const int n = static_cast<int>(sheet_actions_.size());
     list.rounded_rect({x - 20, y + sheet_focus_position_.value * row_h, width + 40, row_h - 8}, 28,
                       Color::rgb(0xffffff));
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < n; ++i)
     {
         const bool f = i == sheet_focus_;
-        const float ry = y + i * row_h;
+        const float ry = y + static_cast<float>(i) * row_h;
         const Color ink = f ? Color::rgb(0x0b0d16) : Color::rgb(0xffffff, 0.9f);
-        const float lw = ui::text(list, fonts_.semibold, items[i].label, x + 8, ry + 39, 26, ink);
-        // where it goes now
-        if (where == items[i].place)
-            ui::text(list, fonts_.semibold, "NOW", x + 8 + lw + 18, ry + 37, 15, ink.with_alpha(0.6f),
-                     gfx::Align::left, 3.0f);
-        ui::text(list, fonts_.regular, items[i].note, x + width - 8, ry + 39, 22, ink.with_alpha(0.6f),
-                 gfx::Align::right);
+        const TileAction &a = sheet_actions_[static_cast<std::size_t>(i)];
+        ui::text(list, fonts_.semibold, a.label, x + 8, ry + 39, 26, ink);
+        ui::text(list, fonts_.regular, a.note, x + width - 8, ry + 39, 22, ink.with_alpha(0.6f), gfx::Align::right);
     }
-    y += row_h * 3 + 30;
+    y += row_h * static_cast<float>(std::max(n, 3)) + 30;
+    const bool system_hidden = t && t->can('s') && !t->can('S') && (t->hidden || t->tab == "none");
     ui::paragraph(list, fonts_.regular,
-                  "The home screen shows it there once it restarts: Apply changes (R2). Art Swap writes it again at "
-                  "each Apply changes, so an update that puts it back is put right.",
+                  system_hidden ? "The system hides this tile, and it may open nothing. Hide it again here if it does. The home "
+                         "screen shows the change once it restarts: Apply changes (R2)."
+                       : "The home screen shows it once it restarts: Apply changes (R2). From then on Art Swap keeps it "
+                         "that way through restarts, rest mode and installs.",
                   x, y, 23, width, 34, Color::rgb(0xffffff, 0.7f), 3);
 }
 

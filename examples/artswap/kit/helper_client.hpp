@@ -28,7 +28,7 @@
 namespace artswap
 {
 
-constexpr const char *kHelperVersion = "0.6.0";
+constexpr const char *kHelperVersion = "0.7.1";
 
 struct Picture
 {
